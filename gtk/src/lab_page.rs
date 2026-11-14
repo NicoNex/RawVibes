@@ -34,6 +34,8 @@ pub struct LabLayer {
     pub intensity: f32,
     /// Signal the LUT expects (unused for grade and conversions).
     pub input: Profile,
+    /// Off layers keep their settings but are skipped everywhere.
+    pub on: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -58,7 +60,7 @@ fn summary(layers: &[LabLayer], blend: Blend, input: Profile) -> String {
     let mut at = input;
     match blend {
         Blend::Chain => {
-            for l in layers {
+            for l in layers.iter().filter(|l| l.on) {
                 if let LabKind::Lut(_) = l.kind
                     && l.input != at
                 {
@@ -73,10 +75,10 @@ fn summary(layers: &[LabLayer], blend: Blend, input: Profile) -> String {
         }
         Blend::Mix => {
             let looks: Vec<String> =
-                layers.iter().filter(|l| !matches!(l.kind, LabKind::Convert(_))).map(name).collect();
+                layers.iter().filter(|l| l.on && !matches!(l.kind, LabKind::Convert(_))).map(name).collect();
             steps.push(gettext!("mix of {}", looks.join(" + ")));
             at = Profile::Standard;
-            for l in layers {
+            for l in layers.iter().filter(|l| l.on) {
                 if let LabKind::Convert(p) = l.kind {
                     steps.push(name(l));
                     at = p;
@@ -87,6 +89,19 @@ fn summary(layers: &[LabLayer], blend: Blend, input: Profile) -> String {
     let out = if at.is_log() { at.name().to_string() } else { "Rec.709".into() };
     steps.push(gettext!("Output: {}", out));
     steps.join("  →  ")
+}
+
+/// Chain / Mix toggle and its explanation, sending `msg` on change.
+pub fn blend_toggle(sender: &ComponentSender<App>, msg: fn(Blend) -> Msg) -> (adw::ToggleGroup, gtk::Label) {
+    let blend = crate::toggles(&[("chain", gettext("Chain").as_str()), ("mix", gettext("Mix").as_str())]);
+    let hint = caption(&chain_hint());
+    let (snd, h) = (sender.clone(), hint.clone());
+    blend.connect_active_name_notify(move |g| {
+        let mix = g.active_name().as_deref() == Some("mix");
+        h.set_label(&if mix { mix_hint() } else { chain_hint() });
+        snd.input(msg(if mix { Blend::Mix } else { Blend::Chain }));
+    });
+    (blend, hint)
 }
 
 fn chain_hint() -> String {
@@ -197,21 +212,19 @@ pub fn build(sender: &ComponentSender<App>, export_menu: &gio::Menu) -> LabUi {
     let mh = heading(&gettext("Layer blending"));
     mh.set_margin_top(6);
     mode.append(&mh);
-    let blend = crate::toggles(&[("chain", gettext("Chain").as_str()), ("mix", gettext("Mix").as_str())]);
-    let hint = caption(&chain_hint());
-    let (snd, h) = (sender.clone(), hint.clone());
-    blend.connect_active_name_notify(move |g| {
-        let mix = g.active_name().as_deref() == Some("mix");
-        h.set_label(&if mix { mix_hint() } else { chain_hint() });
-        snd.input(Msg::LabBlend(if mix { Blend::Mix } else { Blend::Chain }));
-    });
+    let (blend, hint) = blend_toggle(sender, Msg::LabBlend);
     mode.append(&blend);
     mode.append(&hint);
     panel.append(&mode);
 
     // What the exported LUT will do, in words.
-    let summary =
-        gtk::Label::builder().css_classes(["caption", "lab-summary"]).visible(false).wrap(true).xalign(0.0).selectable(true).build();
+    let summary = gtk::Label::builder()
+        .css_classes(["caption", "lab-summary"])
+        .visible(false)
+        .wrap(true)
+        .xalign(0.0)
+        .selectable(true)
+        .build();
     panel.append(&summary);
 
     // 3 · Export
@@ -331,6 +344,21 @@ pub fn layer_rows(
                 .tooltip_text(title.as_str())
                 .build(),
         );
+        let eye = gtk::ToggleButton::builder()
+            .icon_name(if l.on { "view-reveal-symbolic" } else { "view-conceal-symbolic" })
+            .tooltip_text(if l.on { gettext("Switch off") } else { gettext("Switch on") })
+            .active(!l.on)
+            .css_classes(["flat", "circular"])
+            .build();
+        eye.update_property(&[gtk::accessible::Property::Label(&gettext!("Switch off {}", title))]);
+        let snd = sender.clone();
+        eye.connect_toggled(move |b| {
+            let on = !b.is_active();
+            b.set_icon_name(if on { "view-reveal-symbolic" } else { "view-conceal-symbolic" });
+            b.set_tooltip_text(Some(&if on { gettext("Switch off") } else { gettext("Switch on") }));
+            snd.input(Msg::LayerOn(which, i, on));
+        });
+        head.append(&eye);
         for (icon, tip, enabled, msg) in [
             ("go-up-symbolic", gettext("Move up"), i > 0, Msg::LayerMove(which, i, true)),
             ("go-down-symbolic", gettext("Move down"), i < last, Msg::LayerMove(which, i, false)),

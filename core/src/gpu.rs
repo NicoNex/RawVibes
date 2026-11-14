@@ -207,10 +207,10 @@ impl Gpu {
 }
 
 impl Gpu {
-    /// The grade followed by `look` (chained, as on the Grade page) on an N³ lattice.
-    pub fn bake_with_look(&self, grade: Grade, look: Vec<Layer>, size: usize, title: String) -> Lut3d {
+    /// The grade followed by `look` (as on the Grade page) on an N³ lattice.
+    pub fn bake_with_look(&self, grade: Grade, look: Stack, size: usize, title: String) -> Lut3d {
         let baked = self.bake(&grade, size, title.clone());
-        if look.is_empty() {
+        if look.layers.is_empty() {
             return baked;
         }
         // Grade baked on the export lattice itself, so its nodes are exact.
@@ -227,7 +227,8 @@ impl Gpu {
 #[derive(Clone, Debug)]
 pub struct CompareBase {
     pub grade: Grade,
-    pub looks: Vec<Layer>,
+    /// The look LUTs, fed with the grade's output (Standard).
+    pub looks: Stack,
     /// Profile of the source signal, which the compared LUTs expect.
     pub input: Profile,
 }
@@ -237,7 +238,16 @@ impl CompareBase {
     fn compose(&self, size: usize, bake: &dyn Fn(&Grade) -> Arc<Lut3d>) -> Lut3d {
         let grade = Layer { source: Source::Grade(Box::new(self.grade.clone())), intensity: 1.0, input: self.input };
         let back = Layer { source: Source::Convert(self.input), intensity: 1.0, input: self.input };
-        let layers = std::iter::once(grade).chain(self.looks.iter().cloned()).chain([back]).collect();
+        let looks = match self.looks.blend {
+            // Mixed looks all take the grade's output: pre-mix them into one step.
+            Blend::Mix if !self.looks.layers.is_empty() => vec![Layer {
+                source: Source::Lut(Arc::new(lab::compose(&self.looks, size, bake))),
+                intensity: 1.0,
+                input: self.looks.input,
+            }],
+            _ => self.looks.layers.clone(),
+        };
+        let layers = std::iter::once(grade).chain(looks).chain([back]).collect();
         lab::compose(&Stack { input: self.input, layers, blend: Blend::Chain }, size, bake)
     }
 }
@@ -251,7 +261,7 @@ fn after(base: &Lut3d, lut: &Lut3d) -> Lut3d {
 pub enum Job {
     SetPhoto(Arc<Photo>),
     /// LUTs applied after the grade on the Grade page (empty = none).
-    SetLook(Vec<Layer>),
+    SetLook(Stack),
     /// Base of the Compare LUTs previews; None = the ungraded source.
     SetCompareBase(Option<CompareBase>),
     Render(Grade, f32),
@@ -289,7 +299,7 @@ pub enum Job {
     /// The grade followed by its look LUTs.
     Export {
         grade: Grade,
-        look: Vec<Layer>,
+        look: Stack,
         size: usize,
         format: Format,
         title: String,
@@ -409,12 +419,10 @@ impl Worker {
                 // The next SetPhoto must upload again, even with the same pixels.
                 self.source = None;
             }
-            Job::SetLook(layers) => {
+            Job::SetLook(stack) => {
                 // ponytail: 33³ preview composite, like the Lab; exports compose exactly.
-                self.look = (!layers.is_empty()).then(|| {
-                    let stack = Stack { input: Profile::Standard, layers, blend: Blend::Chain };
-                    gpu.upload_lut(&lab::compose(&stack, 33, &|g| self.bake_cached(gpu, g)))
-                });
+                self.look = (!stack.layers.is_empty())
+                    .then(|| gpu.upload_lut(&lab::compose(&stack, 33, &|g| self.bake_cached(gpu, g))));
                 // The filmstrip shows the looks too: every frame is stale.
                 self.roll.1.iter_mut().for_each(|f| f.last = None);
             }
@@ -649,10 +657,22 @@ mod tests {
         grade.params.saturation = 15.0;
         let plain = gpu.bake(&grade, 17, "g".into());
         let layer = |lut: Lut3d| Layer { source: Source::Lut(Arc::new(lut)), intensity: 1.0, input: Profile::Standard };
-        let same = gpu.bake_with_look(grade.clone(), vec![layer(Lut3d::identity(33, Format::Cube))], 17, "g".into());
+        let look = |layers, blend| Stack { input: Profile::Standard, layers, blend };
+        let same = gpu.bake_with_look(
+            grade.clone(),
+            look(vec![layer(Lut3d::identity(33, Format::Cube))], Blend::Chain),
+            17,
+            "g".into(),
+        );
         let mut inverted = Lut3d::identity(17, Format::Cube);
         inverted.data.iter_mut().for_each(|c| *c = c.map(|v| 1.0 - v));
-        let looked = gpu.bake_with_look(grade, vec![layer(inverted)], 17, "g".into());
+        // Mixing a LUT with itself is that LUT; chaining it twice would undo it.
+        let twice = vec![layer(inverted.clone()), layer(inverted.clone())];
+        let mixed = gpu.bake_with_look(grade.clone(), look(twice, Blend::Mix), 17, "g".into());
+        let looked = gpu.bake_with_look(grade, look(vec![layer(inverted)], Blend::Chain), 17, "g".into());
+        for (m, l) in mixed.data.iter().zip(&looked.data) {
+            assert!((0..3).all(|k| (m[k] - l[k]).abs() < 2e-3), "mixed {m:?} vs chained {l:?}");
+        }
         for ((a, b), c) in plain.data.iter().zip(&same.data).zip(&looked.data) {
             for k in 0..3 {
                 assert!((a[k] - b[k]).abs() < 1e-4, "identity look changed {a:?} → {b:?}");
@@ -667,13 +687,13 @@ mod tests {
     fn compare_base_puts_the_grade_before_the_lut() {
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
         let bake = |g: &Grade| Arc::new(gpu.bake(g, lab::SOURCE_SIZE, String::new()));
-        let neutral = CompareBase { grade: Grade::default(), looks: Vec::new(), input: Profile::Standard };
+        let neutral = CompareBase { grade: Grade::default(), looks: Stack::default(), input: Profile::Standard };
         for (v, e) in neutral.compose(17, &bake).data.iter().zip(&Lut3d::identity(17, Format::Cube).data) {
             assert!((0..3).all(|k| (v[k] - e[k]).abs() < 1e-3), "{v:?} vs {e:?}");
         }
         let mut grade = Grade::default();
         grade.params.exposure = 0.4;
-        let base = CompareBase { grade: grade.clone(), looks: Vec::new(), input: Profile::Standard };
+        let base = CompareBase { grade: grade.clone(), looks: Stack::default(), input: Profile::Standard };
         let mut inverted = Lut3d::identity(17, Format::Cube);
         inverted.data.iter_mut().for_each(|c| *c = c.map(|v| 1.0 - v));
         let shown = after(&base.compose(17, &bake), &inverted);

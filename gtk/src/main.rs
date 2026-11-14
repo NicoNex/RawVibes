@@ -111,6 +111,12 @@ enum Msg {
     LayerProfile(Layers, usize, Profile),
     LabInput(Profile),
     LabBlend(Blend),
+    LookBlend(Blend),
+    LayerOn(Layers, usize, bool),
+    /// Something changed in a watched LUT folder.
+    FolderChanged,
+    /// No folder change for a while since change number `u64`: reload.
+    FolderSettled(u64),
     Chart(bool),
     ChartReady(Profile, Arc<Photo>),
     Profile(Profile),
@@ -267,6 +273,10 @@ struct App {
     gallery_stale: bool,
     lab_input: Profile,
     lab_blend: Blend,
+    look_blend: Blend,
+    /// Watch the LUT folder and its sub-folders; `folder_changes` debounces their events.
+    monitors: Vec<gio::FileMonitor>,
+    folder_changes: u64,
     profile: Profile,
     /// The open file, decoded once; `photo` is it encoded for a profile.
     decoded: Option<Decoded>,
@@ -617,13 +627,17 @@ impl App {
                 _ => None,
             })
             .collect();
-        let key = Some(BaseKey { grade: grade.clone(), luts, input });
+        let key = Some(BaseKey { grade: grade.clone(), luts, input, blend: self.look_blend });
         if self.base_key == key {
             return false;
         }
         self.base_key = key;
         // ponytail: an untouched grade keeps the exact direct path (no lattice round trip).
-        let base = (!grade.is_neutral() || !looks.is_empty()).then_some(CompareBase { grade, looks, input });
+        let base = (!grade.is_neutral() || !looks.is_empty()).then(|| CompareBase {
+            grade,
+            looks: self.look_stack(looks),
+            input,
+        });
         self.send(Job::SetCompareBase(base));
         true
     }
@@ -660,7 +674,7 @@ impl App {
     }
 
     fn lab_job_layers(&self) -> Vec<Layer> {
-        self.lab_layers.iter().map(|l| self.job_layer(l)).collect()
+        self.lab_layers.iter().filter(|l| l.on).map(|l| self.job_layer(l)).collect()
     }
 
     fn job_layer(&self, l: &LabLayer) -> Layer {
@@ -704,7 +718,7 @@ impl App {
     }
 
     fn push_layer(&mut self, which: Layers, kind: LabKind, input: Profile, sender: &ComponentSender<Self>) {
-        self.layers_mut(which).push(LabLayer { kind, intensity: 1.0, input });
+        self.layers_mut(which).push(LabLayer { kind, intensity: 1.0, input, on: true });
         self.layers_changed(which, true, sender);
     }
 
@@ -731,6 +745,7 @@ impl App {
                         self.source_profile(),
                         sender,
                     );
+                    self.ui.sidebar.look_blend.set_visible(self.looks.len() > 1);
                     // Show where a LUT added from the browser went.
                     let last = self.ui.sidebar.looks.row_at_index(self.looks.len() as i32 - 1);
                     if let Some(row) = last.filter(|_| std::mem::take(&mut self.flash_new_look)) {
@@ -752,7 +767,7 @@ impl App {
             let input = Profile::guess_from_name(&lut.title);
             layers.push(Layer { source: Source::Lut(lut.clone()), intensity: 1.0, input });
         }
-        self.send(Job::SetLook(layers));
+        self.send(Job::SetLook(self.look_stack(layers)));
         (self.sent, self.roll_sent) = (None, None);
         self.render();
     }
@@ -769,7 +784,41 @@ impl App {
         if self.looks_off {
             return Vec::new();
         }
-        self.looks.iter().map(|l| self.job_layer(l)).collect()
+        self.looks.iter().filter(|l| l.on).map(|l| self.job_layer(l)).collect()
+    }
+
+    /// Reloads the library when files appear, change or go in its folder or
+    /// sub-folders (a new sub-folder is seen by its parent, then watched).
+    fn watch_folders(&mut self, sender: &ComponentSender<Self>) {
+        let root = settings::folder(settings::LUT_FOLDER);
+        let parents = self.luts.iter().filter_map(|l| l.path.parent().map(PathBuf::from));
+        let mut dirs: Vec<PathBuf> = root.into_iter().chain(parents).collect();
+        dirs.sort();
+        dirs.dedup();
+        self.monitors = dirs
+            .iter()
+            .filter_map(|d| {
+                let m = gio::File::for_path(d)
+                    .monitor_directory(gio::FileMonitorFlags::WATCH_MOVES, gio::Cancellable::NONE)
+                    .ok()?;
+                let s = sender.input_sender().clone();
+                m.connect_changed(move |_, _, _, event| {
+                    use gio::FileMonitorEvent as E;
+                    if matches!(
+                        event,
+                        E::Created | E::Deleted | E::MovedIn | E::MovedOut | E::Renamed | E::ChangesDoneHint
+                    ) {
+                        s.emit(Msg::FolderChanged);
+                    }
+                });
+                Some(m)
+            })
+            .collect();
+    }
+
+    /// The looks as the grade's output (Standard) feeds them.
+    fn look_stack(&self, layers: Vec<Layer>) -> Stack {
+        Stack { input: Profile::Standard, layers, blend: self.look_blend }
     }
 
     fn lab_changed(&mut self, structure: bool, sender: &ComponentSender<Self>) {
@@ -1054,6 +1103,8 @@ struct Sidebar {
     skin: gtk::DrawingArea,
     skin_btn: gtk::ToggleButton,
     looks: gtk::ListBox,
+    /// Chain / Mix of the looks, shown with two or more.
+    look_blend: gtk::Box,
     /// The LUT browser, revealed under the look stack.
     browse: gtk::Revealer,
     browse_btn: gtk::ToggleButton,
@@ -1404,6 +1455,13 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     empty.set_margin_start(12);
     empty.set_margin_end(12);
     looks.set_placeholder(Some(&empty));
+    // How looks combine: only shown with two or more.
+    let (blend, hint) = lab_page::blend_toggle(sender, Msg::LookBlend);
+    let look_blend = vbox(6);
+    look_blend.set_visible(false);
+    look_blend.append(&blend);
+    look_blend.append(&hint);
+    look_box.append(&look_blend);
     look_box.append(&looks);
     let browse_btn = gtk::ToggleButton::builder()
         .child(&adw::ButtonContent::builder().icon_name("view-grid-symbolic").label(gettext("Browse LUTs")).build())
@@ -1459,6 +1517,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         skin,
         skin_btn,
         looks,
+        look_blend,
         browse,
         browse_btn,
     }
@@ -1665,7 +1724,7 @@ impl SimpleComponent for App {
         folder_row.append(&to_lab);
         let reload = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
-            .tooltip_text(gettext("Reload folder"))
+            .tooltip_text(gettext("Reload LUTs (F5)"))
             .css_classes(["flat"])
             .build();
         let snd = sender.clone();
@@ -1956,6 +2015,8 @@ impl SimpleComponent for App {
                 e.grab_focus();
             }),
         );
+        let snd = sender.clone();
+        shortcut("F5", Box::new(move || snd.input(Msg::Reload)));
         let b = sidebar.browse_btn.clone();
         shortcut("b", Box::new(move || b.set_active(!b.is_active())));
         let w = window.clone();
@@ -2021,6 +2082,9 @@ impl SimpleComponent for App {
             gallery_stale: true,
             lab_input: Profile::Standard,
             lab_blend: Blend::Chain,
+            look_blend: Blend::Chain,
+            monitors: Vec::new(),
+            folder_changes: 0,
             profile: Profile::Standard,
             decoded: None,
             photo: None,
@@ -2468,7 +2532,7 @@ impl SimpleComponent for App {
                     }
                     What::Grade => self.send(Job::Export {
                         grade: self.graded(),
-                        look: self.look_layers(),
+                        look: self.look_stack(self.look_layers()),
                         size,
                         format,
                         title,
@@ -2507,6 +2571,11 @@ impl SimpleComponent for App {
                 if !errors.is_empty() {
                     self.toast(&gettext!("{} files skipped: {}", errors.len(), errors.join("; ")));
                 }
+                // A reload keeps what the user was looking at, when it still exists.
+                let path_of = |i: usize| self.luts.get(i).map(|l| l.path.clone());
+                let keep_selected = self.selected.and_then(path_of);
+                let keep_candidate = self.candidate.as_ref().and_then(|c| path_of(c.0));
+                let keep_group = self.group.take();
                 self.ui.flow.remove_all();
                 self.ui.thumbs.clear();
                 if truncated {
@@ -2558,11 +2627,21 @@ impl SimpleComponent for App {
                 let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
                 self.ui.groups.set_model(Some(&gtk::StringList::new(&labels)));
                 self.ui.groups.set_visible(self.group_names.iter().any(|g| !g.is_empty()));
+                let group = keep_group.and_then(|g| self.group_names.iter().position(|n| *n == g));
+                self.ui.groups.set_selected(group.map_or(0, |i| i as u32 + 1));
                 self.lut_paths = Arc::new(luts.iter().map(|l| l.path.clone()).collect());
                 self.luts = luts;
+                self.watch_folders(&sender);
                 self.filter_gallery();
-                self.selected = None;
-                self.drop_candidate();
+                let find = |p: Option<PathBuf>| p.and_then(|p| self.luts.iter().position(|l| l.path == p));
+                self.selected = find(keep_selected);
+                match (find(keep_candidate), self.candidate.as_mut()) {
+                    (Some(i), Some(c)) => c.0 = i,
+                    _ => self.drop_candidate(),
+                }
+                if let Some(c) = self.selected.and_then(|i| self.ui.flow.child_at_index(i as i32)) {
+                    self.ui.flow.select_child(&c);
+                }
                 self.gallery_stale = true;
                 self.refresh_gallery();
             }
@@ -2772,6 +2851,26 @@ impl SimpleComponent for App {
                 self.lab_input = p;
                 self.ui.lab.refresh_summary(&self.lab_layers, self.lab_blend, self.lab_input);
             }
+            Msg::LookBlend(b) => {
+                self.look_blend = b;
+                self.show_looks();
+                self.refresh_gallery();
+            }
+            Msg::LayerOn(which, i, on) => {
+                if let Some(l) = self.layers_mut(which).get_mut(i) {
+                    l.on = on;
+                    self.layers_changed(which, false, &sender);
+                }
+            }
+            Msg::FolderChanged => {
+                self.folder_changes += 1;
+                let (s, n) = (sender.input_sender().clone(), self.folder_changes);
+                glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+                    s.emit(Msg::FolderSettled(n))
+                });
+            }
+            Msg::FolderSettled(n) if n == self.folder_changes => sender.input(Msg::Reload),
+            Msg::FolderSettled(_) => {}
             Msg::LabBlend(b) => {
                 self.lab_blend = b;
                 self.ui.lab.refresh_summary(&self.lab_layers, self.lab_blend, self.lab_input);
@@ -3106,6 +3205,7 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
         (gettext("LUT Lab view"), "<Alt>2"),
         (gettext("Browse LUTs"), "b"),
         (gettext("Search LUTs"), "<Control>f"),
+        (gettext("Reload LUTs"), "F5"),
         (gettext("Preferences"), "<Control>comma"),
         (gettext("Keyboard Shortcuts"), "<Control>question"),
     ] {
@@ -3139,6 +3239,7 @@ struct BaseKey {
     grade: Grade,
     luts: Vec<(Arc<Lut3d>, f32, Profile)>,
     input: Profile,
+    blend: Blend,
 }
 
 impl PartialEq for BaseKey {
@@ -3148,6 +3249,7 @@ impl PartialEq for BaseKey {
         };
         self.grade == o.grade
             && self.input == o.input
+            && self.blend == o.blend
             && self.luts.len() == o.luts.len()
             && self.luts.iter().zip(&o.luts).all(|(a, b)| same(a, b))
     }

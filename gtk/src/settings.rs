@@ -14,6 +14,9 @@ fn file(name: &str) -> PathBuf {
     glib::user_config_dir().join("rawvalley").join(name)
 }
 
+/// "1": RAWs without edits open as in camera.
+pub const AS_IN_CAMERA: &str = "as-in-camera";
+
 /// Preview quality while editing: "fast", "balanced" or "best".
 pub const PREVIEW_QUALITY: &str = "preview-quality";
 

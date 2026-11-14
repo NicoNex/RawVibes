@@ -237,6 +237,18 @@ fn load_raster(path: &Path, max: Option<u32>) -> Result<Photo, String> {
     Ok(Photo { width, height, pixels })
 }
 
+/// The JPEG the camera embedded in a RAW, display-encoded, fitting 1024 px.
+pub fn embedded_preview(path: &Path) -> Result<Photo, String> {
+    let src = rawler::rawsource::RawSource::new(path).map_err(|e| e.to_string())?;
+    let params = rawler::decoders::RawDecodeParams::default();
+    let decoder = rawler::get_decoder(&src).map_err(|e| e.to_string())?;
+    // Not `analyze::extract_preview_pixels`: without a preview it develops the RAW itself.
+    let img = decoder.preview_image(&src, &params).map_err(|e| e.to_string())?.ok_or("no camera JPEG")?;
+    let img = img.into_rgba32f();
+    let (w, h) = img.dimensions();
+    Ok(Photo { width: w, height: h, pixels: bytemuck::allocation::cast_vec(img.into_raw()) }.downscaled(1024))
+}
+
 /// Longest side of a RAW's small CPU copy when no size is asked for.
 pub const RAW_SMALL: u32 = 1024;
 
@@ -332,6 +344,15 @@ mod tests {
         assert!(r == g && g == b, "{r} {g} {b}");
         let (lo, hi) = (balanced([0.3, 0.8499, 0.4]), balanced([0.3, 0.8501, 0.4]));
         assert!((0..3).all(|c| (lo[c] - hi[c]).abs() < 1e-3), "{lo:?} {hi:?}");
+    }
+
+    /// The camera JPEG of a sample RAW (RAWVALLEY_RAW), when present.
+    #[test]
+    fn embedded_preview_of_sample_raw() {
+        let Ok(path) = std::env::var("RAWVALLEY_RAW") else { return eprintln!("no sample, skipped") };
+        let p = embedded_preview(Path::new(&path)).unwrap();
+        assert!((640..=1024).contains(&p.width.max(p.height)), "{}×{}", p.width, p.height);
+        assert!(p.pixels.iter().all(|c| c.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v))));
     }
 
     /// Portrait RAWs must come out portrait. Uses local sample files when

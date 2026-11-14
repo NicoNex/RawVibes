@@ -1714,9 +1714,9 @@ impl SimpleComponent for App {
 
         // ---------------- view stack + header
         let stack = adw::ViewStack::new();
-        stack.add_titled_with_icon(&grade_split, Some("grade"), "Grade", "color-select-symbolic");
+        stack.add_titled_with_icon(&grade_split, Some("grade"), &gettext("Grade"), "color-select-symbolic");
         let lab = lab_page::build(&sender, &export_menu("lab-export", false));
-        stack.add_titled_with_icon(&lab.root, Some("lab"), "LUT Lab", "view-list-symbolic");
+        stack.add_titled_with_icon(&lab.root, Some("lab"), &gettext("LUT Lab"), "view-list-symbolic");
         let snd = sender.clone();
         stack.connect_visible_child_name_notify(move |s| {
             let page = match s.visible_child_name().as_deref() {
@@ -2779,6 +2779,8 @@ impl SimpleComponent for App {
             }
             Msg::Page(page) => {
                 self.page = page;
+                // The header's Export LUT exports the grade; LUT Lab has its own export.
+                self.ui.export.set_visible(matches!(page, Page::Grade));
                 // Zoom is a Grade canvas view; the other pages show the whole photo.
                 if !matches!(page, Page::Grade) {
                     self.set_zoom(None);
@@ -2991,7 +2993,7 @@ impl App {
 
     fn on_gpu(&mut self, done: Done) {
         match done {
-            Done::Ready(name) => self.toast(&format!("GPU: {name}")),
+            Done::Ready(_) => {}
             Done::Failed(e) => self.toast(&gettext!("GPU unavailable: {}", e)),
             Done::Graded { width, height, rgba, scopes: Scopes { histogram, waveform, vectorscope } } => {
                 self.ui.grade_pic.set_paintable(Some(&texture(width, height, rgba)));

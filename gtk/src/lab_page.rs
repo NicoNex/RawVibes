@@ -158,6 +158,8 @@ pub fn build(sender: &ComponentSender<App>, export_menu: &gio::Menu) -> LabUi {
     let empty = vbox(8);
     empty.set_margin_top(12);
     empty.set_margin_bottom(12);
+    empty.set_margin_start(12);
+    empty.set_margin_end(12);
     empty.append(&caption(&gettext("No layers.")));
     let open = gtk::Button::builder()
         .label(gettext("Add a LUT…"))
@@ -209,7 +211,7 @@ pub fn build(sender: &ComponentSender<App>, export_menu: &gio::Menu) -> LabUi {
 
     // What the exported LUT will do, in words.
     let summary =
-        gtk::Label::builder().css_classes(["caption", "lab-summary"]).wrap(true).xalign(0.0).selectable(true).build();
+        gtk::Label::builder().css_classes(["caption", "lab-summary"]).visible(false).wrap(true).xalign(0.0).selectable(true).build();
     panel.append(&summary);
 
     // 3 · Export
@@ -274,7 +276,9 @@ pub fn build(sender: &ComponentSender<App>, export_menu: &gio::Menu) -> LabUi {
 
 impl LabUi {
     pub fn refresh_summary(&self, layers: &[LabLayer], blend: Blend, result_input: Profile) {
-        self.summary.set_label(&summary(layers, blend, result_input));
+        let text = summary(layers, blend, result_input);
+        self.summary.set_visible(!text.is_empty());
+        self.summary.set_label(&text);
     }
 
     /// Recreates the layer rows (structural changes are rare; sliders update in place).

@@ -11,3 +11,4 @@ pub mod photo;
 pub mod preset;
 pub mod profiles;
 pub mod scopes;
+pub mod view;

@@ -18,6 +18,7 @@ use rawler::imgop::xyz::{Illuminant, SRGB_TO_XYZ_D65};
 use rayon::prelude::*;
 
 use crate::profiles::Profile;
+use crate::view::{Pyramid, Region};
 
 pub const PREVIEW_MAX: u32 = 2048;
 pub const THUMB_MAX: u32 = 256;
@@ -55,34 +56,58 @@ pub fn is_photo(path: &Path) -> bool {
 #[derive(Clone, Debug)]
 pub enum Decoded {
     /// JPEG/PNG/TIFF: already a camera signal (Standard, or e.g. a V-Log JPEG).
-    Raster(Arc<Photo>),
+    Raster(Arc<Pyramid>),
     /// RAW: scene-linear Rec.709, so a profile change only re-encodes.
-    Raw(Arc<Photo>),
+    Raw(Arc<Pyramid>),
 }
 
 impl Decoded {
     pub fn load(path: &Path) -> Result<Self, String> {
         if is_raw(path) {
-            load_raw(path).map(|p| Decoded::Raw(Arc::new(p)))
+            load_raw(path).map(|p| Decoded::Raw(Arc::new(Pyramid::new(p))))
         } else {
-            load_raster(path).map(|p| Decoded::Raster(Arc::new(p)))
+            load_raster(path).map(|p| Decoded::Raster(Arc::new(Pyramid::new(p))))
         }
+    }
+
+    fn pyramid(&self) -> &Pyramid {
+        match self {
+            Decoded::Raster(p) | Decoded::Raw(p) => p,
+        }
+    }
+
+    /// Same variant holding `photo`.
+    fn with(&self, photo: Photo) -> Self {
+        let p = Arc::new(Pyramid::new(photo));
+        match self {
+            Decoded::Raster(_) => Decoded::Raster(p),
+            Decoded::Raw(_) => Decoded::Raw(p),
+        }
+    }
+
+    /// Full-resolution size of the oriented image.
+    pub fn size(&self) -> (u32, u32) {
+        let p = self.pyramid().full();
+        (p.width, p.height)
     }
 
     /// Box-filtered copy that fits in `max` × `max` (filmstrip photos).
     pub fn downscaled(&self, max: u32) -> Self {
-        match self {
-            Decoded::Raster(p) => Decoded::Raster(Arc::new(p.downscaled(max))),
-            Decoded::Raw(p) => Decoded::Raw(Arc::new(p.downscaled(max))),
-        }
+        self.with(self.pyramid().full().downscaled(max))
+    }
+
+    /// `r` resampled to `out_w` × `out_h` (zoomed view, crop).
+    pub fn region(&self, r: &Region, out_w: u32, out_h: u32) -> Self {
+        self.with(self.pyramid().resample(r, out_w, out_h))
     }
 
     /// The pixels as `profile`'s signal: RAWs are rendered into it, rasters
     /// are taken as already encoded in it.
     pub fn encode(&self, profile: Profile) -> Arc<Photo> {
         match self {
-            Decoded::Raster(p) => p.clone(),
+            Decoded::Raster(p) => Arc::new(p.full().clone()),
             Decoded::Raw(scene) => {
+                let scene = scene.full();
                 let from709 = profile.from_rec709();
                 let pixels = scene
                     .pixels
@@ -104,11 +129,6 @@ impl Decoded {
 }
 
 impl Photo {
-    /// Loads `path` as the signal `profile` describes (see [`Decoded::encode`]).
-    pub fn load(path: &Path, profile: Profile) -> Result<Arc<Self>, String> {
-        Ok(Decoded::load(path)?.encode(profile))
-    }
-
     /// Box-filtered copy that fits in `max` × `max`. Averages the stored
     /// values directly, so linear RAW data is downscaled in linear light.
     // ponytail: not image::imageops::thumbnail — it washes out f32 pixels.
@@ -116,8 +136,8 @@ impl Photo {
         box_downscale(&self.pixels, self.width, self.height, max, |p| *p)
     }
 
-    fn to_image(&self) -> Rgba32FImage {
-        Rgba32FImage::from_raw(self.width, self.height, bytemuck::cast_slice(&self.pixels).to_vec())
+    fn into_image(self) -> Rgba32FImage {
+        Rgba32FImage::from_raw(self.width, self.height, self.pixels.into_iter().flatten().collect())
             .expect("pixel count matches dimensions")
     }
 
@@ -165,7 +185,7 @@ fn load_raster(path: &Path) -> Result<Photo, String> {
     let orientation = dec.orientation().map_err(|e| e.to_string())?;
     let mut img = DynamicImage::from_decoder(dec).map_err(|e| e.to_string())?;
     img.apply_orientation(orientation);
-    let img = img.thumbnail(PREVIEW_MAX, PREVIEW_MAX).into_rgba32f();
+    let img = img.into_rgba32f();
     let (width, height) = img.dimensions();
     let pixels = img.pixels().map(|p| [p[0], p[1], p[2], 1.0]).collect();
     Ok(Photo { width, height, pixels })
@@ -193,9 +213,9 @@ fn load_raw(path: &Path) -> Result<Photo, String> {
         Intermediate::FourColor(px) => calibrated(&raw, &px.data, px.width, px.height),
         Intermediate::Monochrome(_) => return Err("unsupported sensor layout".into()),
     };
-    // Downscale in linear light (physically correct averaging), then encode.
+    // Orient, then scale to scene exposure.
     let orientation = Orientation::from_exif(exif_orientation as u8).unwrap_or(Orientation::NoTransforms);
-    let mut img = DynamicImage::ImageRgba32F(linear.to_image());
+    let mut img = DynamicImage::ImageRgba32F(linear.into_image());
     img.apply_orientation(orientation);
     let mut photo = Photo::from_image(img.into_rgba32f());
     for p in &mut photo.pixels {
@@ -204,14 +224,18 @@ fn load_raw(path: &Path) -> Result<Photo, String> {
     Ok(photo)
 }
 
-/// Calibrates while downscaling, straight from the camera buffer: a
-/// full-size RGBA copy would add ~400 MB of peak memory on a 24 MP file.
+/// Calibrated camera buffer at full resolution.
+// shortcut: full-res f32 RGBA on the CPU (~400 MB for 24 MP); Phase 2 moves it to the GPU in f16.
 fn calibrated<const N: usize>(raw: &rawler::RawImage, px: &[[f32; N]], width: usize, height: usize) -> Photo {
     let cal = Calibration::<N>::new(raw);
-    box_downscale(px, width as u32, height as u32, PREVIEW_MAX, |p| {
-        let [r, g, b] = cal.apply(p);
-        [r, g, b, 1.0]
-    })
+    let pixels = px
+        .par_iter()
+        .map(|p| {
+            let [r, g, b] = cal.apply(p);
+            [r, g, b, 1.0]
+        })
+        .collect();
+    Photo { width: width as u32, height: height as u32, pixels }
 }
 
 /// Camera RGB (N = 3) or CYGM/RGBE (N = 4) → linear Rec.709, with clipped
@@ -303,7 +327,9 @@ mod tests {
     #[test]
     fn portrait_raw_is_rotated() {
         let Ok(path) = std::env::var("RAWVALLEY_PORTRAIT_RAW") else { return eprintln!("no sample, skipped") };
-        let Decoded::Raw(p) = Decoded::load(Path::new(&path)).unwrap() else { panic!("not a RAW") };
-        assert!(p.height > p.width, "{}×{} is landscape", p.width, p.height);
+        let d = Decoded::load(Path::new(&path)).unwrap();
+        assert!(matches!(d, Decoded::Raw(_)), "not a RAW");
+        let (w, h) = d.size();
+        assert!(h > w, "{w}×{h} is landscape");
     }
 }

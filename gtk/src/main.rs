@@ -28,7 +28,7 @@ use rawvalley_core::grade::{
 };
 use rawvalley_core::lab::{Blend, Layer, Source, Stack, oklch_to_srgb};
 use rawvalley_core::lut::{Format, Lut3d, LutEntry, MAX_LIBRARY};
-use rawvalley_core::photo::{Decoded, Photo, RASTER_EXTS, RAW_EXTS, is_photo};
+use rawvalley_core::photo::{Decoded, PREVIEW_MAX, Photo, RASTER_EXTS, RAW_EXTS, is_photo};
 use rawvalley_core::preset::{self, Preset};
 use rawvalley_core::profiles::Profile;
 use rawvalley_core::scopes::{HIST_H, HIST_W, Scopes, VEC_SIZE};
@@ -611,21 +611,14 @@ impl App {
         }
     }
 
-    /// Expresses the open file in the current profile: rasters are already
-    /// a signal, RAWs are re-encoded (off the main thread) without re-decoding.
+    /// The open file fitted to `PREVIEW_MAX` and expressed in the current
+    /// profile, off the main thread (rasters are already a signal).
     fn encode_photo(&mut self, sender: &ComponentSender<Self>) {
-        match &self.decoded {
-            Some(Decoded::Raster(p)) => {
-                self.photo = Some((p.clone(), self.profile));
-                self.show_source();
-            }
-            Some(raw @ Decoded::Raw(_)) => {
-                let (raw, s, generation, profile) =
-                    (raw.clone(), sender.input_sender().clone(), self.load_gen, self.profile);
-                std::thread::spawn(move || s.emit(Msg::Encoded(generation, profile, raw.encode(profile))));
-            }
-            None => {}
-        }
+        let Some(d) = self.decoded.clone() else { return };
+        let (s, generation, profile) = (sender.input_sender().clone(), self.load_gen, self.profile);
+        std::thread::spawn(move || {
+            s.emit(Msg::Encoded(generation, profile, d.downscaled(PREVIEW_MAX).encode(profile)))
+        });
     }
 
     fn layers_mut(&mut self, which: Layers) -> &mut Vec<LabLayer> {

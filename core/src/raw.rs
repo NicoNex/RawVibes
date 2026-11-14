@@ -11,8 +11,11 @@ use rawler::imgop::xyz::Illuminant;
 use rawler::rawimage::RawPhotometricInterpretation;
 use wgpu::util::DeviceExt;
 
-use crate::develop::Camera;
-use crate::gpu::{Gpu, WORKGROUP};
+use crate::develop::{Camera, Develop};
+use crate::gpu::{Gpu, GpuPhoto, WORKGROUP};
+use crate::photo::{Photo, RAW_TO_SCENE};
+use crate::profiles::{Profile, rec2020_to_rec709};
+use crate::view::Region;
 
 /// What the GPU needs from a RAW file, read on the CPU.
 pub struct RawData {
@@ -114,7 +117,7 @@ pub fn read_raw(path: &Path) -> Result<RawData, String> {
 
 /// The camera's colour model from the file: D65-adapted colour matrix and
 /// as-shot multipliers.
-fn camera(raw: &rawler::RawImage) -> Camera {
+pub(crate) fn camera(raw: &rawler::RawImage) -> Camera {
     use Illuminant::*;
     let xyz2cam = raw.color_matrix_find_first([D65, A, B, C, D50, D55, D75, Daylight, Flash]).and_then(|(illu, m)| {
         let m = transform_1d::<3, 3>(m.get(..9)?)?;
@@ -161,6 +164,7 @@ pub struct Pipelines {
     rcd_pack: wgpu::ComputePipeline,
     rgb_pack: wgpu::ComputePipeline,
     mip: wgpu::ComputePipeline,
+    develop: wgpu::ComputePipeline,
 }
 
 impl Pipelines {
@@ -193,6 +197,7 @@ impl Pipelines {
             rcd_pack: pipeline("rcd_pack"),
             rgb_pack: pipeline("rgb_pack"),
             mip: pipeline("mip"),
+            develop: pipeline("develop"),
         }
     }
 }
@@ -215,6 +220,43 @@ struct Params {
 
 /// A compute pass: pipeline, bindings, workgroup grid.
 type Pass<'a> = (&'a wgpu::ComputePipeline, &'a [(u32, &'a wgpu::Buffer)], (u32, u32));
+
+/// `DevelopParams` of `raw.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct DevelopParams {
+    sizes: [u32; 8],
+    region: [f32; 4],
+    rotation: [f32; 4],
+    gains: [f32; 4],
+    cam: [[f32; 4]; 3],
+    target: [[f32; 4]; 3],
+    k: f32,
+    _pad: [f32; 3],
+}
+
+/// Rows of a row-major 3×3 matrix, padded as WGSL lays out `mat3x3` columns
+/// (the shader multiplies `v * m`, i.e. by the rows).
+fn rows(m: [[f32; 3]; 3]) -> [[f32; 4]; 3] {
+    m.map(|r| [r[0], r[1], r[2], 0.0])
+}
+
+/// Samples of a profile's OETF the develop pass interpolates: 256 linear
+/// steps over [−1/16, 1/16), then log2 steps from 1/16 to 256.
+fn oetf_table(profile: Profile) -> Vec<f32> {
+    const LINEAR: usize = 256;
+    const N: usize = 4096;
+    (0..N)
+        .map(|i| {
+            let v = if i < LINEAR {
+                -1.0 / 16.0 + i as f32 / (LINEAR - 1) as f32 / 8.0
+            } else {
+                ((i - LINEAR) as f32 / (N - LINEAR - 1) as f32 * 12.0 - 4.0).exp2()
+            };
+            profile.encode(v)
+        })
+        .collect()
+}
 
 /// Workgroups covering `n` items on a 2-D grid (≤ 65535 per dimension).
 fn grid(n: u32) -> (u32, u32) {
@@ -324,8 +366,68 @@ impl Gpu {
         Ok(GpuRaw { levels, camera: raw.camera.clone(), orientation: raw.orientation })
     }
 
-    /// A mip level as f32 RGB (tests).
-    #[cfg(test)]
+    /// `r` (oriented full-resolution coordinates) of `raw` developed to
+    /// `w` × `h` as `profile`'s signal, ready for the grade shader.
+    pub fn develop(&self, raw: &GpuRaw, r: &Region, w: u32, h: u32, dev: &Develop, profile: Profile) -> GpuPhoto {
+        // The finest level at least as coarse as one output pixel, as `Pyramid::resample` picks.
+        let (sx, sy) = (r.size[0] / w as f32, r.size[1] / h as f32);
+        let scale = sx.max(sy);
+        let (sin, cos) = r.angle.to_radians().sin_cos();
+        let k = (scale.max(1.0).log2().floor() as usize).min(raw.levels.len() - 1);
+        let ((level, lw, lh), (fw, fh)) = (&raw.levels[k], raw.size());
+        let target = if profile.is_log() { profile.from_rec2020() } else { rec2020_to_rec709() };
+        let params = DevelopParams {
+            sizes: [w, h, *lw, *lh, fw, fh, raw.orientation as u32, profile.is_log() as u32],
+            region: [r.center[0], r.center[1], sx, sy],
+            rotation: [sin, cos, 0.0, 0.0],
+            gains: {
+                let g = raw.camera.gains_for(dev);
+                [g[0], g[1], g[2], 0.0]
+            },
+            cam: rows(raw.camera.cam2rec2020),
+            target: rows(target),
+            k: RAW_TO_SCENE * dev.exposure.exp2(),
+            _pad: [0.0; 3],
+        };
+        let params = self.storage(bytemuck::bytes_of(&params));
+        let table = self.storage(bytemuck::cast_slice(&oetf_table(profile)));
+        let n = w as u64 * h as u64;
+        let src = self.buffer(n * 16, wgpu::BufferUsages::COPY_SRC);
+        let p = &self.raw;
+        self.passes(&[(&p.develop, &[(10, level), (12, &params), (13, &src), (14, &table)], grid(w * h))]);
+        let (out, staging) = self.output(n * 4);
+        GpuPhoto { src, out, staging, width: w, height: h }
+    }
+
+    /// The developed pixels back on the CPU.
+    pub fn read_photo(&self, p: &GpuPhoto) -> Photo {
+        let px = self.read_f32(&p.src);
+        Photo {
+            width: p.width,
+            height: p.height,
+            pixels: px.chunks_exact(4).map(|c| [c[0], c[1], c[2], c[3]]).collect(),
+        }
+    }
+
+    /// The largest mip level whose longer side is at most `max`, as oriented
+    /// camera RGB on the CPU (filmstrip copy, match source).
+    pub fn small(&self, raw: &GpuRaw, max: u32) -> Photo {
+        let k = raw.levels.iter().position(|l| l.1.max(l.2) <= max).unwrap_or(raw.levels.len() - 1);
+        let (_, w, h) = raw.levels[k];
+        let img = image::Rgba32FImage::from_fn(w, h, |_, _| image::Rgba([0.0; 4]));
+        let mut img = image::DynamicImage::ImageRgba32F(img);
+        if let image::DynamicImage::ImageRgba32F(buf) = &mut img {
+            for (dst, c) in buf.pixels_mut().zip(self.read_level(raw, k)) {
+                *dst = image::Rgba([c[0], c[1], c[2], 1.0]);
+            }
+        }
+        let o = image::metadata::Orientation::from_exif(raw.orientation as u8)
+            .unwrap_or(image::metadata::Orientation::NoTransforms);
+        img.apply_orientation(o);
+        Photo::from_image(img.into_rgba32f())
+    }
+
+    /// A mip level as f32 RGB.
     fn read_level(&self, raw: &GpuRaw, k: usize) -> Vec<[f32; 3]> {
         let words: Vec<u32> = bytemuck::cast_slice(&self.read_f32(&raw.levels[k].0)).to_vec();
         let half = |h: u32| f16_to_f32(h as u16);
@@ -361,8 +463,7 @@ impl Gpu {
     }
 }
 
-/// IEEE half → f32 (tests and CPU readback of mip levels).
-#[cfg(test)]
+/// IEEE half → f32 (CPU readback of mip levels).
 pub(crate) fn f16_to_f32(h: u16) -> f32 {
     let (sign, exp, frac) = ((h >> 15) as u32, ((h >> 10) & 0x1f) as u32, (h & 0x3ff) as u32);
     let bits = match exp {
@@ -563,6 +664,104 @@ mod tests {
         let out = gpu.load_raw(&raw).unwrap();
         gpu.read_f32(&out.levels.last().unwrap().0); // waits for the GPU
         eprintln!("read {read:?}, total {:?}, {:?}", t.elapsed(), out.size());
+    }
+
+    /// Camera RGB `px` (w × h) uploaded as a demosaiced RAW.
+    fn rgb_raw(gpu: &Gpu, w: u32, h: u32, px: Vec<[f32; 3]>, orientation: u16, camera: Camera) -> GpuRaw {
+        let raw = RawData {
+            pixels: Pixels::Rgb(px),
+            width: w,
+            height: h,
+            pattern: [0; 36],
+            pattern_size: [1, 1],
+            crop: [0, 0, w, h],
+            orientation,
+            camera,
+        };
+        gpu.load_raw(&raw).unwrap()
+    }
+
+    fn whole(w: u32, h: u32) -> Region {
+        Region { center: [w as f32 / 2.0, h as f32 / 2.0], size: [w as f32, h as f32], angle: 0.0 }
+    }
+
+    #[test]
+    fn develop_matches_cpu_reference() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let xyz2cam = [[0.7, -0.15, -0.06], [-0.42, 1.24, 0.19], [-0.08, 0.17, 0.62]];
+        let camera = Camera::new(xyz2cam, [2.0, 1.0, 1.6], 0.0);
+        let patches = [[0.02, 0.03, 0.025], [0.2, 0.3, 0.25], [0.5, 0.4, 0.2], [0.05, 0.3, 0.6], [0.9, 0.95, 0.9]];
+        let raw = rgb_raw(&gpu, 5, 1, patches.to_vec(), 1, camera.clone());
+        for profile in [Profile::Standard, Profile::VLog, Profile::SLog3, Profile::LogC4] {
+            for dev in [Develop::default(), Develop { wb: Some([3200.0, 10.0]), exposure: 0.7 }] {
+                let out = gpu.read_photo(&gpu.develop(&raw, &whole(5, 1), 5, 1, &dev, profile));
+                for (c, got) in patches.iter().zip(&out.pixels) {
+                    let want = crate::develop::develop_pixel(*c, &camera, &dev, profile);
+                    // f16 storage of the camera RGB, then the OETF table.
+                    assert!(
+                        (0..3).all(|k| (got[k] - want[k]).abs() < 2e-3),
+                        "{profile:?} {dev:?} {c:?}: {got:?} vs {want:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every EXIF orientation gives what the image crate's `apply_orientation` does.
+    #[test]
+    fn develop_honours_orientation() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (4, 2);
+        let px: Vec<[f32; 3]> = (0..w * h).map(|i| [i as f32 / 8.0, 0.1, 0.1]).collect();
+        for o in 1..=8u16 {
+            let raw = rgb_raw(&gpu, w, h, px.clone(), o, Camera::neutral());
+            let (ow, oh) = if o >= 5 { (h, w) } else { (w, h) };
+            let dev = Develop::default();
+            let got = gpu.read_photo(&gpu.develop(&raw, &whole(ow, oh), ow, oh, &dev, Profile::VLog));
+            let mut img = image::DynamicImage::ImageRgba32F(image::Rgba32FImage::from_fn(w, h, |x, y| {
+                image::Rgba([px[(y * w + x) as usize][0], 0.1, 0.1, 1.0])
+            }));
+            img.apply_orientation(image::metadata::Orientation::from_exif(o as u8).unwrap());
+            let want = img.into_rgba32f();
+            assert_eq!((want.width(), want.height()), (ow, oh));
+            for (i, p) in want.pixels().enumerate() {
+                let enc = crate::develop::develop_pixel([p[0], 0.1, 0.1], &Camera::neutral(), &dev, Profile::VLog);
+                assert!((got.pixels[i][0] - enc[0]).abs() < 2e-3, "orientation {o}, pixel {i}");
+            }
+        }
+    }
+
+    /// On a real file (RAWVALLEY_RAW) the GPU develop and the CPU small copy
+    /// (rawler's demosaic) agree on the fitted photo: same framing,
+    /// orientation, crop and colour. Also prints the develop time.
+    #[test]
+    fn gpu_and_cpu_raw_paths_agree() {
+        let Ok(path) = std::env::var("RAWVALLEY_RAW") else { return eprintln!("no sample, skipped") };
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let raw = gpu.load_raw(&read_raw(Path::new(&path)).unwrap()).unwrap();
+        let cpu = crate::photo::Decoded::load_max(Path::new(&path), Some(512)).unwrap();
+        let (w, h) = cpu.size();
+        let (fw, fh) = raw.size();
+        assert_eq!((w, h), if raw.orientation >= 5 { (fh, fw) } else { (fw, fh) });
+        let r = whole(w, h);
+        let (ow, oh) = crate::photo::Decoded::fit_size(&r, 400);
+        let dev = Develop::default();
+        let t = std::time::Instant::now();
+        let ph = gpu.develop(&raw, &r, ow, oh, &dev, Profile::Standard);
+        let a = gpu.read_photo(&ph);
+        eprintln!("develop {ow}×{oh}: {:?}", t.elapsed());
+        let b = cpu.encode_region(&r, ow, oh, Profile::Standard, &dev);
+        let n = a.pixels.len() as f32;
+        let rmse = (a
+            .pixels
+            .iter()
+            .zip(&b.pixels)
+            .map(|(p, q)| (0..3).map(|k| (p[k] - q[k]).powi(2)).sum::<f32>())
+            .sum::<f32>()
+            / (3.0 * n))
+            .sqrt();
+        eprintln!("RMSE GPU vs CPU: {rmse}");
+        assert!(rmse < 0.03, "RMSE {rmse}");
     }
 
     #[test]

@@ -452,3 +452,122 @@ fn mip(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u3
         + unpack(level[y1 * p.size.x + x]) + unpack(level[y1 * p.size.x + x1]);
     next[i] = pack(0.25 * s);
 }
+
+// ------------------------------------------------------------------ develop
+// A region of the camera-RGB mip chain → the profile's signal at output size:
+// orientation, bilinear sampling, WB gains, camera matrix to linear
+// Rec.2020, exposure, gamut, encode. Mirrors `develop::develop_pixel`.
+
+struct DevelopParams {
+    out_w: u32,
+    out_h: u32,
+    // Sampled level and full-resolution (level 0) sizes, unoriented.
+    lw: u32,
+    lh: u32,
+    fw: u32,
+    fh: u32,
+    orientation: u32,
+    // 1: log profile (matrix then OETF table); 0: Standard (view transform).
+    log: u32,
+    // Region of the oriented full-resolution image (`view::Region`): centre,
+    // source pixels per output pixel (x, y); then sine and cosine of its angle.
+    region: vec4<f32>,
+    rotation: vec4<f32>,
+    gains: vec4<f32>,
+    cam: mat3x3<f32>,
+    to_out: mat3x3<f32>,
+    k: f32,
+}
+
+@group(0) @binding(12) var<storage, read> d: DevelopParams;
+@group(0) @binding(13) var<storage, read_write> photo: array<vec4<f32>>;
+@group(0) @binding(14) var<storage, read> oetf: array<f32>;
+
+/// Exposed scene value mapped to display white, and the view exposure (photo.rs).
+const VIEW_EXPOSURE: f32 = 1.25;
+const VIEW_WHITE: f32 = 6.0;
+const OETF_LINEAR: u32 = 256u;
+const OETF_N: u32 = 4096u;
+
+fn texel(x: i32, y: i32) -> vec3<f32> {
+    let xx = u32(clamp(x, 0, i32(d.lw) - 1));
+    let yy = u32(clamp(y, 0, i32(d.lh) - 1));
+    return unpack(level[yy * d.lw + xx]);
+}
+
+/// Sensor (unoriented level-0) position of a point of the oriented image.
+fn sensor(o: vec2<f32>) -> vec2<f32> {
+    let w = f32(d.fw);
+    let h = f32(d.fh);
+    switch d.orientation {
+        case 2u: { return vec2<f32>(w - o.x, o.y); }
+        case 3u: { return vec2<f32>(w - o.x, h - o.y); }
+        case 4u: { return vec2<f32>(o.x, h - o.y); }
+        case 5u: { return vec2<f32>(o.y, o.x); }
+        case 6u: { return vec2<f32>(o.y, h - o.x); }
+        case 7u: { return vec2<f32>(w - o.y, h - o.x); }
+        case 8u: { return vec2<f32>(w - o.y, o.x); }
+        default: { return o; }
+    }
+}
+
+/// Scene-linear code value through the profile's OETF table: linear steps
+/// around zero, log2 steps above (see `raw::oetf_table`).
+fn encode_log(v: f32) -> f32 {
+    var t: f32;
+    if v < 1.0 / 16.0 {
+        t = clamp((v + 1.0 / 16.0) * 8.0, 0.0, 1.0) * f32(OETF_LINEAR - 1u);
+    } else {
+        t = f32(OETF_LINEAR) + clamp((log2(v) + 4.0) / 12.0, 0.0, 1.0) * f32(OETF_N - OETF_LINEAR - 1u);
+    }
+    let i = u32(floor(t));
+    let j = min(i + 1u, OETF_N - 1u);
+    return mix(oetf[i], oetf[j], t - f32(i));
+}
+
+fn srgb(v: f32) -> f32 {
+    return select(1.055 * pow(v, 1.0 / 2.4) - 0.055, 12.92 * v, v <= 0.0031308);
+}
+
+fn view_transform(lin: vec3<f32>) -> vec3<f32> {
+    let c = max(lin, vec3<f32>(0.0)) * VIEW_EXPOSURE;
+    let m = max(c.x, max(c.y, c.z));
+    var k = 0.0;
+    if m > 0.0 { k = (1.0 + m / (VIEW_WHITE * VIEW_WHITE)) / (1.0 + m); }
+    let v = min(c * k, vec3<f32>(1.0));
+    return vec3<f32>(srgb(v.x), srgb(v.y), srgb(v.z));
+}
+
+fn gamut_compress(c: vec3<f32>) -> vec3<f32> {
+    let lo = min(c.x, min(c.y, c.z));
+    if lo >= 0.0 { return c; }
+    let y = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+    if y <= 0.0 { return vec3<f32>(0.0); }
+    let t = y / (y - lo);
+    return max(vec3<f32>(y) + t * (c - vec3<f32>(y)), vec3<f32>(0.0));
+}
+
+@compute @workgroup_size(256)
+fn develop(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
+           @builtin(local_invocation_index) lid: u32) {
+    let i = index(wg, n, lid);
+    if i >= d.out_w * d.out_h { return; }
+    let dd = (vec2<f32>(f32(i % d.out_w), f32(i / d.out_w)) + 0.5 - 0.5 * vec2<f32>(f32(d.out_w), f32(d.out_h))) * d.region.zw;
+    let r = vec2<f32>(d.rotation.y * dd.x - d.rotation.x * dd.y, d.rotation.x * dd.x + d.rotation.y * dd.y);
+    let s = sensor(d.region.xy + r);
+    let u = s * vec2<f32>(f32(d.lw) / f32(d.fw), f32(d.lh) / f32(d.fh)) - 0.5;
+    let b = floor(u);
+    let f = u - b;
+    let x = i32(b.x);
+    let y = i32(b.y);
+    let cam = mix(mix(texel(x, y), texel(x + 1, y), f.x), mix(texel(x, y + 1), texel(x + 1, y + 1), f.x), f.y);
+    let wide = (cam * d.gains.xyz) * d.cam * d.k;
+    var out: vec3<f32>;
+    if d.log == 1u {
+        let c = wide * d.to_out;
+        out = vec3<f32>(encode_log(c.x), encode_log(c.y), encode_log(c.z));
+    } else {
+        out = view_transform(gamut_compress(wide * d.to_out));
+    }
+    photo[i] = vec4<f32>(out, 1.0);
+}

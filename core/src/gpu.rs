@@ -6,13 +6,16 @@ use std::sync::{Arc, mpsc};
 
 use wgpu::util::DeviceExt;
 
+use crate::develop::Develop;
 use crate::grade::{CURVE_RES, CURVES, Grade, Params};
 use crate::lab::{self, Blend, Layer, Source, Stack};
 use crate::lut::{Format, Lut3d};
 use crate::matching::{self, Match};
-use crate::photo::{Photo, THUMB_MAX};
+use crate::photo::{Decoded, Photo, RAW_SMALL, THUMB_MAX};
 use crate::profiles::Profile;
+use crate::raw::{GpuRaw, RawData};
 use crate::scopes::Scopes;
+use crate::view::Region;
 
 pub struct Gpu {
     pub(crate) device: wgpu::Device,
@@ -33,11 +36,11 @@ pub struct Gpu {
 /// A photo resident on the GPU together with its output/readback buffers,
 /// so interactive frames allocate nothing.
 pub struct GpuPhoto {
-    src: wgpu::Buffer,
-    out: wgpu::Buffer,
-    staging: wgpu::Buffer,
-    width: u32,
-    height: u32,
+    pub(crate) src: wgpu::Buffer,
+    pub(crate) out: wgpu::Buffer,
+    pub(crate) staging: wgpu::Buffer,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
 }
 
 pub struct GpuLut {
@@ -110,7 +113,7 @@ impl Gpu {
         })
     }
 
-    fn output(&self, bytes: u64) -> (wgpu::Buffer, wgpu::Buffer) {
+    pub(crate) fn output(&self, bytes: u64) -> (wgpu::Buffer, wgpu::Buffer) {
         let buffer = |usage| {
             self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: None,
@@ -263,6 +266,20 @@ fn after(base: &Lut3d, lut: &Lut3d) -> Lut3d {
 
 pub enum Job {
     SetPhoto(Arc<Photo>),
+    /// A RAW to develop on the GPU from now on (replaces the previous one);
+    /// answered by `Done::RawLoaded` with the same generation.
+    LoadRaw(u64, Arc<RawData>),
+    /// The loaded RAW developed into what the grade renders: the fitted
+    /// photo (`view: false`, also feeds the thumbnails) or a zoomed view.
+    DevelopRaw {
+        generation: u64,
+        region: Region,
+        width: u32,
+        height: u32,
+        develop: Develop,
+        profile: Profile,
+        view: bool,
+    },
     /// LUTs applied after the grade on the Grade page (empty = none).
     SetLook(Stack),
     /// Base of the LUT browser thumbnails; None = neutral grade and no looks.
@@ -317,6 +334,12 @@ enum Slot {
     Lab,
     Look,
     Roll,
+    DevelopFit,
+    DevelopView,
+}
+
+impl Slot {
+    const COUNT: usize = Slot::DevelopView as usize + 1;
 }
 
 impl Job {
@@ -328,6 +351,8 @@ impl Job {
             Job::Lab { .. } => Some(Slot::Lab),
             Job::SetLook(..) => Some(Slot::Look),
             Job::RenderRoll(..) => Some(Slot::Roll),
+            Job::DevelopRaw { view: false, .. } => Some(Slot::DevelopFit),
+            Job::DevelopRaw { view: true, .. } => Some(Slot::DevelopView),
             _ => None,
         }
     }
@@ -336,12 +361,42 @@ impl Job {
 #[derive(Debug)]
 pub enum Done {
     Failed(String),
-    Graded { width: u32, height: u32, rgba: Vec<u8>, scopes: Scopes },
-    Lab { width: u32, height: u32, rgba: Vec<u8> },
-    Thumb { generation: u64, index: usize, width: u32, height: u32, rgba: Vec<u8> },
+    Graded {
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+        scopes: Scopes,
+    },
+    Lab {
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    },
+    Thumb {
+        generation: u64,
+        index: usize,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    },
     Exported(Result<PathBuf, String>),
-    RollFrame { generation: u64, index: usize, width: u32, height: u32, rgba: Vec<u8> },
+    RollFrame {
+        generation: u64,
+        index: usize,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    },
     Matched(u64, Match),
+    /// A RAW is on the GPU: its small CPU copy, camera and full size.
+    RawLoaded(u64, Result<Decoded, String>),
+    /// What `Job::DevelopRaw` produced, now also what the grade renders.
+    Developed {
+        generation: u64,
+        view: bool,
+        profile: Profile,
+        photo: Arc<Photo>,
+    },
 }
 
 /// A filmstrip photo on the GPU and the grade its frame was last rendered with.
@@ -353,6 +408,8 @@ struct RollFrame {
 
 #[derive(Default)]
 struct Worker {
+    /// The RAW being edited, at full resolution.
+    raw: Option<GpuRaw>,
     source: Option<Arc<Photo>>,
     photo: Option<GpuPhoto>,
     thumb: Option<GpuPhoto>,
@@ -415,6 +472,33 @@ impl Worker {
                 self.thumb = Some(gpu.upload(&p.downscaled(THUMB_MAX)));
                 self.photo = Some(gpu.upload(&p));
                 self.source = Some(p);
+            }
+            Job::LoadRaw(generation, data) => {
+                // The previous RAW stays until this one loads: a failed open keeps editing it.
+                let loaded = gpu.load_raw(&data).map(|raw| {
+                    let (w, h) = raw.size();
+                    let size = if matches!(raw.orientation, 5..=8) { (h, w) } else { (w, h) };
+                    let small = gpu.small(&raw, RAW_SMALL);
+                    let decoded = Decoded::raw(small, raw.camera.clone(), size);
+                    self.raw = Some(raw);
+                    decoded
+                });
+                notify(Done::RawLoaded(generation, loaded));
+            }
+            Job::DevelopRaw { generation, region, width, height, develop, profile, view } => {
+                let Some(raw) = &self.raw else { return };
+                let ph = gpu.develop(raw, &region, width, height, &develop, profile);
+                let photo = Arc::new(gpu.read_photo(&ph));
+                if view {
+                    // The next SetPhoto must upload again.
+                    self.source = None;
+                } else {
+                    self.thumb = Some(gpu.upload(&photo.downscaled(THUMB_MAX)));
+                    // SetPhoto with these pixels is then a no-op: they are already on the GPU.
+                    self.source = Some(photo.clone());
+                }
+                self.photo = Some(ph);
+                notify(Done::Developed { generation, view, profile, photo });
             }
             Job::SetView(p) => {
                 self.photo = Some(gpu.upload(&p));
@@ -521,7 +605,7 @@ pub fn spawn(notify: impl Fn(Done) + Send + 'static) -> mpsc::Sender<Job> {
                 };
                 // Keep only the newest job per slot, preserving order otherwise.
                 let mut batch: Vec<Job> = first.into_iter().chain(rx.try_iter()).collect();
-                let mut seen = [false; 6];
+                let mut seen = [false; Slot::COUNT];
                 batch.reverse();
                 batch.retain(|j| j.slot().is_none_or(|s| !std::mem::replace(&mut seen[s as usize], true)));
                 batch.reverse();

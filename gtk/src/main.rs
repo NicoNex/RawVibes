@@ -26,15 +26,17 @@ use lab_page::{LabAdd, LabKind, LabLayer, LabUi, Layers, caption};
 use presets_ui::PresetsUi;
 use rawvalley_core::chart::test_chart;
 use rawvalley_core::crop::{self, Crop, PRESETS, Ratio};
+use rawvalley_core::develop::Develop;
 use rawvalley_core::gpu::{self, Done, Job, ThumbBase};
 use rawvalley_core::grade::{
     BAND_HUE_RANGE, BAND_HUES, Curve, Grade, HUE_HUE, HUE_SAT, LUM_SAT, LUMA, MASTER, MATCH_L, Params, Stage,
 };
 use rawvalley_core::lab::{Blend, Layer, Source, Stack, oklch_to_srgb};
 use rawvalley_core::lut::{Format, Lut3d, LutEntry, MAX_LIBRARY};
-use rawvalley_core::photo::{Decoded, PREVIEW_MAX, Photo, RASTER_EXTS, RAW_EXTS, is_photo};
+use rawvalley_core::photo::{Decoded, PREVIEW_MAX, Photo, RASTER_EXTS, RAW_EXTS, is_photo, is_raw};
 use rawvalley_core::preset::{self, Preset};
 use rawvalley_core::profiles::Profile;
+use rawvalley_core::raw::{RawData, read_raw};
 use rawvalley_core::scopes::{HIST_H, HIST_W, Scopes, VEC_SIZE};
 use rawvalley_core::view::{Region, Zoom};
 use relm4::adw::prelude::*;
@@ -66,6 +68,8 @@ enum Page {
 enum Msg {
     Open,
     Loaded(u64, PathBuf, Result<Decoded, String>),
+    /// A RAW read on the CPU, ready for the GPU (load generation, file).
+    RawRead(u64, PathBuf, Result<Arc<RawData>, String>),
     /// The preview encoded for a profile.
     Encoded(Profile, Arc<Photo>),
     Set(Field, f64),
@@ -194,7 +198,7 @@ const ROLL_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
 /// The filmstrip copy of a decoded photo: small, and encoded for `profile`.
 fn roll_copy(d: &Decoded, profile: Profile) -> (Decoded, Profile, Arc<Photo>) {
     let small = d.downscaled(ROLL_PX);
-    let photo = small.encode(profile);
+    let photo = small.encode(profile, &Develop::default());
     (small, profile, photo)
 }
 
@@ -320,6 +324,10 @@ struct App {
     /// once the current one lands (whose result is then stale). `encoded`
     /// is the region last asked for.
     encoding: bool,
+    /// What the user set in the Develop group (RAWs only).
+    develop: Develop,
+    /// The RAW whose GPU load is in flight, by load generation (`Done::RawLoaded` carries no path).
+    raw_loading: Option<(u64, PathBuf)>,
     encode_again: bool,
     encoded: Option<Region>,
     ui: Ui,
@@ -445,7 +453,7 @@ impl App {
         }
         let s = self.input.clone();
         std::thread::spawn(move || {
-            let encoded = stale.into_iter().map(|(p, small)| (p, small.encode(profile))).collect();
+            let encoded = stale.into_iter().map(|(p, small)| (p, small.encode(profile, &Develop::default()))).collect();
             s.emit(Msg::RollEncoded(profile, encoded));
         });
     }
@@ -512,10 +520,12 @@ impl App {
         std::thread::spawn(move || {
             // One full-resolution decode at a time: each peaks above 1 GB on a 24 MP RAW.
             static FULL_DECODE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-            let r = {
-                let _one = FULL_DECODE.lock().unwrap_or_else(|e| e.into_inner());
-                Decoded::load(&path)
-            };
+            let _one = FULL_DECODE.lock().unwrap_or_else(|e| e.into_inner());
+            if is_raw(&path) {
+                // Developed on the GPU: the strip copy comes back with it (Done::RawLoaded).
+                return s.emit(Msg::RawRead(generation, path.clone(), read_raw(&path).map(Arc::new)));
+            }
+            let r = Decoded::load(&path);
             // The strip copy comes from this decode (RollAddPaths skips it), even if this load is superseded.
             let small = r.as_ref().map(|d| roll_copy(d, profile)).map_err(String::clone);
             s.emit(Msg::RollLoaded(path.clone(), small));
@@ -701,8 +711,24 @@ impl App {
             self.encode_again = true;
             return;
         }
-        let (s, profile) = (sender.input_sender().clone(), self.profile);
-        std::thread::spawn(move || s.emit(Msg::Encoded(profile, d.encode_fit(&r, PREVIEW_MAX, profile))));
+        let profile = self.profile;
+        if d.is_raw() {
+            let (width, height) = Decoded::fit_size(&r, PREVIEW_MAX);
+            let develop = self.develop;
+            return self.send(Job::DevelopRaw {
+                generation: 0,
+                region: r,
+                width,
+                height,
+                develop,
+                profile,
+                view: false,
+            });
+        }
+        let s = sender.input_sender().clone();
+        std::thread::spawn(move || {
+            s.emit(Msg::Encoded(profile, d.encode_fit(&r, PREVIEW_MAX, profile, &Develop::default())))
+        });
     }
 
     fn layers_mut(&mut self, which: Layers) -> &mut Vec<LabLayer> {
@@ -2135,6 +2161,8 @@ impl SimpleComponent for App {
             canvas: [1.0, 1.0],
             view_gen: 0,
             encoding: false,
+            develop: Develop::default(),
+            raw_loading: None,
             encode_again: false,
             encoded: None,
             ui: Ui {
@@ -2288,6 +2316,15 @@ impl SimpleComponent for App {
                     self.ui.grid_btn.set_active(on);
                 }
             }
+            Msg::RawRead(generation, ..) if generation != self.load_gen => {}
+            Msg::RawRead(generation, path, Ok(raw)) => {
+                self.raw_loading = Some((generation, path));
+                self.send(Job::LoadRaw(generation, raw));
+            }
+            Msg::RawRead(generation, path, Err(e)) => {
+                sender.input(Msg::RollLoaded(path.clone(), Err(e.clone())));
+                sender.input(Msg::Loaded(generation, path, Err(e)));
+            }
             Msg::Loaded(generation, ..) if generation != self.load_gen => {}
             Msg::Loaded(_, path, Ok(decoded)) => {
                 self.ui.window.set_title(Some(&format!("{} — RawValley", file_label(&path))));
@@ -2386,7 +2423,7 @@ impl SimpleComponent for App {
                 std::thread::spawn(move || {
                     // References are display images (a still, a JPEG); RAWs are rendered neutrally.
                     let r = Decoded::load_max(&path, Some(1024)).map(|d| {
-                        let reference = d.encode(Profile::Standard);
+                        let reference = d.encode(Profile::Standard, &Develop::default());
                         let thumb = rgba8(&reference.pixels);
                         (reference, thumb)
                     });
@@ -3056,8 +3093,23 @@ impl App {
         let (r, w, h) = z.view(&crop, self.canvas);
         self.view_gen += 1;
         let (s, generation, profile) = (self.input.clone(), self.view_gen, self.profile);
+        if d.is_raw() {
+            let develop = self.develop;
+            return self.send(Job::DevelopRaw {
+                generation,
+                region: r,
+                width: w,
+                height: h,
+                develop,
+                profile,
+                view: true,
+            });
+        }
         // shortcut: one thread per request; a scroll burst resamples views nobody sees. Pool them if it shows.
-        std::thread::spawn(move || s.emit(Msg::ViewReady(generation, profile, d.encode_region(&r, w, h, profile))));
+        let dev = Develop::default();
+        std::thread::spawn(move || {
+            s.emit(Msg::ViewReady(generation, profile, d.encode_region(&r, w, h, profile, &dev)))
+        });
     }
 
     fn set_zoom(&mut self, zoom: Option<Zoom>) {
@@ -3137,6 +3189,21 @@ impl App {
             Done::RollFrame { generation, index, width, height, rgba } => {
                 if generation == self.roll_gen {
                     self.ui.filmstrip.set_frame(index, &texture(width, height, rgba));
+                }
+            }
+            Done::RawLoaded(generation, r) => {
+                let Some((_, path)) = self.raw_loading.take_if(|l| l.0 == generation) else { return };
+                let small = r.as_ref().map(|d| roll_copy(d, self.profile)).map_err(String::clone);
+                self.input.emit(Msg::RollLoaded(path.clone(), small));
+                self.input.emit(Msg::Loaded(generation, path, r));
+            }
+            Done::Developed { view: false, profile, photo, .. } => self.input.emit(Msg::Encoded(profile, photo)),
+            Done::Developed { view: true, generation, profile, .. } => {
+                // Already what the GPU renders: only redraw, onto the photo it was cut from.
+                let shown = self.photo.as_ref().map(|p| p.1);
+                if generation == self.view_gen && self.view_zoom().is_some() && shown == Some(profile) {
+                    self.sent = None;
+                    self.render();
                 }
             }
             Done::Matched(generation, _) if generation != self.match_gen => {}

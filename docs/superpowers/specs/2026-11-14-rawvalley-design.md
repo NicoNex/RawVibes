@@ -213,6 +213,16 @@ LUT Lab pages. Additions:
   orientation swap, straighten slider.
 - Long-running stages (AI denoise, export) show progress and can be
   cancelled.
+- **LUT browsing lives in the editor, not on a page of its own** (author's
+  request: VibingLUT's full-page Compare LUTs is too much for a RAW
+  editor). The LUTs section of the sidebar gets a browser in the style of
+  Lightroom's profile browser: a compact list/grid of thumbnails rendered
+  on the current photo (search and folder filter kept), and the selected
+  LUT is previewed live on the main image at once. Arrow keys (and mouse
+  hover/click, and the scroll wheel over the list) step through LUTs;
+  Enter or a click adds the previewed LUT to the look stack with its
+  intensity; Escape leaves the photo as it was. Before/after split works
+  during browsing. The Compare LUTs page is removed once this ships.
 
 ### Testing
 

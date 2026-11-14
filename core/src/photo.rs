@@ -306,7 +306,7 @@ impl<const N: usize> Calibration<N> {
 }
 
 /// Scene-linear scale of the calibrated RAW: Lumix RAWs sit ~0.8 EV under scene grey.
-const RAW_TO_SCENE: f32 = 1.76;
+pub(crate) const RAW_TO_SCENE: f32 = 1.76;
 const VIEW_EXPOSURE: f32 = 1.25;
 const VIEW_WHITE: f32 = 6.0; // exposed scene value mapped to display white
 

@@ -3,6 +3,7 @@
 
 pub mod chart;
 pub mod crop;
+pub mod develop;
 pub mod gpu;
 pub mod grade;
 pub mod lab;

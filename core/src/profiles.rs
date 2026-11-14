@@ -193,6 +193,11 @@ impl Profile {
         MATRICES[self as usize].1
     }
 
+    /// Row-major linear Rec.2020 (the development working space) → camera-gamut matrix.
+    pub fn from_rec2020(self) -> [[f32; 3]; 3] {
+        MATRICES[self as usize].2
+    }
+
     /// Manufacturer OETF: scene-linear reflectance → full-range code value.
     pub fn encode(self, l: f32) -> f32 {
         let l = l as f64;
@@ -383,17 +388,30 @@ impl Profile {
     }
 }
 
-/// (to Rec.709, from Rec.709) per profile, indexed by `Profile as usize`
-/// (declaration order = `Profile::ALL`). Derived once, in f64, from primaries.
+/// (to Rec.709, from Rec.709, from Rec.2020) per profile, indexed by
+/// `Profile as usize` (declaration order = `Profile::ALL`). Derived once, in
+/// f64, from primaries.
 type M3f = [[f32; 3]; 3];
-static MATRICES: std::sync::LazyLock<[(M3f, M3f); 15]> = std::sync::LazyLock::new(|| {
+fn f32m(m: M3) -> M3f {
+    m.map(|r| r.map(|v| v as f32))
+}
+static MATRICES: std::sync::LazyLock<[(M3f, M3f, M3f); 15]> = std::sync::LazyLock::new(|| {
     Profile::ALL.map(|p| {
         let (prim, w) = p.gamut();
-        let (cam, rec) = (npm(prim, w), npm(REC709, D65));
-        let f32m = |m: M3| m.map(|r| r.map(|v| v as f32));
-        (f32m(mul(&inverse(&rec), &cam)), f32m(mul(&inverse(&cam), &rec)))
+        let (cam, rec, wide) = (npm(prim, w), npm(REC709, D65), npm(REC2020, D65));
+        (f32m(mul(&inverse(&rec), &cam)), f32m(mul(&inverse(&cam), &rec)), f32m(mul(&inverse(&cam), &wide)))
     })
 });
+
+/// Row-major linear Rec.2020 → CIE XYZ (D65).
+pub fn rec2020_to_xyz() -> [[f32; 3]; 3] {
+    f32m(npm(REC2020, D65))
+}
+
+/// Row-major linear Rec.2020 → linear Rec.709.
+pub fn rec2020_to_rec709() -> [[f32; 3]; 3] {
+    f32m(mul(&inverse(&npm(REC709, D65)), &npm(REC2020, D65)))
+}
 
 /// LogC4 linear-toe slope and offset (s, t) from the ARRI spec.
 fn logc4_toe() -> (f64, f64) {

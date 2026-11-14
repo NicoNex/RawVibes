@@ -91,6 +91,15 @@ enum Msg {
     /// Compare LUTs on the untouched photo instead of on top of the grade.
     /// LUT browser shown or hidden.
     Browse(bool),
+    /// LUT browser: preview library LUT i on the photo (None: none), its
+    /// file read, the pointer resting on a card (None: off the grid) after
+    /// a hover tick, add the previewed LUT to the looks, Escape.
+    Preview(Option<usize>),
+    PreviewLoaded(usize, Result<Arc<Lut3d>, String>),
+    Hover(Option<usize>),
+    HoverSettled(u64, Option<usize>),
+    Commit(usize),
+    Escape,
     Preferences,
     Page(Page),
     LayerAdd(Layers, LabAdd),
@@ -171,6 +180,9 @@ struct RollItem {
     encoded: Option<(Profile, Arc<Photo>)>,
 }
 
+/// Pointer rest on a LUT card before it is previewed.
+const HOVER_REST: std::time::Duration = std::time::Duration::from_millis(120);
+
 /// Quiet time after the last grade change before the filmstrip re-renders.
 const ROLL_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
 
@@ -242,6 +254,13 @@ struct App {
     /// Compare LUTs on top of the Grade page's edits (off: on the untouched photo).
     /// The LUT browser is open (its thumbnails follow the grade).
     browsing: bool,
+    /// Library LUT previewed after the looks (not part of them until
+    /// committed), the latest one asked for, and the hover debounce tick.
+    candidate: Option<(usize, Arc<Lut3d>)>,
+    preview_req: Option<usize>,
+    hover_tick: u64,
+    /// The next look row built is a commit from the browser: flash it once.
+    flash_new_look: bool,
     /// What the Compare base was last built from: grade, looks (by identity), profile.
     base_key: Option<BaseKey>,
     /// Thumbnails need re-rendering (new source or library) next time Compare is shown.
@@ -565,6 +584,16 @@ impl App {
         Preset { name, grade: self.graded().neutral_input() }
     }
 
+    /// A selected LUT the filters now hide is no longer previewed.
+    fn hide_filtered_selection(&mut self) {
+        let hidden = self.selected.and_then(|i| self.ui.flow.child_at_index(i as i32)).is_some_and(|c| !c.is_visible());
+        if hidden {
+            self.ui.flow.unselect_all();
+            self.selected = None;
+            self.drop_candidate();
+        }
+    }
+
     fn filter_gallery(&self) {
         for (i, l) in self.luts.iter().enumerate() {
             if let Some(c) = self.ui.flow.child_at_index(i as i32) {
@@ -702,11 +731,37 @@ impl App {
                         self.source_profile(),
                         sender,
                     );
+                    // Show where a LUT added from the browser went.
+                    let last = self.ui.sidebar.looks.row_at_index(self.looks.len() as i32 - 1);
+                    if let Some(row) = last.filter(|_| std::mem::take(&mut self.flash_new_look)) {
+                        row.add_css_class("flash");
+                        glib::timeout_add_local_once(std::time::Duration::from_millis(900), move || {
+                            row.remove_css_class("flash")
+                        });
+                    }
                 }
-                self.send(Job::SetLook(self.look_layers()));
-                (self.sent, self.roll_sent) = (None, None);
-                self.render();
+                self.show_looks();
             }
+        }
+    }
+
+    /// Sends the looks, plus the previewed candidate, to the photo and the filmstrip.
+    fn show_looks(&mut self) {
+        let mut layers = self.look_layers();
+        if let Some((_, lut)) = &self.candidate {
+            let input = Profile::guess_from_name(&lut.title);
+            layers.push(Layer { source: Source::Lut(lut.clone()), intensity: 1.0, input });
+        }
+        self.send(Job::SetLook(layers));
+        (self.sent, self.roll_sent) = (None, None);
+        self.render();
+    }
+
+    /// The candidate preview off; the selection in the grid stays.
+    fn drop_candidate(&mut self) {
+        self.preview_req = None;
+        if self.candidate.take().is_some() {
+            self.show_looks();
         }
     }
 
@@ -885,6 +940,8 @@ scale.track-temp trough highlight, scale.track-tint trough highlight { backgroun
 .band { min-width: 22px; min-height: 22px; padding: 0; border-radius: 99px; }
 .band:checked { box-shadow: 0 0 0 2px var(--accent-color); }
 .bypassed { opacity: 0.45; }
+@keyframes flash { from { background-color: color-mix(in srgb, var(--accent-bg-color) 45%, transparent); } }
+row.flash { animation: flash 900ms ease-out; }
 flowboxchild { padding: 0; border-radius: 12px; }
 flowboxchild:selected { background: none; }
 .thumb-card { padding: 6px; border-radius: 12px; }
@@ -1570,13 +1627,17 @@ impl SimpleComponent for App {
             .margin_bottom(12)
             .build();
         let snd = sender.clone();
-        flow.connect_child_activated(move |_, c| snd.input(Msg::SelectLut(c.index() as usize)));
+        flow.connect_child_activated(move |_, c| snd.input(Msg::Commit(c.index() as usize)));
         let snd = sender.clone();
         flow.connect_selected_children_changed(move |f| {
             if let Some(c) = f.selected_children().first() {
                 snd.input(Msg::SelectLut(c.index() as usize));
             }
         });
+        let leave = gtk::EventControllerMotion::new();
+        let snd = sender.clone();
+        leave.connect_leave(move |_| snd.input(Msg::Hover(None)));
+        flow.add_controller(leave);
         let folder_label = gtk::Label::builder()
             .label(gettext("No folder"))
             .ellipsize(gtk::pango::EllipsizeMode::Middle)
@@ -1903,7 +1964,7 @@ impl SimpleComponent for App {
         let c = crop_ui.edit.clone();
         shortcut("r", Box::new(move || c.set_active(!c.is_active())));
         let snd = sender.clone();
-        shortcut("Escape", Box::new(move || snd.input(Msg::CropCancel)));
+        shortcut("Escape", Box::new(move || snd.input(Msg::Escape)));
         let snd = sender.clone();
         shortcut("Return", Box::new(move || snd.input(Msg::CropEdit(false))));
         for (accel, cmd) in [
@@ -1952,6 +2013,10 @@ impl SimpleComponent for App {
             bypassed: Vec::new(),
             looks_off: false,
             browsing: false,
+            candidate: None,
+            preview_req: None,
+            hover_tick: 0,
+            flash_new_look: false,
             base_key: None,
             gallery_stale: true,
             lab_input: Profile::Standard,
@@ -2474,6 +2539,10 @@ impl SimpleComponent for App {
                         lut.format.badge(),
                         lut.size
                     )));
+                    let motion = gtk::EventControllerMotion::new();
+                    let (s, i) = (sender.input_sender().clone(), self.ui.flow.observe_children().n_items() as usize);
+                    motion.connect_enter(move |_, _, _| s.emit(Msg::Hover(Some(i))));
+                    card.add_controller(motion);
                     self.ui.flow.append(&card);
                     self.ui.thumbs.push(pic);
                 }
@@ -2493,6 +2562,7 @@ impl SimpleComponent for App {
                 self.luts = luts;
                 self.filter_gallery();
                 self.selected = None;
+                self.drop_candidate();
                 self.gallery_stale = true;
                 self.refresh_gallery();
             }
@@ -2500,6 +2570,7 @@ impl SimpleComponent for App {
                 // Index 0 shows everything; otherwise only LUTs of that sub-folder.
                 self.group = (sel as usize).checked_sub(1).and_then(|i| self.group_names.get(i)).cloned();
                 self.filter_gallery();
+                self.hide_filtered_selection();
             }
             Msg::Bypass(Some(stage), off) => {
                 self.bypassed.retain(|&s| s != stage);
@@ -2541,11 +2612,63 @@ impl SimpleComponent for App {
             Msg::Search(text) => {
                 self.query = text.to_lowercase();
                 self.filter_gallery();
+                self.hide_filtered_selection();
             }
             Msg::Preferences => self.ui.prefs.present(Some(&self.ui.window)),
             Msg::SelectLut(i) => {
                 if i < self.luts.len() {
                     self.selected = Some(i);
+                    sender.input(Msg::Preview(Some(i)));
+                }
+            }
+            Msg::Preview(None) => self.drop_candidate(),
+            Msg::Preview(Some(i)) => {
+                self.preview_req = Some(i);
+                let Some(entry) = self.luts.get(i).filter(|_| self.candidate.as_ref().is_none_or(|c| c.0 != i)) else {
+                    return;
+                };
+                let (p, s) = (entry.path.clone(), sender.input_sender().clone());
+                std::thread::spawn(move || s.emit(Msg::PreviewLoaded(i, Lut3d::load(&p).map(Arc::new))));
+            }
+            // Only the latest request is shown; older loads that land late are dropped.
+            Msg::PreviewLoaded(i, _) if self.preview_req != Some(i) => {}
+            Msg::PreviewLoaded(i, Ok(lut)) => {
+                self.candidate = Some((i, lut));
+                self.show_looks();
+            }
+            Msg::PreviewLoaded(i, Err(e)) => {
+                self.drop_candidate();
+                let name = self.luts.get(i).map(|l| l.title.clone()).unwrap_or_default();
+                self.toast(&gettext!("Cannot read {}: {}", name, e));
+            }
+            Msg::Hover(over) => {
+                // A short rest before previewing, so sweeping across the grid does not flicker the photo.
+                self.hover_tick += 1;
+                let (s, tick) = (self.input.clone(), self.hover_tick);
+                glib::timeout_add_local_once(HOVER_REST, move || s.emit(Msg::HoverSettled(tick, over)));
+            }
+            Msg::HoverSettled(tick, over) if tick == self.hover_tick => {
+                sender.input(Msg::Preview(over.or(self.selected)));
+            }
+            Msg::HoverSettled(..) => {}
+            Msg::Commit(i) => {
+                match self.candidate.take().filter(|c| c.0 == i) {
+                    Some((_, lut)) => self.push_lut(Layers::Look, lut, &sender),
+                    None => {
+                        self.candidate = None;
+                        sender.input(Msg::LayerAdd(Layers::Look, LabAdd::Selected));
+                    }
+                }
+                self.preview_req = None;
+                self.flash_new_look = true;
+            }
+            Msg::Escape => {
+                if self.editing.is_some() {
+                    sender.input(Msg::CropCancel);
+                } else if self.candidate.is_some() || self.preview_req.is_some() {
+                    self.ui.flow.unselect_all();
+                    self.selected = None;
+                    self.drop_candidate();
                 }
             }
             Msg::Profile(profile) => {
@@ -2583,7 +2706,7 @@ impl SimpleComponent for App {
                             s.emit(Msg::LayerLoaded(which, p, lut));
                         });
                     }
-                    None => self.toast(&gettext("Select a LUT in Compare LUTs first")),
+                    None => self.toast(&gettext("Select a LUT in the browser first")),
                 },
                 LabAdd::File => {
                     let pats: Vec<String> = ["cube", "vlt", "png"].map(String::from).to_vec();

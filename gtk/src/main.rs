@@ -67,8 +67,8 @@ enum Page {
 enum Msg {
     Open,
     Loaded(u64, PathBuf, Result<Decoded, String>),
-    /// The preview encoded for a profile: (encode generation, profile, pixels).
-    Encoded(u64, Profile, Arc<Photo>),
+    /// The preview encoded for a profile.
+    Encoded(Profile, Arc<Photo>),
     Set(Field, f64),
     Wheel(usize, f32, f32),
     WheelLuma(usize, f64),
@@ -284,15 +284,18 @@ struct App {
     crop: Crop,
     ratio: Ratio,
     /// While editing the crop: the crop, ratio and ratio row before editing (Escape restores them).
-    crop_before: Option<Crop>,
-    ratio_before: (Ratio, u32),
+    editing: Option<(Crop, Ratio, u32)>,
     /// Grade canvas zoom (None: fitted), its picture area in device pixels,
     /// and the latest zoomed view request (older results are dropped).
     zoom: Option<Zoom>,
     canvas: [f32; 2],
     view_gen: u64,
-    /// Latest preview encode (crop, profile or photo change); older results are dropped.
-    encode_gen: u64,
+    /// Preview encodes run one at a time; a request made meanwhile re-runs
+    /// once the current one lands (whose result is then stale). `encoded`
+    /// is the region last asked for.
+    encoding: bool,
+    encode_again: bool,
+    encoded: Option<Region>,
     ui: Ui,
 }
 
@@ -340,9 +343,9 @@ impl App {
             _ => [img.width, img.height],
         };
         self.ui.info.set_label(&format!("{name} · {} · {w}×{h}", profile.name()));
-        self.ui.zoom.tools.set_visible(!self.show_chart && self.crop_before.is_none());
+        self.ui.zoom.tools.set_visible(!self.show_chart && self.editing.is_none());
         self.zoom_label();
-        if self.zoom.is_some() && !self.show_chart {
+        if self.view_zoom().is_some() {
             // Zoomed: the GPU keeps the zoomed view until its replacement is ready (no flash of the fit).
             self.request_view();
         } else {
@@ -665,11 +668,13 @@ impl App {
     /// current profile, off the main thread (rasters are already a signal).
     fn encode_photo(&mut self, sender: &ComponentSender<Self>) {
         let (Some(d), Some(r)) = (self.decoded.clone(), self.shown_region()) else { return };
-        let k = (PREVIEW_MAX as f32 / r.size[0].max(r.size[1])).min(1.0);
-        let [w, h] = r.size.map(|v| ((v * k).round() as u32).max(1));
-        self.encode_gen += 1;
-        let (s, generation, profile) = (sender.input_sender().clone(), self.encode_gen, self.profile);
-        std::thread::spawn(move || s.emit(Msg::Encoded(generation, profile, d.encode_region(&r, w, h, profile))));
+        self.encoded = Some(r);
+        if std::mem::replace(&mut self.encoding, true) {
+            self.encode_again = true;
+            return;
+        }
+        let (s, profile) = (sender.input_sender().clone(), self.profile);
+        std::thread::spawn(move || s.emit(Msg::Encoded(profile, d.encode_fit(&r, PREVIEW_MAX, profile))));
     }
 
     fn layers_mut(&mut self, which: Layers) -> &mut Vec<LabLayer> {
@@ -867,9 +872,13 @@ fn add_split_drag(pic: &gtk::Picture, sender: &ComponentSender<App>) {
     pic.add_controller(drag);
 }
 
+/// Space around the photo on its canvas (`.canvas picture` margin); the
+/// zoom and crop overlays map pointer positions through it.
+pub const CANVAS_MARGIN: f64 = 24.0;
+
 const CSS: &str = r#"
 .canvas { background-color: color-mix(in srgb, var(--view-bg-color) 70%, black); }
-.canvas picture { margin: 24px; }
+.canvas picture { margin: CANVAS_MARGINpx; }
 .canvas.bg-black { background-color: #000; }
 .canvas.bg-white { background-color: #fff; }
 .sidebar-pane { background-color: var(--sidebar-bg-color); }
@@ -2003,12 +2012,13 @@ impl SimpleComponent for App {
             input: sender.input_sender().clone(),
             crop: Crop::default(),
             ratio: Ratio::Free,
-            crop_before: None,
-            ratio_before: (Ratio::Free, 0),
+            editing: None,
             zoom: None,
             canvas: [1.0, 1.0],
             view_gen: 0,
-            encode_gen: 0,
+            encoding: false,
+            encode_again: false,
+            encoded: None,
             ui: Ui {
                 window: window.clone(),
                 toasts,
@@ -2181,8 +2191,11 @@ impl SimpleComponent for App {
                 self.ui.filmstrip.set_active(self.active);
                 self.show_source();
             }
-            Msg::Encoded(generation, profile, photo) => {
-                if generation == self.encode_gen && profile == self.profile {
+            Msg::Encoded(profile, photo) => {
+                self.encoding = false;
+                if std::mem::take(&mut self.encode_again) {
+                    self.encode_photo(&sender);
+                } else if profile == self.profile {
                     self.photo = Some((photo, profile));
                     self.show_source();
                 }
@@ -2255,7 +2268,7 @@ impl SimpleComponent for App {
                 std::thread::spawn(move || {
                     // References are display images (a still, a JPEG); RAWs are rendered neutrally.
                     let r = Decoded::load_max(&path, Some(1024)).map(|d| {
-                        let reference = d.downscaled(1024).encode(Profile::Standard);
+                        let reference = d.encode(Profile::Standard);
                         let thumb = rgba8(&reference.pixels);
                         (reference, thumb)
                     });
@@ -2680,33 +2693,28 @@ impl SimpleComponent for App {
                 self.request_view();
                 self.zoom_label();
             }
-            Msg::CropEdit(on) if on == self.crop_before.is_some() => {}
+            Msg::CropEdit(on) if on == self.editing.is_some() => {}
             Msg::CropEdit(true) => {
                 if self.decoded.is_none() || self.show_chart {
                     self.ui.crop.edit.set_active(false);
                     return;
                 }
                 self.set_zoom(None);
-                self.crop_before = Some(self.crop);
-                self.ratio_before = (self.ratio, self.ui.crop.ratio.selected());
+                self.editing = Some((self.crop, self.ratio, self.ui.crop.ratio.selected()));
                 self.ui.crop.overlay.set_visible(true);
                 self.ui.zoom.tools.set_visible(false);
-                self.crop_changed(&sender, true);
+                self.crop_changed(&sender);
             }
             Msg::CropEdit(false) => {
-                self.crop_before = None;
+                self.editing = None;
                 self.ui.crop.overlay.set_visible(false);
                 self.ui.crop.edit.set_active(false);
                 self.ui.zoom.tools.set_visible(true);
-                self.crop_changed(&sender, true);
+                self.crop_changed(&sender);
             }
             Msg::CropCancel => {
-                if let Some(before) = self.crop_before {
-                    // State first, so the widgets' echoes (CropRatio, CropAngle) find nothing to change.
-                    self.crop = before;
-                    (self.ratio, _) = self.ratio_before;
-                    self.ui.crop.ratio.set_selected(self.ratio_before.1);
-                    self.ui.crop.angle.adj.set_value(before.angle as f64);
+                if let Some((crop, ratio, row)) = self.editing {
+                    self.restore_crop(crop, ratio, row);
                     sender.input(Msg::CropEdit(false));
                 }
             }
@@ -2717,39 +2725,35 @@ impl SimpleComponent for App {
                 if ratio != self.ratio {
                     self.ratio = ratio;
                     self.fit_crop();
-                    self.crop_changed(&sender, false);
+                    self.crop_changed(&sender);
                 }
             }
             Msg::CropSwap => {
                 if let Ratio::Fixed(a, b) = self.ratio {
                     self.ratio = Ratio::Fixed(b, a);
                     self.fit_crop();
-                    self.crop_changed(&sender, false);
+                    self.crop_changed(&sender);
                 }
             }
             Msg::CropAngle(a) if a == self.crop.angle => {}
             Msg::CropAngle(a) => {
-                if let Some((w, h)) = self.decoded.as_ref().map(|d| d.size()) {
+                if let Some((w, h)) = self.size() {
                     self.crop = crop::straighten(self.crop, a, w, h);
                 }
-                self.crop_changed(&sender, true);
+                self.crop_changed(&sender);
             }
             Msg::CropRect(rect) => {
                 self.crop.rect = rect;
-                self.crop_changed(&sender, false);
+                self.crop_changed(&sender);
             }
             Msg::CropReset => {
-                let editing = self.crop_before.is_some();
-                self.ratio = Ratio::Free;
-                self.crop = Crop::default();
-                self.ui.crop.ratio.set_selected(0);
-                self.ui.crop.angle.adj.set_value(0.0);
-                self.crop_changed(&sender, editing);
+                self.restore_crop(Crop::default(), Ratio::Free, 0);
+                self.crop_changed(&sender);
             }
             Msg::ViewReady(generation, profile, photo) => {
                 // Only onto the photo it was cut from, in the profile the shader decodes.
                 let shown = self.photo.as_ref().map(|p| p.1);
-                if generation == self.view_gen && self.zoom.is_some() && !self.show_chart && shown == Some(profile) {
+                if generation == self.view_gen && self.view_zoom().is_some() && shown == Some(profile) {
                     self.send(Job::SetPhoto(photo));
                     self.sent = None;
                     self.render();
@@ -2760,74 +2764,72 @@ impl SimpleComponent for App {
 }
 
 impl App {
+    /// The zoom in effect: none on the test chart (the saved one returns with the photo).
+    fn view_zoom(&self) -> Option<Zoom> {
+        self.zoom.filter(|_| !self.show_chart)
+    }
+
+    /// Full-resolution size of the open photo.
+    fn size(&self) -> Option<(u32, u32)> {
+        Some(self.decoded.as_ref()?.size())
+    }
+
     /// The crop in full-resolution pixels of the open photo.
     fn crop_region(&self) -> Option<Region> {
-        let (w, h) = self.decoded.as_ref()?.size();
+        let (w, h) = self.size()?;
         Some(crop::region(&self.crop, w, h))
     }
 
     /// What the preview shows: the whole straightened frame while editing
     /// the crop, otherwise the crop.
     fn shown_region(&self) -> Option<Region> {
-        let (w, h) = self.decoded.as_ref()?.size();
-        Some(match self.crop_before {
-            Some(_) => crop::region(&Crop { rect: [0.0, 0.0, 1.0, 1.0], ..self.crop }, w, h),
-            None => crop::region(&self.crop, w, h),
-        })
+        let (w, h) = self.size()?;
+        let c = if self.editing.is_some() { crop::frame(self.crop) } else { self.crop };
+        Some(crop::region(&c, w, h))
+    }
+
+    /// Crop state and its controls, state first so the controls' echoes
+    /// (CropRatio, CropAngle) find nothing to change.
+    fn restore_crop(&mut self, crop: Crop, ratio: Ratio, row: u32) {
+        self.crop = crop;
+        self.ratio = ratio;
+        self.ui.crop.ratio.set_selected(row);
+        self.ui.crop.angle.adj.set_value(crop.angle as f64);
     }
 
     /// Back to the uncropped photo, with every crop control in its default state.
     fn reset_crop(&mut self) {
-        self.crop_before = None;
-        self.crop = Crop::default();
-        self.ratio = Ratio::Free;
+        self.editing = None;
+        self.restore_crop(Crop::default(), Ratio::Free, 0);
         self.ui.crop.edit.set_active(false);
-        self.ui.crop.ratio.set_selected(0);
-        self.ui.crop.angle.adj.set_value(0.0);
         self.ui.crop.overlay.set_visible(false);
     }
 
-    /// Pixel aspect the crop is held to (None: free).
-    fn ratio_aspect(&self) -> Option<f32> {
-        let (w, h) = self.decoded.as_ref()?.size();
-        match self.ratio {
-            Ratio::Free => None,
-            Ratio::Original => Some(w as f32 / h as f32),
-            Ratio::Fixed(a, b) => Some(a / b),
-        }
-    }
-
-    /// Shows a crop change: the overlay while editing, else the cropped preview.
-    fn crop_changed(&mut self, sender: &ComponentSender<Self>, frame_moved: bool) {
-        let size = self.decoded.as_ref().map(|d| d.size());
+    /// Shows a crop change: the overlay, and the preview when what it shows moved.
+    fn crop_changed(&mut self, sender: &ComponentSender<Self>) {
+        let size = self.size();
         {
             let mut shown = self.ui.crop.shown.borrow_mut();
             shown.crop = self.crop;
             shown.frame = size.map_or([0.0; 2], |(w, h)| [w as f32, h as f32]);
-            shown.aspect = self.ratio_aspect();
+            shown.aspect = size.and_then(|(w, h)| self.ratio.aspect(w, h));
         }
         self.ui.crop.overlay.queue_draw();
-        if frame_moved || self.crop_before.is_none() {
+        if self.shown_region() != self.encoded {
             self.encode_photo(sender);
         }
     }
 
     /// Largest crop of the current ratio at the current angle.
     fn fit_crop(&mut self) {
-        let Some((w, h)) = self.decoded.as_ref().map(|d| d.size()) else { return };
-        // Free keeps the current shape.
-        let ratio = match self.ratio {
-            Ratio::Free => Ratio::Fixed(crop::aspect(&self.crop, w, h), 1.0),
-            r => r,
-        };
-        self.crop = crop::fit_ratio(ratio, w, h, self.crop.angle);
+        if let Some((w, h)) = self.size() {
+            self.crop = crop::refit(self.crop, self.ratio, w, h);
+        }
     }
 
     /// Re-renders the zoomed view (if any) at full resolution, off the main thread.
     fn request_view(&mut self) {
-        let (Some(z), Some(d), Some(crop), false) =
-            (self.zoom, self.decoded.clone(), self.crop_region(), self.show_chart)
-        else {
+        let (Some(z), Some(d), Some(crop)) = (self.view_zoom(), self.decoded.clone(), self.crop_region()) else {
             return;
         };
         let (r, w, h) = z.view(&crop, self.canvas);
@@ -2863,7 +2865,7 @@ impl App {
     }
 
     fn on_zoom(&mut self, cmd: ZoomCmd) {
-        let zoomable = !self.show_chart && self.crop_before.is_none() && matches!(self.page, Page::Grade);
+        let zoomable = !self.show_chart && self.editing.is_none() && matches!(self.page, Page::Grade);
         let Some(crop) = self.crop_region().filter(|_| zoomable) else {
             return;
         };
@@ -3083,7 +3085,8 @@ fn main() {
     static STARTED: AtomicBool = AtomicBool::new(false);
     app.connect_startup(|_| {
         STARTED.store(true, Ordering::Relaxed);
-        relm4::set_global_css(&format!("{CSS}{}", band_css()));
+        let css = CSS.replace("CANVAS_MARGIN", &CANVAS_MARGIN.to_string());
+        relm4::set_global_css(&format!("{css}{}", band_css()));
     });
     std::thread::spawn(|| {
         while !STARTED.load(Ordering::Relaxed) {

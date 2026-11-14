@@ -8,10 +8,7 @@ use gettextrs::gettext;
 use relm4::gtk::prelude::*;
 use relm4::{ComponentSender, gtk};
 
-use crate::{App, Msg};
-
-/// `.canvas picture { margin }` in the CSS.
-const MARGIN: f64 = 24.0;
+use crate::{App, CANVAS_MARGIN, Msg};
 
 #[derive(Clone, Copy, Debug)]
 pub enum ZoomCmd {
@@ -44,7 +41,7 @@ impl ZoomUi {
             let c = canvas.clone();
             move |x: f64, y: f64| {
                 let sf = c.scale_factor() as f64;
-                [((x - MARGIN) * sf) as f32, ((y - MARGIN) * sf) as f32]
+                [((x - CANVAS_MARGIN) * sf) as f32, ((y - CANVAS_MARGIN) * sf) as f32]
             }
         };
 
@@ -53,7 +50,7 @@ impl ZoomUi {
         let (s, c) = (sender.clone(), canvas.clone());
         probe.connect_resize(move |_, w, h| {
             let sf = c.scale_factor() as f64;
-            let area = [w, h].map(|v| (((v as f64 - 2.0 * MARGIN) * sf) as f32).max(1.0));
+            let area = [w, h].map(|v| (((v as f64 - 2.0 * CANVAS_MARGIN) * sf) as f32).max(1.0));
             s.input(Msg::CanvasSize(area));
         });
         canvas.add_overlay(&probe);

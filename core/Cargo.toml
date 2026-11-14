@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-bytemuck = { version = "1.25.2", features = ["derive"] }
+bytemuck = { version = "1.25.2", features = ["derive", "extern_crate_alloc"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "tiff"] }
 pollster = "1.0.1"
 rawler = "0.8"

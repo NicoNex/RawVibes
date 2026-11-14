@@ -12,6 +12,17 @@ pub enum Ratio {
     Fixed(f32, f32),
 }
 
+impl Ratio {
+    /// Pixel width / height this ratio holds a crop to (None: free).
+    pub fn aspect(self, img_w: u32, img_h: u32) -> Option<f32> {
+        match self {
+            Ratio::Free => None,
+            Ratio::Original => Some(img_w as f32 / img_h as f32),
+            Ratio::Fixed(a, b) => Some(a / b),
+        }
+    }
+}
+
 pub const PRESETS: &[(&str, Ratio)] = &[
     ("Free", Ratio::Free),
     ("Original", Ratio::Original),
@@ -47,10 +58,7 @@ impl Default for Crop {
 /// Largest centred crop of `ratio` inside the image rotated by `angle`.
 pub fn fit_ratio(ratio: Ratio, img_w: u32, img_h: u32, angle: f32) -> Crop {
     let (w, h) = (img_w as f32, img_h as f32);
-    let a = match ratio {
-        Ratio::Free | Ratio::Original => w / h,
-        Ratio::Fixed(x, y) => x / y,
-    };
+    let a = ratio.aspect(img_w, img_h).unwrap_or(w / h);
     let (sin, cos) = angle.to_radians().abs().sin_cos();
     // A rect a·ch × ch turned by θ inside W × H: ch·(a·cos + sin) ≤ W, ch·(a·sin + cos) ≤ H.
     let ch = (w / (a * cos + sin)).min(h / (a * sin + cos));
@@ -60,8 +68,22 @@ pub fn fit_ratio(ratio: Ratio, img_w: u32, img_h: u32, angle: f32) -> Crop {
 
 /// `c` moved, then if still needed shrunk about its centre (ratio kept),
 /// until no corner falls outside the image.
+/// Largest crop of `ratio` at `c`'s angle; Free keeps `c`'s shape.
+pub fn refit(c: Crop, ratio: Ratio, img_w: u32, img_h: u32) -> Crop {
+    let ratio = match ratio {
+        Ratio::Free => Ratio::Fixed(aspect(&c, img_w, img_h), 1.0),
+        r => r,
+    };
+    fit_ratio(ratio, img_w, img_h, c.angle)
+}
+
+/// The whole straightened frame `c` is cut from.
+pub fn frame(c: Crop) -> Crop {
+    Crop { rect: [0.0, 0.0, 1.0, 1.0], ..c }
+}
+
 pub fn clamp(c: Crop, img_w: u32, img_h: u32) -> Crop {
-    let fits = |c: &Crop| corners(&region(c, img_w, img_h), img_w as f32, img_h as f32);
+    let fits = |c: &Crop| fits(c, img_w, img_h);
     let [x, y, w, h] = c.rect;
     let moved = |t: f32| {
         let (cx, cy) = (x + w / 2.0, y + h / 2.0);
@@ -92,12 +114,15 @@ fn search(ok: impl Fn(f32) -> bool, down: bool) -> f32 {
     if down { lo } else { hi }
 }
 
+/// No corner of `c` outside the image.
+fn fits(c: &Crop, img_w: u32, img_h: u32) -> bool {
+    corners(&region(c, img_w, img_h), img_w as f32, img_h as f32)
+}
+
 /// All corners of `r` within a `w` × `h` image (a hair of slack for rounding).
 fn corners(r: &Region, w: f32, h: f32) -> bool {
-    let (sin, cos) = r.angle.to_radians().sin_cos();
     [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].iter().all(|(sx, sy)| {
-        let (dx, dy) = (sx * r.size[0] / 2.0, sy * r.size[1] / 2.0);
-        let (x, y) = (r.center[0] + cos * dx - sin * dy, r.center[1] + sin * dx + cos * dy);
+        let [x, y] = r.point([sx * r.size[0] / 2.0, sy * r.size[1] / 2.0]);
         (-1e-3..=w + 1e-3).contains(&x) && (-1e-3..=h + 1e-3).contains(&y)
     })
 }
@@ -106,14 +131,9 @@ fn corners(r: &Region, w: f32, h: f32) -> bool {
 pub fn region(c: &Crop, img_w: u32, img_h: u32) -> Region {
     let (w, h) = (img_w as f32, img_h as f32);
     let [x, y, cw, ch] = c.rect;
-    // Crop centre relative to the image centre, in the rotated frame, then into the image.
-    let (dx, dy) = ((x + cw / 2.0 - 0.5) * w, (y + ch / 2.0 - 0.5) * h);
-    let (sin, cos) = c.angle.to_radians().sin_cos();
-    Region {
-        center: [w / 2.0 + cos * dx - sin * dy, h / 2.0 + sin * dx + cos * dy],
-        size: [cw * w, ch * h],
-        angle: c.angle,
-    }
+    // The frame turns about the image centre; the crop centre is offset from it in that frame.
+    let frame = Region { center: [w / 2.0, h / 2.0], size: [cw * w, ch * h], angle: c.angle };
+    Region { center: frame.point([(x + cw / 2.0 - 0.5) * w, (y + ch / 2.0 - 0.5) * h]), ..frame }
 }
 
 /// What a pointer grabs on the crop rectangle.
@@ -208,7 +228,7 @@ pub fn drag(start: Crop, h: Handle, d: [f32; 2], aspect: Option<f32>, img_w: u32
         let [x, y, w, hh] = start.rect;
         return clamp(Crop { rect: [x + d[0], y + d[1], w, hh], ..start }, img_w, img_h);
     }
-    let fits = |c: &Crop| corners(&region(c, img_w, img_h), img_w as f32, img_h as f32);
+    let fits = |c: &Crop| fits(c, img_w, img_h);
     if fits(&resized(1.0)) { resized(1.0) } else { resized(search(|t| fits(&resized(t)), true)) }
 }
 

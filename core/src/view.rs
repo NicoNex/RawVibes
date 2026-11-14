@@ -17,6 +17,20 @@ pub struct Region {
     pub angle: f32,
 }
 
+impl Region {
+    /// The source point at offset `d` from the centre, in the region's rotated frame.
+    pub fn point(&self, d: [f32; 2]) -> [f32; 2] {
+        let (sin, cos) = self.angle.to_radians().sin_cos();
+        let r = rotate(d, sin, cos);
+        [self.center[0] + r[0], self.center[1] + r[1]]
+    }
+}
+
+/// `d` turned by the angle whose sine and cosine are given (y down).
+fn rotate(d: [f32; 2], sin: f32, cos: f32) -> [f32; 2] {
+    [cos * d[0] - sin * d[1], sin * d[0] + cos * d[1]]
+}
+
 /// A zoomed view of a crop: `scale` image pixels per device pixel, and
 /// the view's centre in the crop (0..1 on each axis, in its rotated frame).
 /// Canvas sizes and points are in device pixels.
@@ -51,10 +65,8 @@ impl Zoom {
         let z = self.clamped(crop, canvas);
         let h = z.half(crop, canvas);
         let out = [0, 1].map(|i| ((2.0 * h[i] * crop.size[i] / self.scale).round() as u32).max(1));
-        let (sin, cos) = crop.angle.to_radians().sin_cos();
-        let (dx, dy) = ((z.center[0] - 0.5) * crop.size[0], (z.center[1] - 0.5) * crop.size[1]);
         let region = Region {
-            center: [crop.center[0] + cos * dx - sin * dy, crop.center[1] + sin * dx + cos * dy],
+            center: crop.point([0, 1].map(|i| (z.center[i] - 0.5) * crop.size[i])),
             size: [out[0] as f32 * self.scale, out[1] as f32 * self.scale],
             angle: crop.angle,
         };
@@ -107,21 +119,20 @@ impl Pyramid {
     /// `r` resampled to `out_w` × `out_h`, bilinear from the finest level
     /// that is no more than 2× denser than the output (no aliasing).
     pub fn resample(&self, r: &Region, out_w: u32, out_h: u32) -> Photo {
-        let scale = (r.size[0] / out_w as f32).max(r.size[1] / out_h as f32);
+        let (sx, sy) = (r.size[0] / out_w as f32, r.size[1] / out_h as f32);
+        let scale = sx.max(sy);
         let level = (scale.max(1.0).log2().floor() as usize).min(self.levels.len() - 1);
         let src = &self.levels[level];
         let k = 1.0 / (1u32 << level) as f32;
         let (sin, cos) = r.angle.to_radians().sin_cos();
-        let (sx, sy) = (r.size[0] / out_w as f32, r.size[1] / out_h as f32);
         let pixels = (0..out_h)
             .into_par_iter()
             .flat_map_iter(|v| {
                 (0..out_w).map(move |u| {
                     let dx = (u as f32 + 0.5 - out_w as f32 / 2.0) * sx;
                     let dy = (v as f32 + 0.5 - out_h as f32 / 2.0) * sy;
-                    let x = r.center[0] + cos * dx - sin * dy;
-                    let y = r.center[1] + sin * dx + cos * dy;
-                    bilinear(src, x * k, y * k)
+                    let [x, y] = rotate([dx, dy], sin, cos);
+                    bilinear(src, (r.center[0] + x) * k, (r.center[1] + y) * k)
                 })
             })
             .collect();

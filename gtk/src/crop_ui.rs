@@ -9,14 +9,12 @@ use relm4::gtk::prelude::*;
 use relm4::{ComponentSender, gtk};
 
 use crate::widgets::Slider;
-use crate::{App, Msg, section};
+use crate::{App, CANVAS_MARGIN, Msg, section};
 
 /// A drag in progress: the handle, the crop at its start, and the
 /// frame's logical pixels per normalised unit.
 type Grab = (Handle, Crop, f64, f64);
 
-/// `.canvas picture { margin }` in the CSS.
-const MARGIN: f64 = 24.0;
 /// Grab distance of the edges and corners, in logical pixels.
 const GRAB: f64 = 12.0;
 
@@ -44,9 +42,9 @@ pub struct CropUi {
 /// normalised unit, as `ContentFit::Contain` inside the picture margin.
 fn placement(w: f64, h: f64, frame: [f32; 2]) -> (f64, f64, f64, f64) {
     let (fw, fh) = (frame[0] as f64, frame[1] as f64);
-    let (aw, ah) = (w - 2.0 * MARGIN, h - 2.0 * MARGIN);
+    let (aw, ah) = (w - 2.0 * CANVAS_MARGIN, h - 2.0 * CANVAS_MARGIN);
     let s = (aw / fw).min(ah / fh);
-    (MARGIN + (aw - fw * s) / 2.0, MARGIN + (ah - fh * s) / 2.0, fw * s, fh * s)
+    (CANVAS_MARGIN + (aw - fw * s) / 2.0, CANVAS_MARGIN + (ah - fh * s) / 2.0, fw * s, fh * s)
 }
 
 impl CropUi {

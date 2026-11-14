@@ -100,7 +100,18 @@ impl Decoded {
 
     /// Box-filtered copy that fits in `max` × `max` (filmstrip photos).
     pub fn downscaled(&self, max: u32) -> Self {
+        let (w, h) = self.size();
+        if w.max(h) <= max {
+            return self.clone();
+        }
         self.with(self.pyramid().full().downscaled(max))
+    }
+
+    /// `r` fitted within `max` × `max` (never enlarged) as `profile`'s signal.
+    pub fn encode_fit(&self, r: &Region, max: u32, profile: Profile) -> Arc<Photo> {
+        let k = (max as f32 / r.size[0].max(r.size[1])).min(1.0);
+        let [w, h] = r.size.map(|v| ((v * k).round() as u32).max(1));
+        self.encode_region(r, w, h, profile)
     }
 
     /// `r` resampled to `out_w` × `out_h` (preview, zoomed view, crop) as
@@ -109,7 +120,7 @@ impl Decoded {
         let photo = self.pyramid().resample(r, out_w, out_h);
         match self {
             Decoded::Raster(_) => Arc::new(photo),
-            Decoded::Raw(_) => Arc::new(encode_scene(&photo, profile)),
+            Decoded::Raw(_) => Arc::new(encode_scene(photo, profile)),
         }
     }
 
@@ -118,28 +129,21 @@ impl Decoded {
     pub fn encode(&self, profile: Profile) -> Arc<Photo> {
         match self {
             Decoded::Raster(p) => Arc::new(p.full().clone()),
-            Decoded::Raw(scene) => Arc::new(encode_scene(scene.full(), profile)),
+            Decoded::Raw(scene) => Arc::new(encode_scene(scene.full().clone(), profile)),
         }
     }
 }
 
-/// Scene-linear Rec.709 as `profile`'s signal.
-fn encode_scene(scene: &Photo, profile: Profile) -> Photo {
+/// Scene-linear Rec.709 as `profile`'s signal, in place.
+fn encode_scene(mut scene: Photo, profile: Profile) -> Photo {
     let from709 = profile.from_rec709();
-    let pixels = scene
-        .pixels
-        .par_iter()
-        .map(|p| {
-            let s = [p[0], p[1], p[2]];
-            let [r, g, b] = if profile.is_log() {
-                multiply_row1(&from709, &s).map(|v| profile.encode(v))
-            } else {
-                view_transform(s)
-            };
-            [r, g, b, 1.0]
-        })
-        .collect();
-    Photo { width: scene.width, height: scene.height, pixels }
+    scene.pixels.par_iter_mut().for_each(|p| {
+        let s = [p[0], p[1], p[2]];
+        let [r, g, b] =
+            if profile.is_log() { multiply_row1(&from709, &s).map(|v| profile.encode(v)) } else { view_transform(s) };
+        *p = [r, g, b, 1.0];
+    });
+    scene
 }
 
 impl Photo {
@@ -151,12 +155,12 @@ impl Photo {
     }
 
     fn into_image(self) -> Rgba32FImage {
-        Rgba32FImage::from_raw(self.width, self.height, self.pixels.into_iter().flatten().collect())
+        Rgba32FImage::from_raw(self.width, self.height, bytemuck::allocation::cast_vec(self.pixels))
             .expect("pixel count matches dimensions")
     }
 
     fn from_image(img: Rgba32FImage) -> Self {
-        Self { width: img.width(), height: img.height(), pixels: bytemuck::cast_slice(img.as_raw()).to_vec() }
+        Self { width: img.width(), height: img.height(), pixels: bytemuck::allocation::cast_vec(img.into_raw()) }
     }
 }
 
@@ -235,9 +239,7 @@ fn load_raw(path: &Path, max: Option<u32>) -> Result<Photo, String> {
     let mut img = DynamicImage::ImageRgba32F(linear.into_image());
     img.apply_orientation(orientation);
     let mut photo = Photo::from_image(img.into_rgba32f());
-    for p in &mut photo.pixels {
-        *p = [p[0] * RAW_TO_SCENE, p[1] * RAW_TO_SCENE, p[2] * RAW_TO_SCENE, 1.0];
-    }
+    photo.pixels.par_iter_mut().for_each(|p| *p = [p[0] * RAW_TO_SCENE, p[1] * RAW_TO_SCENE, p[2] * RAW_TO_SCENE, 1.0]);
     Ok(photo)
 }
 

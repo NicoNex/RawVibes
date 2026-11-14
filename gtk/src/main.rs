@@ -26,7 +26,7 @@ use lab_page::{LabAdd, LabKind, LabLayer, LabUi, Layers, caption};
 use presets_ui::PresetsUi;
 use rawvalley_core::chart::test_chart;
 use rawvalley_core::crop::{self, Crop, PRESETS, Ratio};
-use rawvalley_core::gpu::{self, CompareBase, Done, Job};
+use rawvalley_core::gpu::{self, Done, Job, ThumbBase};
 use rawvalley_core::grade::{
     BAND_HUE_RANGE, BAND_HUES, Curve, Grade, HUE_HUE, HUE_SAT, LUM_SAT, LUMA, MASTER, MATCH_L, Params, Stage,
 };
@@ -265,7 +265,7 @@ struct App {
     hover_tick: u64,
     /// The next look row built is a commit from the browser: flash it once.
     flash_new_look: bool,
-    /// What the Compare base was last built from: grade, looks (by identity), profile.
+    /// What the thumbnail base was last built from: grade, looks (by identity), profile.
     base_key: Option<BaseKey>,
     /// Thumbnails need re-rendering (new source or library) next time the browser opens.
     gallery_stale: bool,
@@ -596,10 +596,15 @@ impl App {
     fn hide_filtered_selection(&mut self) {
         let hidden = self.selected.and_then(|i| self.ui.flow.child_at_index(i as i32)).is_some_and(|c| !c.is_visible());
         if hidden {
-            self.ui.flow.unselect_all();
-            self.selected = None;
-            self.drop_candidate();
+            self.clear_selection();
         }
+    }
+
+    /// No card selected and nothing previewed.
+    fn clear_selection(&mut self) {
+        self.ui.flow.unselect_all();
+        self.selected = None;
+        self.drop_candidate();
     }
 
     fn filter_gallery(&self) {
@@ -615,7 +620,7 @@ impl App {
     }
 
     /// Hands the Grade page's result to the browser thumbnails; true when it changed.
-    fn sync_compare_base(&mut self) -> bool {
+    fn sync_thumb_base(&mut self) -> bool {
         let input = self.source_profile();
         let (grade, looks) = (self.graded(), self.look_layers());
         let luts = looks
@@ -631,18 +636,18 @@ impl App {
         }
         self.base_key = key;
         // ponytail: an untouched grade keeps the exact direct path (no lattice round trip).
-        let base = (!grade.is_neutral() || !looks.is_empty()).then(|| CompareBase {
+        let base = (!grade.is_neutral() || !looks.is_empty()).then(|| ThumbBase {
             grade,
             looks: self.look_stack(looks),
             input,
         });
-        self.send(Job::SetCompareBase(base));
+        self.send(Job::SetThumbBase(base));
         true
     }
 
     /// Thumbnails, when the browser is open and what they show changed.
     fn refresh_gallery(&mut self) {
-        if self.browsing && (self.sync_compare_base() || self.gallery_stale) {
+        if self.browsing && (self.sync_thumb_base() || self.gallery_stale) {
             self.render_gallery();
         }
     }
@@ -652,14 +657,6 @@ impl App {
             self.gallery_stale = false;
             self.gallery_gen += 1;
             self.send(Job::Gallery(self.gallery_gen, self.lut_paths.clone()));
-        }
-    }
-
-    /// Re-renders the view on screen after a split change: nothing else moved.
-    fn redraw(&mut self) {
-        match self.page {
-            Page::Grade => self.render(),
-            Page::Lab => self.render_lab(),
         }
     }
 
@@ -718,6 +715,12 @@ impl App {
     fn push_layer(&mut self, which: Layers, kind: LabKind, input: Profile, sender: &ComponentSender<Self>) {
         self.layers_mut(which).push(LabLayer { kind, intensity: 1.0, input, on: true });
         self.layers_changed(which, true, sender);
+    }
+
+    /// Reads a LUT file off the main thread and adds it to `which`.
+    fn load_layer(which: Layers, path: PathBuf, sender: &ComponentSender<Self>) {
+        let s = sender.input_sender().clone();
+        std::thread::spawn(move || s.emit(Msg::LayerLoaded(which, path.clone(), Lut3d::load(&path))));
     }
 
     fn push_lut(&mut self, which: Layers, lut: Arc<Lut3d>, sender: &ComponentSender<Self>) {
@@ -1675,7 +1678,7 @@ impl SimpleComponent for App {
             .sidebar(&sidebar.scroll)
             .build();
 
-        // ---------------- compare page
+        // ---------------- LUT browser
         let flow = gtk::FlowBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
             // A click previews; Enter or a double-click adds.
@@ -1775,6 +1778,22 @@ impl SimpleComponent for App {
         gallery.append(&gallery_stack);
 
         sidebar.browse.set_child(Some(&gallery));
+        // Once revealed: the sidebar scrolls to the browser and the grid takes the
+        // keyboard, so arrows browse at once.
+        let (f, btn, scroll) = (flow.clone(), sidebar.browse_btn.clone(), sidebar.scroll.clone());
+        sidebar.browse.connect_child_revealed_notify(move |browse| {
+            if !browse.is_child_revealed() {
+                return;
+            }
+            if let Some(p) = scroll.child().and_then(|c| btn.compute_point(&c, &gtk::graphene::Point::zero())) {
+                scroll.vadjustment().set_value(p.y() as f64 - 12.0);
+            }
+            // Ctrl+F put the focus in the search entry: leave it there.
+            let inside = browse.root().and_then(|r| r.focus()).is_some_and(|f| f.is_ancestor(browse));
+            if !inside {
+                f.child_at_index(0).map_or_else(|| f.grab_focus(), |c| c.grab_focus());
+            }
+        });
 
         // ---------------- view stack + header
         let stack = adw::ViewStack::new();
@@ -2489,12 +2508,12 @@ impl SimpleComponent for App {
             Msg::Toast(text) => self.toast(&text),
             Msg::Compare(on) => {
                 self.compare = on;
-                self.redraw();
+                self.refresh();
             }
             Msg::Split(x) => {
                 if self.compare {
                     self.split = x;
-                    self.redraw();
+                    self.refresh();
                 }
             }
             // Ctrl+E fires even while the button is insensitive.
@@ -2684,28 +2703,7 @@ impl SimpleComponent for App {
                 if self.ui.sidebar.browse_btn.is_active() != on {
                     self.ui.sidebar.browse_btn.set_active(on);
                 }
-                if on {
-                    // Once revealed: the sidebar scrolls to the browser and the grid takes the
-                    // keyboard, so arrows browse at once.
-                    let (flow, btn, scroll, browse) = (
-                        self.ui.flow.clone(),
-                        self.ui.sidebar.browse_btn.clone(),
-                        self.ui.sidebar.scroll.clone(),
-                        self.ui.sidebar.browse.clone(),
-                    );
-                    glib::timeout_add_local_once(std::time::Duration::from_millis(260), move || {
-                        if let Some(p) =
-                            scroll.child().and_then(|c| btn.compute_point(&c, &gtk::graphene::Point::zero()))
-                        {
-                            scroll.vadjustment().set_value(p.y() as f64 - 12.0);
-                        }
-                        // Ctrl+F put the focus in the search entry: leave it there.
-                        let inside = browse.root().and_then(|r| r.focus()).is_some_and(|f| f.is_ancestor(&browse));
-                        if !inside {
-                            flow.child_at_index(0).map_or_else(|| flow.grab_focus(), |c| c.grab_focus());
-                        }
-                    });
-                } else {
+                if !on {
                     self.drop_candidate();
                 }
                 self.refresh_gallery();
@@ -2761,27 +2759,19 @@ impl SimpleComponent for App {
                 match self.candidate.take().filter(|c| c.0 == i) {
                     Some((_, lut)) => self.push_lut(Layers::Look, lut, &sender),
                     None => {
-                        self.candidate = None;
                         if let Some(entry) = self.luts.get(i) {
-                            let (p, s) = (entry.path.clone(), sender.input_sender().clone());
-                            std::thread::spawn(move || {
-                                s.emit(Msg::LayerLoaded(Layers::Look, p.clone(), Lut3d::load(&p)))
-                            });
+                            Self::load_layer(Layers::Look, entry.path.clone(), &sender);
                         }
                     }
                 }
                 // Added: no longer a preview, so leaving the grid cannot bring it back on top of itself.
-                self.preview_req = None;
-                self.selected = None;
-                self.ui.flow.unselect_all();
+                self.clear_selection();
             }
             Msg::Escape => {
                 if self.editing.is_some() {
                     sender.input(Msg::CropCancel);
                 } else if self.candidate.is_some() || self.preview_req.is_some() {
-                    self.ui.flow.unselect_all();
-                    self.selected = None;
-                    self.drop_candidate();
+                    self.clear_selection();
                 }
             }
             Msg::Profile(profile) => {
@@ -2812,13 +2802,7 @@ impl SimpleComponent for App {
             }
             Msg::LayerAdd(which, add) => match add {
                 LabAdd::Selected => match self.selected.and_then(|i| self.luts.get(i)) {
-                    Some(entry) => {
-                        let (p, s) = (entry.path.clone(), sender.input_sender().clone());
-                        std::thread::spawn(move || {
-                            let lut = Lut3d::load(&p);
-                            s.emit(Msg::LayerLoaded(which, p, lut));
-                        });
-                    }
+                    Some(entry) => Self::load_layer(which, entry.path.clone(), &sender),
                     None => self.toast(&gettext("Select a LUT in the browser first")),
                 },
                 LabAdd::File => {
@@ -2831,12 +2815,9 @@ impl SimpleComponent for App {
                     dialog.set_initial_folder(start_in(settings::LUT_FOLDER).as_ref());
                     let s = sender.clone();
                     dialog.open(Some(&self.ui.window), gio::Cancellable::NONE, move |r| {
-                        let Some(p) = r.ok().and_then(|f| f.path()) else { return };
-                        let s = s.input_sender().clone();
-                        std::thread::spawn(move || {
-                            let lut = Lut3d::load(&p);
-                            s.emit(Msg::LayerLoaded(which, p, lut));
-                        });
+                        if let Some(p) = r.ok().and_then(|f| f.path()) {
+                            Self::load_layer(which, p, &s);
+                        }
                     });
                 }
                 LabAdd::Grade => self.push_layer(which, LabKind::Grade, Profile::Standard, &sender),
@@ -3132,7 +3113,6 @@ impl App {
 
     fn on_gpu(&mut self, done: Done) {
         match done {
-            Done::Ready(_) => {}
             Done::Failed(e) => self.toast(&gettext!("GPU unavailable: {}", e)),
             Done::Graded { width, height, rgba, scopes: Scopes { histogram, waveform, vectorscope } } => {
                 self.ui.grade_pic.set_paintable(Some(&texture(width, height, rgba)));
@@ -3274,7 +3254,7 @@ fn locale_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/locale")))
 }
 
-/// What the Compare base is built from; look LUTs compare by identity, not content.
+/// What the thumbnail base is built from; look LUTs compare by identity, not content.
 struct BaseKey {
     grade: Grade,
     luts: Vec<(Arc<Lut3d>, f32, Profile)>,

@@ -215,25 +215,25 @@ impl Gpu {
         }
         // Grade baked on the export lattice itself, so its nodes are exact.
         let baked = Arc::new(baked);
-        let base = CompareBase { grade, looks: look, input: Profile::Standard };
+        let base = ThumbBase { grade, looks: look, input: Profile::Standard };
         Lut3d { title, ..base.compose(size, &|_| baked.clone()) }
     }
 }
 
 // ------------------------------------------------------------------ worker
 
-/// What Compare LUTs shows candidate LUTs on: the Grade page's result,
+/// What the LUT browser renders its thumbnails on: the Grade page's result,
 /// handed back to each LUT in the source's own signal.
 #[derive(Clone, Debug)]
-pub struct CompareBase {
+pub struct ThumbBase {
     pub grade: Grade,
     /// The look LUTs, fed with the grade's output (Standard).
     pub looks: Stack,
-    /// Profile of the source signal, which the compared LUTs expect.
+    /// Profile of the source signal, which the browsed LUTs expect.
     pub input: Profile,
 }
 
-impl CompareBase {
+impl ThumbBase {
     /// grade → looks → back to `input`, on an N³ lattice.
     fn compose(&self, size: usize, bake: &dyn Fn(&Grade) -> Arc<Lut3d>) -> Lut3d {
         let grade = Layer { source: Source::Grade(Box::new(self.grade.clone())), intensity: 1.0, input: self.input };
@@ -262,8 +262,8 @@ pub enum Job {
     SetPhoto(Arc<Photo>),
     /// LUTs applied after the grade on the Grade page (empty = none).
     SetLook(Stack),
-    /// Base of the Compare LUTs previews; None = the ungraded source.
-    SetCompareBase(Option<CompareBase>),
+    /// Base of the LUT browser thumbnails; None = neutral grade and no looks.
+    SetThumbBase(Option<ThumbBase>),
     Render(Grade, f32),
     /// The filmstrip photos (already preview-sized); `generation` lets the
     /// UI drop frames of an older strip.
@@ -332,7 +332,6 @@ impl Job {
 
 #[derive(Debug)]
 pub enum Done {
-    Ready(String),
     Failed(String),
     Graded { width: u32, height: u32, rgba: Vec<u8>, scopes: Scopes },
     Lab { width: u32, height: u32, rgba: Vec<u8> },
@@ -426,7 +425,7 @@ impl Worker {
                 // The filmstrip shows the looks too: every frame is stale.
                 self.roll.1.iter_mut().for_each(|f| f.last = None);
             }
-            Job::SetCompareBase(base) => {
+            Job::SetThumbBase(base) => {
                 self.base = base.map(|b| {
                     let bake = |g: &Grade| self.bake_cached(gpu, g);
                     b.compose(33, &bake)
@@ -505,7 +504,6 @@ pub fn spawn(notify: impl Fn(Done) + Send + 'static) -> mpsc::Sender<Job> {
                 Ok(g) => g,
                 Err(e) => return notify(Done::Failed(e)),
             };
-            notify(Done::Ready(gpu.name.clone()));
             let mut worker = Worker::default();
             let mut thumbs_left = false;
             loop {
@@ -681,19 +679,19 @@ mod tests {
         }
     }
 
-    /// With a neutral grade the Compare base is the identity, so a compared
+    /// With a neutral grade the thumbnail base is the identity, so a browsed
     /// LUT looks as it does on the ungraded photo; a graded base feeds it lut(grade).
     #[test]
     fn compare_base_puts_the_grade_before_the_lut() {
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
         let bake = |g: &Grade| Arc::new(gpu.bake(g, lab::SOURCE_SIZE, String::new()));
-        let neutral = CompareBase { grade: Grade::default(), looks: Stack::default(), input: Profile::Standard };
+        let neutral = ThumbBase { grade: Grade::default(), looks: Stack::default(), input: Profile::Standard };
         for (v, e) in neutral.compose(17, &bake).data.iter().zip(&Lut3d::identity(17, Format::Cube).data) {
             assert!((0..3).all(|k| (v[k] - e[k]).abs() < 1e-3), "{v:?} vs {e:?}");
         }
         let mut grade = Grade::default();
         grade.params.exposure = 0.4;
-        let base = CompareBase { grade: grade.clone(), looks: Stack::default(), input: Profile::Standard };
+        let base = ThumbBase { grade: grade.clone(), looks: Stack::default(), input: Profile::Standard };
         let mut inverted = Lut3d::identity(17, Format::Cube);
         inverted.data.iter_mut().for_each(|c| *c = c.map(|v| 1.0 - v));
         let shown = after(&base.compose(17, &bake), &inverted);

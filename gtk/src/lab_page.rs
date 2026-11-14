@@ -310,6 +310,14 @@ impl LabUi {
     }
 }
 
+/// The layer eye's icon, tooltip and accessible label for its state.
+fn show_on(b: &gtk::ToggleButton, title: &str, on: bool) {
+    b.set_icon_name(if on { "view-reveal-symbolic" } else { "view-conceal-symbolic" });
+    b.set_tooltip_text(Some(&if on { gettext("Switch off") } else { gettext("Switch on") }));
+    let label = if on { gettext!("Switch off {}", title) } else { gettext!("Switch on {}", title) };
+    b.update_property(&[gtk::accessible::Property::Label(&label)]);
+}
+
 /// Rows for a layer list: reorder/remove buttons, the LUT's source profile, intensity.
 pub fn layer_rows(
     list: &gtk::ListBox,
@@ -344,21 +352,12 @@ pub fn layer_rows(
                 .tooltip_text(title.as_str())
                 .build(),
         );
-        let eye = gtk::ToggleButton::builder()
-            .icon_name(if l.on { "view-reveal-symbolic" } else { "view-conceal-symbolic" })
-            .tooltip_text(if l.on { gettext("Switch off") } else { gettext("Switch on") })
-            .active(!l.on)
-            .css_classes(["flat", "circular"])
-            .build();
-        let label = if l.on { gettext!("Switch off {}", title) } else { gettext!("Switch on {}", title) };
-        eye.update_property(&[gtk::accessible::Property::Label(&label)]);
+        let eye = gtk::ToggleButton::builder().active(!l.on).css_classes(["flat", "circular"]).build();
+        show_on(&eye, &title, l.on);
         let (snd, title) = (sender.clone(), title.clone());
         eye.connect_toggled(move |b| {
             let on = !b.is_active();
-            b.set_icon_name(if on { "view-reveal-symbolic" } else { "view-conceal-symbolic" });
-            b.set_tooltip_text(Some(&if on { gettext("Switch off") } else { gettext("Switch on") }));
-            let label = if on { gettext!("Switch off {}", title) } else { gettext!("Switch on {}", title) };
-            b.update_property(&[gtk::accessible::Property::Label(&label)]);
+            show_on(b, &title, on);
             snd.input(Msg::LayerOn(which, i, on));
         });
         head.append(&eye);

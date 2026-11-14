@@ -4,7 +4,8 @@
 
 **Goal:** Browse the LUT library from the Grade sidebar and see each LUT
 live on the photo while stepping through them with the keyboard or mouse;
-the Compare LUTs page goes away.
+stack several LUTs with per-LUT parameters and a chain/mix mode; refresh
+LUT folders by hand or automatically; the Compare LUTs page goes away.
 
 **Architecture:** The existing gallery pane (folder row, sub-folder
 dropdown, search, `FlowBox` of thumbnails) moves from the Compare page into
@@ -130,6 +131,42 @@ Escape drops it. Thumbnails always render on the graded photo.
   `Msg::Compare` and `CompareBase`.
 - [ ] **Step 2:** `make check`; run: header shows Grade and LUT Lab only;
   `Alt+1`/`Alt+2` switch them. Commit `Remove the Compare LUTs page`.
+
+### Task 4: Folder refresh and a proper multi-LUT look stack
+
+Author's request: refresh the LUT folders, and apply several LUTs to the
+same photo with useful parameters, combined correctly. Already there and
+kept: each look row has reorder, remove, source profile (signal the LUT
+expects; chaining converts between profiles exactly, `lab::compose`) and
+intensity (faded in OKLab against the neutral rendering).
+
+**Files:**
+- Modify: `gtk/src/main.rs` (folder monitor, `F5`, look blend, eye per row)
+- Modify: `gtk/src/lab_page.rs` (`layer_rows`: per-row eye toggle)
+- Modify: `gtk/src/lab_page.rs` `LabLayer` (+ `on: bool`)
+- Modify: `po/it.po`
+
+**Interfaces:**
+- Produces: `LabLayer.on: bool` (default true), `Msg::LayerOn(Layers, usize, bool)`,
+  `App.look_blend: Blend`, `Msg::LookBlend(Blend)`, `Msg::FolderChanged`.
+
+- [ ] **Step 1: Refresh.** Reload button in the browser header with
+  tooltip "Reload LUTs (F5)" and the `F5` shortcut; plus a
+  `gio::FileMonitor` (`monitor_directory`, `WATCH_MOVES`) on the LUT
+  folder that reloads 500 ms after the last change (debounced), keeping
+  the current selection by path when it still exists.
+- [ ] **Step 2: Per-LUT on/off.** An eye toggle on each look row (and Lab
+  row) switches that layer off without losing its settings; off layers
+  are skipped by `look_layers`/`lab_job_layers`, the preview and the export.
+- [ ] **Step 3: Combine mode.** Above the look list, a Chain / Mix toggle
+  (same semantics and help text as LUT Lab: chain = one after another,
+  mix = each gets the same input, averaged in OKLab by intensity),
+  stored in `App.look_blend`, used by the preview and the export.
+- [ ] **Step 4:** Italian strings; `make check`; run: add three LUTs,
+  switch one off, reorder, change intensities and the mode, export a
+  `.cube` and re-import it in LUT Lab: it matches the preview. Add a
+  `.cube` to the folder from a file manager: the browser shows it within
+  a second. Commit `Refresh LUT folders; on/off and chain/mix for looks`.
 
 ### Phase close
 

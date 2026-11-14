@@ -62,11 +62,18 @@ pub enum Decoded {
 }
 
 impl Decoded {
+    /// Full resolution (the photo being edited).
     pub fn load(path: &Path) -> Result<Self, String> {
+        Self::load_max(path, None)
+    }
+
+    /// Fitting `max` × `max` when given, without ever holding the full
+    /// resolution in RGBA (filmstrip photos, match references).
+    pub fn load_max(path: &Path, max: Option<u32>) -> Result<Self, String> {
         if is_raw(path) {
-            load_raw(path).map(|p| Decoded::Raw(Arc::new(Pyramid::new(p))))
+            load_raw(path, max).map(|p| Decoded::Raw(Arc::new(Pyramid::new(p))))
         } else {
-            load_raster(path).map(|p| Decoded::Raster(Arc::new(Pyramid::new(p))))
+            load_raster(path, max).map(|p| Decoded::Raster(Arc::new(Pyramid::new(p))))
         }
     }
 
@@ -96,9 +103,14 @@ impl Decoded {
         self.with(self.pyramid().full().downscaled(max))
     }
 
-    /// `r` resampled to `out_w` × `out_h` (zoomed view, crop).
-    pub fn region(&self, r: &Region, out_w: u32, out_h: u32) -> Self {
-        self.with(self.pyramid().resample(r, out_w, out_h))
+    /// `r` resampled to `out_w` × `out_h` (preview, zoomed view, crop) as
+    /// `profile`'s signal.
+    pub fn encode_region(&self, r: &Region, out_w: u32, out_h: u32, profile: Profile) -> Arc<Photo> {
+        let photo = self.pyramid().resample(r, out_w, out_h);
+        match self {
+            Decoded::Raster(_) => Arc::new(photo),
+            Decoded::Raw(_) => Arc::new(encode_scene(&photo, profile)),
+        }
     }
 
     /// The pixels as `profile`'s signal: RAWs are rendered into it, rasters
@@ -106,26 +118,28 @@ impl Decoded {
     pub fn encode(&self, profile: Profile) -> Arc<Photo> {
         match self {
             Decoded::Raster(p) => Arc::new(p.full().clone()),
-            Decoded::Raw(scene) => {
-                let scene = scene.full();
-                let from709 = profile.from_rec709();
-                let pixels = scene
-                    .pixels
-                    .iter()
-                    .map(|p| {
-                        let s = [p[0], p[1], p[2]];
-                        let [r, g, b] = if profile.is_log() {
-                            multiply_row1(&from709, &s).map(|v| profile.encode(v))
-                        } else {
-                            view_transform(s)
-                        };
-                        [r, g, b, 1.0]
-                    })
-                    .collect();
-                Arc::new(Photo { width: scene.width, height: scene.height, pixels })
-            }
+            Decoded::Raw(scene) => Arc::new(encode_scene(scene.full(), profile)),
         }
     }
+}
+
+/// Scene-linear Rec.709 as `profile`'s signal.
+fn encode_scene(scene: &Photo, profile: Profile) -> Photo {
+    let from709 = profile.from_rec709();
+    let pixels = scene
+        .pixels
+        .par_iter()
+        .map(|p| {
+            let s = [p[0], p[1], p[2]];
+            let [r, g, b] = if profile.is_log() {
+                multiply_row1(&from709, &s).map(|v| profile.encode(v))
+            } else {
+                view_transform(s)
+            };
+            [r, g, b, 1.0]
+        })
+        .collect();
+    Photo { width: scene.width, height: scene.height, pixels }
 }
 
 impl Photo {
@@ -175,7 +189,7 @@ fn box_downscale<T: Sync>(src: &[T], width: u32, height: u32, max: u32, rgba: im
     Photo { width: w, height: h, pixels }
 }
 
-fn load_raster(path: &Path) -> Result<Photo, String> {
+fn load_raster(path: &Path, max: Option<u32>) -> Result<Photo, String> {
     let mut dec = ImageReader::open(path)
         .map_err(|e| e.to_string())?
         .with_guessed_format()
@@ -185,14 +199,17 @@ fn load_raster(path: &Path) -> Result<Photo, String> {
     let orientation = dec.orientation().map_err(|e| e.to_string())?;
     let mut img = DynamicImage::from_decoder(dec).map_err(|e| e.to_string())?;
     img.apply_orientation(orientation);
+    if let Some(max) = max {
+        img = img.thumbnail(max, max);
+    }
     let img = img.into_rgba32f();
     let (width, height) = img.dimensions();
     let pixels = img.pixels().map(|p| [p[0], p[1], p[2], 1.0]).collect();
     Ok(Photo { width, height, pixels })
 }
 
-/// Scene-linear Rec.709 preview of a RAW.
-fn load_raw(path: &Path) -> Result<Photo, String> {
+/// Scene-linear Rec.709 of a RAW, fitting `max` × `max` when given.
+fn load_raw(path: &Path, max: Option<u32>) -> Result<Photo, String> {
     let src = rawler::rawsource::RawSource::new(path).map_err(|e| e.to_string())?;
     let params = rawler::decoders::RawDecodeParams::default();
     let raw = rawler::decode(&src, &params).map_err(|e| e.to_string())?;
@@ -209,8 +226,8 @@ fn load_raw(path: &Path) -> Result<Photo, String> {
     use ProcessingStep::*;
     let dev = RawDevelop::new_with(&[Rescale, Demosaic, FujiRotate, CropActiveArea, CropDefault]);
     let linear = match dev.develop_intermediate(&raw).map_err(|e| e.to_string())? {
-        Intermediate::ThreeColor(px) => calibrated(&raw, &px.data, px.width, px.height),
-        Intermediate::FourColor(px) => calibrated(&raw, &px.data, px.width, px.height),
+        Intermediate::ThreeColor(px) => calibrated(&raw, &px.data, px.width, px.height, max),
+        Intermediate::FourColor(px) => calibrated(&raw, &px.data, px.width, px.height, max),
         Intermediate::Monochrome(_) => return Err("unsupported sensor layout".into()),
     };
     // Orient, then scale to scene exposure.
@@ -224,17 +241,25 @@ fn load_raw(path: &Path) -> Result<Photo, String> {
     Ok(photo)
 }
 
-/// Calibrated camera buffer at full resolution.
+/// Calibrated camera buffer, at full resolution or box-downscaled straight
+/// from it to fit `max` (no full-size RGBA copy).
 // shortcut: full-res f32 RGBA on the CPU (~400 MB for 24 MP); Phase 2 moves it to the GPU in f16.
-fn calibrated<const N: usize>(raw: &rawler::RawImage, px: &[[f32; N]], width: usize, height: usize) -> Photo {
+fn calibrated<const N: usize>(
+    raw: &rawler::RawImage,
+    px: &[[f32; N]],
+    width: usize,
+    height: usize,
+    max: Option<u32>,
+) -> Photo {
     let cal = Calibration::<N>::new(raw);
-    let pixels = px
-        .par_iter()
-        .map(|p| {
-            let [r, g, b] = cal.apply(p);
-            [r, g, b, 1.0]
-        })
-        .collect();
+    let rgba = |p: &[f32; N]| {
+        let [r, g, b] = cal.apply(p);
+        [r, g, b, 1.0]
+    };
+    if let Some(max) = max {
+        return box_downscale(px, width as u32, height as u32, max, rgba);
+    }
+    let pixels = px.par_iter().map(rgba).collect();
     Photo { width: width as u32, height: height as u32, pixels }
 }
 

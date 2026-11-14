@@ -67,7 +67,7 @@ enum Page {
 enum Msg {
     Open,
     Loaded(u64, PathBuf, Result<Decoded, String>),
-    /// A RAW re-encoded for a profile: (load generation, profile, pixels).
+    /// The preview encoded for a profile: (encode generation, profile, pixels).
     Encoded(u64, Profile, Arc<Photo>),
     Set(Field, f64),
     Wheel(usize, f32, f32),
@@ -151,7 +151,7 @@ enum Msg {
     /// Picture area of the Grade canvas, in device pixels.
     CanvasSize([f32; 2]),
     /// A zoomed view resampled and encoded: (view generation, pixels).
-    ViewReady(u64, Arc<Photo>),
+    ViewReady(u64, Profile, Arc<Photo>),
     /// Crop: edit mode on/off (off applies), Escape, ratio preset index,
     /// orientation swap, straighten angle, a dragged rectangle, reset.
     CropEdit(bool),
@@ -283,13 +283,16 @@ struct App {
     input: relm4::Sender<Msg>,
     crop: Crop,
     ratio: Ratio,
-    /// While editing the crop: the crop before editing (Escape restores it).
+    /// While editing the crop: the crop, ratio and ratio row before editing (Escape restores them).
     crop_before: Option<Crop>,
+    ratio_before: (Ratio, u32),
     /// Grade canvas zoom (None: fitted), its picture area in device pixels,
     /// and the latest zoomed view request (older results are dropped).
     zoom: Option<Zoom>,
     canvas: [f32; 2],
     view_gen: u64,
+    /// Latest preview encode (crop, profile or photo change); older results are dropped.
+    encode_gen: u64,
     ui: Ui,
 }
 
@@ -337,11 +340,15 @@ impl App {
             _ => [img.width, img.height],
         };
         self.ui.info.set_label(&format!("{name} · {} · {w}×{h}", profile.name()));
-        self.ui.zoom.tools.set_visible(!self.show_chart);
+        self.ui.zoom.tools.set_visible(!self.show_chart && self.crop_before.is_none());
         self.zoom_label();
-        self.send(Job::SetPhoto(img));
-        self.sent = None;
-        self.request_view();
+        if self.zoom.is_some() && !self.show_chart {
+            // Zoomed: the GPU keeps the zoomed view until its replacement is ready (no flash of the fit).
+            self.request_view();
+        } else {
+            self.send(Job::SetPhoto(img));
+            self.sent = None;
+        }
         self.ui.export.set_sensitive(true);
         self.ui.grade_stack.set_visible_child_name("image");
         self.gallery_stale = true;
@@ -472,7 +479,12 @@ impl App {
         self.load_gen += 1;
         let (s, generation, profile) = (sender.input_sender().clone(), self.load_gen, self.profile);
         std::thread::spawn(move || {
-            let r = Decoded::load(&path);
+            // One full-resolution decode at a time: each peaks above 1 GB on a 24 MP RAW.
+            static FULL_DECODE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let r = {
+                let _one = FULL_DECODE.lock().unwrap_or_else(|e| e.into_inner());
+                Decoded::load(&path)
+            };
             // The strip copy comes from this decode (RollAddPaths skips it), even if this load is superseded.
             let small = r.as_ref().map(|d| roll_copy(d, profile)).map_err(String::clone);
             s.emit(Msg::RollLoaded(path.clone(), small));
@@ -655,8 +667,9 @@ impl App {
         let (Some(d), Some(r)) = (self.decoded.clone(), self.shown_region()) else { return };
         let k = (PREVIEW_MAX as f32 / r.size[0].max(r.size[1])).min(1.0);
         let [w, h] = r.size.map(|v| ((v * k).round() as u32).max(1));
-        let (s, generation, profile) = (sender.input_sender().clone(), self.load_gen, self.profile);
-        std::thread::spawn(move || s.emit(Msg::Encoded(generation, profile, d.region(&r, w, h).encode(profile))));
+        self.encode_gen += 1;
+        let (s, generation, profile) = (sender.input_sender().clone(), self.encode_gen, self.profile);
+        std::thread::spawn(move || s.emit(Msg::Encoded(generation, profile, d.encode_region(&r, w, h, profile))));
     }
 
     fn layers_mut(&mut self, which: Layers) -> &mut Vec<LabLayer> {
@@ -1991,9 +2004,11 @@ impl SimpleComponent for App {
             crop: Crop::default(),
             ratio: Ratio::Free,
             crop_before: None,
+            ratio_before: (Ratio::Free, 0),
             zoom: None,
             canvas: [1.0, 1.0],
             view_gen: 0,
+            encode_gen: 0,
             ui: Ui {
                 window: window.clone(),
                 toasts,
@@ -2077,7 +2092,7 @@ impl SimpleComponent for App {
                     let (s, profile) = (sender.input_sender().clone(), self.profile);
                     std::thread::spawn(move || {
                         for p in fresh {
-                            let small = Decoded::load(&p).map(|d| roll_copy(&d, profile));
+                            let small = Decoded::load_max(&p, Some(ROLL_PX)).map(|d| roll_copy(&d, profile));
                             s.emit(Msg::RollLoaded(p, small));
                         }
                     });
@@ -2167,7 +2182,7 @@ impl SimpleComponent for App {
                 self.show_source();
             }
             Msg::Encoded(generation, profile, photo) => {
-                if generation == self.load_gen && profile == self.profile {
+                if generation == self.encode_gen && profile == self.profile {
                     self.photo = Some((photo, profile));
                     self.show_source();
                 }
@@ -2239,7 +2254,7 @@ impl SimpleComponent for App {
                 let s = sender.input_sender().clone();
                 std::thread::spawn(move || {
                     // References are display images (a still, a JPEG); RAWs are rendered neutrally.
-                    let r = Decoded::load(&path).map(|d| {
+                    let r = Decoded::load_max(&path, Some(1024)).map(|d| {
                         let reference = d.downscaled(1024).encode(Profile::Standard);
                         let thumb = rgba8(&reference.pixels);
                         (reference, thumb)
@@ -2673,6 +2688,7 @@ impl SimpleComponent for App {
                 }
                 self.set_zoom(None);
                 self.crop_before = Some(self.crop);
+                self.ratio_before = (self.ratio, self.ui.crop.ratio.selected());
                 self.ui.crop.overlay.set_visible(true);
                 self.ui.zoom.tools.set_visible(false);
                 self.crop_changed(&sender, true);
@@ -2686,16 +2702,23 @@ impl SimpleComponent for App {
             }
             Msg::CropCancel => {
                 if let Some(before) = self.crop_before {
+                    // State first, so the widgets' echoes (CropRatio, CropAngle) find nothing to change.
                     self.crop = before;
+                    (self.ratio, _) = self.ratio_before;
+                    self.ui.crop.ratio.set_selected(self.ratio_before.1);
                     self.ui.crop.angle.adj.set_value(before.angle as f64);
                     sender.input(Msg::CropEdit(false));
                 }
             }
             Msg::CropRatio(i) => {
-                self.ratio = PRESETS.get(i).map_or(Ratio::Free, |p| p.1);
-                self.ui.crop.swap.set_sensitive(matches!(self.ratio, Ratio::Fixed(a, b) if a != b));
-                self.fit_crop();
-                self.crop_changed(&sender, false);
+                let ratio = PRESETS.get(i).map_or(Ratio::Free, |p| p.1);
+                self.ui.crop.swap.set_sensitive(matches!(ratio, Ratio::Fixed(a, b) if a != b));
+                // Echo of a programmatic restore (Escape, reset): nothing to refit.
+                if ratio != self.ratio {
+                    self.ratio = ratio;
+                    self.fit_crop();
+                    self.crop_changed(&sender, false);
+                }
             }
             Msg::CropSwap => {
                 if let Ratio::Fixed(a, b) = self.ratio {
@@ -2706,8 +2729,9 @@ impl SimpleComponent for App {
             }
             Msg::CropAngle(a) if a == self.crop.angle => {}
             Msg::CropAngle(a) => {
-                self.crop.angle = a;
-                self.fit_crop();
+                if let Some((w, h)) = self.decoded.as_ref().map(|d| d.size()) {
+                    self.crop = crop::straighten(self.crop, a, w, h);
+                }
                 self.crop_changed(&sender, true);
             }
             Msg::CropRect(rect) => {
@@ -2716,14 +2740,16 @@ impl SimpleComponent for App {
             }
             Msg::CropReset => {
                 let editing = self.crop_before.is_some();
-                self.ui.crop.ratio.set_selected(0);
-                self.ui.crop.angle.adj.set_value(0.0);
                 self.ratio = Ratio::Free;
                 self.crop = Crop::default();
+                self.ui.crop.ratio.set_selected(0);
+                self.ui.crop.angle.adj.set_value(0.0);
                 self.crop_changed(&sender, editing);
             }
-            Msg::ViewReady(generation, photo) => {
-                if generation == self.view_gen && self.zoom.is_some() {
+            Msg::ViewReady(generation, profile, photo) => {
+                // Only onto the photo it was cut from, in the profile the shader decodes.
+                let shown = self.photo.as_ref().map(|p| p.1);
+                if generation == self.view_gen && self.zoom.is_some() && !self.show_chart && shown == Some(profile) {
                     self.send(Job::SetPhoto(photo));
                     self.sent = None;
                     self.render();
@@ -2754,11 +2780,11 @@ impl App {
     fn reset_crop(&mut self) {
         self.crop_before = None;
         self.crop = Crop::default();
+        self.ratio = Ratio::Free;
         self.ui.crop.edit.set_active(false);
         self.ui.crop.ratio.set_selected(0);
         self.ui.crop.angle.adj.set_value(0.0);
         self.ui.crop.overlay.set_visible(false);
-        self.ratio = Ratio::Free;
     }
 
     /// Pixel aspect the crop is held to (None: free).
@@ -2808,7 +2834,7 @@ impl App {
         self.view_gen += 1;
         let (s, generation, profile) = (self.input.clone(), self.view_gen, self.profile);
         // shortcut: one thread per request; a scroll burst resamples views nobody sees. Pool them if it shows.
-        std::thread::spawn(move || s.emit(Msg::ViewReady(generation, d.region(&r, w, h).encode(profile))));
+        std::thread::spawn(move || s.emit(Msg::ViewReady(generation, profile, d.encode_region(&r, w, h, profile))));
     }
 
     fn set_zoom(&mut self, zoom: Option<Zoom>) {

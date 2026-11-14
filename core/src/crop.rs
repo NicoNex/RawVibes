@@ -212,6 +212,19 @@ pub fn drag(start: Crop, h: Handle, d: [f32; 2], aspect: Option<f32>, img_w: u32
     if fits(&resized(1.0)) { resized(1.0) } else { resized(search(|t| fits(&resized(t)), true)) }
 }
 
+/// `c` at a new straighten `angle`: a crop as large as the image allows
+/// stays that large (growing back as the angle returns); any other keeps
+/// its framing, shrunk only if a corner would leave the image.
+pub fn straighten(c: Crop, angle: f32, img_w: u32, img_h: u32) -> Crop {
+    let shape = Ratio::Fixed(aspect(&c, img_w, img_h), 1.0);
+    let largest = fit_ratio(shape, img_w, img_h, c.angle);
+    if c.rect.iter().zip(largest.rect).all(|(a, b)| (a - b).abs() < 1e-3) {
+        fit_ratio(shape, img_w, img_h, angle)
+    } else {
+        clamp(Crop { angle, ..c }, img_w, img_h)
+    }
+}
+
 /// Width / height of the crop in pixels.
 pub fn aspect(c: &Crop, img_w: u32, img_h: u32) -> f32 {
     c.rect[2] * img_w as f32 / (c.rect[3] * img_h as f32)
@@ -269,6 +282,21 @@ mod tests {
     fn edges_cannot_cross() {
         let c = drag(RECT, Handle::W, [2.0, 0.0], None, 6000, 4000);
         assert!(c.rect[2] > 0.0, "{c:?}");
+    }
+
+    #[test]
+    fn straightening_a_full_crop_refits_it() {
+        let tilted = straighten(Crop::default(), 10.0, 6000, 4000);
+        let back = straighten(tilted, 0.0, 6000, 4000);
+        assert!(back.rect.iter().zip([0.0, 0.0, 1.0, 1.0]).all(|(a, b)| (a - b).abs() < 1e-4), "{back:?}");
+    }
+
+    #[test]
+    fn straightening_a_small_crop_keeps_its_framing() {
+        let small = Crop { rect: [0.1, 0.1, 0.3, 0.3], angle: 0.0 };
+        let c = straighten(small, 1.0, 6000, 4000);
+        assert!(c.rect.iter().zip(small.rect).all(|(a, b)| (a - b).abs() < 1e-5), "{c:?}");
+        assert_eq!(c.angle, 1.0);
     }
 
     #[test]

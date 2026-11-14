@@ -68,13 +68,14 @@ impl Zoom {
         if scale >= fit {
             return None;
         }
+        let scale = scale.max(MIN_SCALE);
         let from = from.unwrap_or(Zoom { scale: fit, center: [0.5, 0.5] });
         // The view is centred in the canvas, so a canvas offset from the
         // middle is that offset × scale in the crop.
         let offset = [0, 1].map(|i| (at[i] - canvas[i] / 2.0) / crop.size[i]);
         let point = [0, 1].map(|i| from.center[i] + offset[i] * from.scale);
         let center = [0, 1].map(|i| point[i] - offset[i] * scale);
-        Some(Zoom { scale: scale.max(MIN_SCALE), center }.clamped(crop, canvas))
+        Some(Zoom { scale, center }.clamped(crop, canvas))
     }
 
     /// Moves the view by a drag of `d` canvas pixels, kept inside the crop.
@@ -225,6 +226,12 @@ mod tests {
         let z = Zoom::zoom_at(None, 1.0, [0.0, 0.0], &CROP, CANVAS).unwrap();
         let (r, ..) = z.view(&CROP, CANVAS);
         assert_eq!((r.center, r.size), ([750.0, 500.0], [1500.0, 1000.0]));
+    }
+
+    #[test]
+    fn zooming_past_the_closest_zoom_does_not_move_the_view() {
+        let max = Zoom { scale: MIN_SCALE, center: [0.5, 0.5] };
+        assert_eq!(Zoom::zoom_at(Some(max), MIN_SCALE / 2.0, [10.0, 10.0], &CROP, CANVAS), Some(max));
     }
 
     #[test]

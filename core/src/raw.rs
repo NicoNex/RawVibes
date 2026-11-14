@@ -215,20 +215,7 @@ pub struct Pipelines {
 
 impl Pipelines {
     pub(crate) fn new(device: &wgpu::Device) -> Self {
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("raw.wgsl"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("raw.wgsl").into()),
-        });
-        let pipeline = |entry: &str| {
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some(entry),
-                layout: None,
-                module: &module,
-                entry_point: Some(entry),
-                compilation_options: Default::default(),
-                cache: None,
-            })
-        };
+        let pipeline = crate::gpu::shader(device, "raw.wgsl", include_str!("raw.wgsl"));
         Self {
             white_balance: pipeline("white_balance"),
             hl_partials: pipeline("hl_partials"),
@@ -387,9 +374,10 @@ impl Gpu {
         let params = self.raw_params(raw, [0; 4]);
         match &raw.pixels {
             Pixels::Bayer(mosaic) => {
-                let cfa = self.reconstruct(raw, mosaic)?;
+                // The uploaded mosaic is spent once reconstructed: it becomes the direction plane.
+                let (cfa, dir) = self.reconstruct_keep(raw, mosaic)?;
                 let plane = || self.buffer(n as u64 * 4, wgpu::BufferUsages::COPY_SRC);
-                let (r, g, b, dir, lpf) = (plane(), plane(), plane(), plane(), plane());
+                let (r, g, b, lpf) = (plane(), plane(), plane(), plane());
                 let all = grid(n);
                 self.passes(&[
                     (&p.rcd_init, &[(0, &params), (2, &cfa), (5, &r), (6, &g), (7, &b), (9, &lpf)], all),
@@ -549,6 +537,12 @@ impl Gpu {
 
     /// The mosaic white-balanced as shot, with clipped highlights rebuilt.
     pub fn reconstruct(&self, raw: &RawData, mosaic: &[f32]) -> Result<wgpu::Buffer, String> {
+        self.reconstruct_keep(raw, mosaic).map(|(out, _)| out)
+    }
+
+    /// [`Gpu::reconstruct`], also handing back the uploaded mosaic's buffer
+    /// (free once it ran) for the next passes to reuse.
+    fn reconstruct_keep(&self, raw: &RawData, mosaic: &[f32]) -> Result<(wgpu::Buffer, wgpu::Buffer), String> {
         let n = raw.width * raw.height;
         let bytes = n as u64 * 4;
         self.fits(bytes)?;
@@ -569,7 +563,7 @@ impl Gpu {
             (&p.hl_reduce, &[(0, &params), (3, &partials), (4, &chroma)], (1, 1)),
             (&p.hl_apply, &[(0, &params), (1, &cfa), (2, &out), (4, &chroma)], (gx, gy)),
         ]);
-        Ok(out)
+        Ok((out, cfa))
     }
 }
 

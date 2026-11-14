@@ -49,6 +49,29 @@ pub struct GpuLut {
 }
 
 pub(crate) const WORKGROUP: u32 = 256;
+
+/// A WGSL module, as a function from entry point to its compute pipeline
+/// (bind group layouts inferred from what each entry point uses).
+pub(crate) fn shader<'a>(
+    device: &'a wgpu::Device,
+    label: &str,
+    source: &str,
+) -> impl Fn(&str) -> wgpu::ComputePipeline + 'a {
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    move |entry| {
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(entry),
+            layout: None,
+            module: &module,
+            entry_point: Some(entry),
+            compilation_options: Default::default(),
+            cache: None,
+        })
+    }
+}
 /// Pixels sampled per image for the reference match.
 const MATCH_SAMPLES: usize = 200_000;
 
@@ -69,20 +92,9 @@ impl Gpu {
             ..Default::default()
         }))
         .map_err(|e| e.to_string())?;
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("grade.wgsl"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("grade.wgsl").into()),
-        });
-        let pipeline = |entry: &str| {
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some(entry),
-                layout: None,
-                module: &module,
-                entry_point: Some(entry),
-                compilation_options: Default::default(),
-                cache: None,
-            })
-        };
+        let pipeline = shader(&device, "grade.wgsl", include_str!("grade.wgsl"));
+        let (preview, apply, bake) = (pipeline("preview"), pipeline("apply_lut"), pipeline("bake"));
+        drop(pipeline); // it borrows `device`, which moves into Self below
         let uniform = |size: usize| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: None,
@@ -92,9 +104,9 @@ impl Gpu {
             })
         };
         Ok(Self {
-            preview: pipeline("preview"),
-            apply: pipeline("apply_lut"),
-            bake: pipeline("bake"),
+            preview,
+            apply,
+            bake,
             params: uniform(std::mem::size_of::<Params>()),
             curves: uniform(CURVES * CURVE_RES * 4),
             no_lut: uniform(16),

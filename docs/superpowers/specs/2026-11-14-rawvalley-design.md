@@ -84,9 +84,8 @@ works in-camera.
   redistribution with a GPL app.
 - AI model shipped inside the installation (size is not a concern; the best
   model wins).
-- Commit checkpoints while developing; every ~2500 new lines (inherited
-  VibingLUT code excluded), a code review round and a simplify round before
-  the commit.
+- Commit checkpoints while developing; one code review round and one
+  simplify round at the end of each delivery phase (not per task).
 
 ## Decisions made with the author
 

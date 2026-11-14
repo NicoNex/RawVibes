@@ -95,6 +95,16 @@ works in-camera.
   (2) RAW development and "as in camera"; (3) detail tools; (4) AI
   denoise; (5) photo export and LUT export.
 - AI denoise runs locally on the GPU; model bundled.
+- (2026-11-14) Everything that makes sense runs on the GPU, RAW load included
+  (rescale, highlight reconstruction, RCD, develop). Development works in
+  linear Rec.2020, gamut-compressed at the profile encode.
+- (2026-11-14) "As in camera" in every section that has a camera
+  equivalent, a global button, and a preference that applies it when a RAW
+  without a sidecar opens.
+- (2026-11-14) Preview quality while editing is a preference (Fast /
+  Balanced / Best): drafts while dragging, full quality when settled.
+- (2026-11-14) The Grade's white balance section is named "Warmth"; Develop
+  owns "White balance" and "Exposure".
 
 ## Architecture (builder's calls, stated here so they can be rejected)
 

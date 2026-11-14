@@ -12,6 +12,7 @@ mod lab_page;
 mod presets_ui;
 mod settings;
 mod widgets;
+mod zoom_ui;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,6 +23,7 @@ use gettextrs::gettext;
 use lab_page::{LabAdd, LabKind, LabLayer, LabUi, Layers, caption};
 use presets_ui::PresetsUi;
 use rawvalley_core::chart::test_chart;
+use rawvalley_core::crop::{self, Crop};
 use rawvalley_core::gpu::{self, CompareBase, Done, Job};
 use rawvalley_core::grade::{
     BAND_HUE_RANGE, BAND_HUES, Curve, Grade, HUE_HUE, HUE_SAT, LUM_SAT, LUMA, MASTER, MATCH_L, Params, Stage,
@@ -32,10 +34,12 @@ use rawvalley_core::photo::{Decoded, PREVIEW_MAX, Photo, RASTER_EXTS, RAW_EXTS, 
 use rawvalley_core::preset::{self, Preset};
 use rawvalley_core::profiles::Profile;
 use rawvalley_core::scopes::{HIST_H, HIST_W, Scopes, VEC_SIZE};
+use rawvalley_core::view::{Region, Zoom};
 use relm4::adw::prelude::*;
 use relm4::gtk::{gdk, gio, glib};
 use relm4::{ComponentParts, ComponentSender, RelmApp, SimpleComponent, adw, gtk};
 use widgets::{ColorWheel, CurveEditor, Slider};
+use zoom_ui::{ZoomCmd, ZoomUi};
 
 const APP_ID: &str = "io.github.rawvalley.RawValley";
 
@@ -141,6 +145,11 @@ enum Msg {
     RollRemove(usize),
     Grid(bool),
     Gpu(Done),
+    Zoom(ZoomCmd),
+    /// Picture area of the Grade canvas, in device pixels.
+    CanvasSize([f32; 2]),
+    /// A zoomed view resampled and encoded: (view generation, pixels).
+    ViewReady(u64, Arc<Photo>),
 }
 
 /// A photo of the filmstrip: its file, a small decoded copy once read, and
@@ -196,6 +205,7 @@ struct Ui {
     canvas_stack: gtk::Stack,
     grid_btn: gtk::ToggleButton,
     legend: gtk::Revealer,
+    zoom: ZoomUi,
 }
 
 struct App {
@@ -259,6 +269,12 @@ struct App {
     match_gen: u64,
     /// The component's own input, for timers and worker threads.
     input: relm4::Sender<Msg>,
+    crop: Crop,
+    /// Grade canvas zoom (None: fitted), its picture area in device pixels,
+    /// and the latest zoomed view request (older results are dropped).
+    zoom: Option<Zoom>,
+    canvas: [f32; 2],
+    view_gen: u64,
     ui: Ui,
 }
 
@@ -301,9 +317,16 @@ impl App {
             (Some(p), false) => p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
             _ => gettext("Test chart"),
         };
-        self.ui.info.set_label(&format!("{name} · {} · {}×{}", profile.name(), img.width, img.height));
+        let [w, h] = match (self.crop_region(), self.show_chart) {
+            (Some(r), false) => r.size.map(|v| v.round() as u32),
+            _ => [img.width, img.height],
+        };
+        self.ui.info.set_label(&format!("{name} · {} · {w}×{h}", profile.name()));
+        self.ui.zoom.tools.set_visible(!self.show_chart);
+        self.zoom_label();
         self.send(Job::SetPhoto(img));
         self.sent = None;
+        self.request_view();
         self.ui.export.set_sensitive(true);
         self.ui.grade_stack.set_visible_child_name("image");
         self.gallery_stale = true;
@@ -611,14 +634,14 @@ impl App {
         }
     }
 
-    /// The open file fitted to `PREVIEW_MAX` and expressed in the current
-    /// profile, off the main thread (rasters are already a signal).
+    /// The open file's crop fitted to `PREVIEW_MAX` and expressed in the
+    /// current profile, off the main thread (rasters are already a signal).
     fn encode_photo(&mut self, sender: &ComponentSender<Self>) {
-        let Some(d) = self.decoded.clone() else { return };
+        let (Some(d), Some(r)) = (self.decoded.clone(), self.crop_region()) else { return };
+        let k = (PREVIEW_MAX as f32 / r.size[0].max(r.size[1])).min(1.0);
+        let [w, h] = r.size.map(|v| ((v * k).round() as u32).max(1));
         let (s, generation, profile) = (sender.input_sender().clone(), self.load_gen, self.profile);
-        std::thread::spawn(move || {
-            s.emit(Msg::Encoded(generation, profile, d.downscaled(PREVIEW_MAX).encode(profile)))
-        });
+        std::thread::spawn(move || s.emit(Msg::Encoded(generation, profile, d.region(&r, w, h).encode(profile))));
     }
 
     fn layers_mut(&mut self, which: Layers) -> &mut Vec<LabLayer> {
@@ -1401,6 +1424,7 @@ impl SimpleComponent for App {
             .build();
         let canvas = gtk::Overlay::builder().child(&grade_pic).css_classes(["canvas"]).build();
         canvas.add_overlay(&info);
+        let zoom = ZoomUi::new(&canvas, &sender);
         // Preview aids, top right: clipping stripes and the filmstrip grid.
         let clip_btn = gtk::ToggleButton::builder()
             .icon_name("dialog-warning-symbolic")
@@ -1441,9 +1465,8 @@ impl SimpleComponent for App {
         let legend = gtk::Revealer::builder()
             .child(&legend_box)
             .transition_type(gtk::RevealerTransitionType::Crossfade)
-            .halign(gtk::Align::End)
+            .halign(gtk::Align::Center)
             .valign(gtk::Align::End)
-            .margin_end(16)
             .margin_bottom(16)
             .build();
         canvas.add_overlay(&legend);
@@ -1865,6 +1888,18 @@ impl SimpleComponent for App {
         let w = window.clone();
         let snd = sender.clone();
         shortcut("<Control>comma", Box::new(move || snd.input(Msg::Preferences)));
+        for (accel, cmd) in [
+            ("<Control>0", ZoomCmd::Fit),
+            ("<Control>1", ZoomCmd::Actual),
+            ("<Control>plus", ZoomCmd::In),
+            ("<Control>equal", ZoomCmd::In),
+            ("<Control>KP_Add", ZoomCmd::In),
+            ("<Control>minus", ZoomCmd::Out),
+            ("<Control>KP_Subtract", ZoomCmd::Out),
+        ] {
+            let snd = sender.clone();
+            shortcut(accel, Box::new(move || snd.input(Msg::Zoom(cmd))));
+        }
         shortcut("<Control>question", Box::new(move || shortcuts_dialog().present(Some(&w))));
         window.add_controller(shortcuts);
 
@@ -1922,6 +1957,10 @@ impl SimpleComponent for App {
             match_file: false,
             match_gen: 0,
             input: sender.input_sender().clone(),
+            crop: Crop::default(),
+            zoom: None,
+            canvas: [1.0, 1.0],
+            view_gen: 0,
             ui: Ui {
                 window: window.clone(),
                 toasts,
@@ -1947,6 +1986,7 @@ impl SimpleComponent for App {
                 canvas_stack,
                 grid_btn,
                 legend,
+                zoom,
             },
         };
         OPEN.with(|o| o.set(sender.input_sender().clone()).ok());
@@ -2074,6 +2114,8 @@ impl SimpleComponent for App {
             Msg::Loaded(generation, ..) if generation != self.load_gen => {}
             Msg::Loaded(_, path, Ok(decoded)) => {
                 self.ui.window.set_title(Some(&format!("{} — RawValley", file_label(&path))));
+                self.zoom = None;
+                self.crop = Crop::default();
                 self.decoded = Some(decoded);
                 self.path = Some(path);
                 // Opening a photo means you want to see it.
@@ -2576,14 +2618,101 @@ impl SimpleComponent for App {
             }
             Msg::Page(page) => {
                 self.page = page;
+                // Zoom is a Grade canvas view; the other pages show the whole photo.
+                if !matches!(page, Page::Grade) {
+                    self.set_zoom(None);
+                }
                 self.refresh();
             }
             Msg::Gpu(done) => self.on_gpu(done),
+            Msg::Zoom(cmd) => self.on_zoom(cmd),
+            Msg::CanvasSize(area) => {
+                self.canvas = area;
+                self.request_view();
+                self.zoom_label();
+            }
+            Msg::ViewReady(generation, photo) => {
+                if generation == self.view_gen && self.zoom.is_some() {
+                    self.send(Job::SetPhoto(photo));
+                    self.sent = None;
+                    self.render();
+                }
+            }
         }
     }
 }
 
 impl App {
+    /// The crop in full-resolution pixels of the open photo.
+    fn crop_region(&self) -> Option<Region> {
+        let (w, h) = self.decoded.as_ref()?.size();
+        Some(crop::region(&self.crop, w, h))
+    }
+
+    /// Re-renders the zoomed view (if any) at full resolution, off the main thread.
+    fn request_view(&mut self) {
+        let (Some(z), Some(d), Some(crop), false) =
+            (self.zoom, self.decoded.clone(), self.crop_region(), self.show_chart)
+        else {
+            return;
+        };
+        let (r, w, h) = z.view(&crop, self.canvas);
+        self.view_gen += 1;
+        let (s, generation, profile) = (self.input.clone(), self.view_gen, self.profile);
+        // shortcut: one thread per request; a scroll burst resamples views nobody sees. Pool them if it shows.
+        std::thread::spawn(move || s.emit(Msg::ViewReady(generation, d.region(&r, w, h).encode(profile))));
+    }
+
+    fn set_zoom(&mut self, zoom: Option<Zoom>) {
+        let was = std::mem::replace(&mut self.zoom, zoom);
+        if zoom.is_some() {
+            self.request_view();
+        } else if was.is_some() {
+            // Back to the fitted photo.
+            self.view_gen += 1;
+            if let Some((img, _)) = self.active().cloned() {
+                self.send(Job::SetPhoto(img));
+                self.sent = None;
+                self.render();
+            }
+        }
+        self.zoom_label();
+    }
+
+    fn zoom_label(&self) {
+        let scale = match (self.zoom, self.crop_region()) {
+            (Some(z), _) => z.scale,
+            (None, Some(r)) => Zoom::fit_scale(&r, self.canvas),
+            (None, None) => 1.0,
+        };
+        self.ui.zoom.label.set_label(&format!("{:.0}%", 100.0 / scale));
+    }
+
+    fn on_zoom(&mut self, cmd: ZoomCmd) {
+        let Some(crop) = self.crop_region().filter(|_| !self.show_chart && matches!(self.page, Page::Grade)) else {
+            return;
+        };
+        let canvas = self.canvas;
+        let middle = canvas.map(|v| v / 2.0);
+        let scale = self.zoom.map_or_else(|| Zoom::fit_scale(&crop, canvas), |z| z.scale);
+        let at = |s: f32, p: [f32; 2]| Zoom::zoom_at(self.zoom, s, p, &crop, canvas);
+        let zoom = match cmd {
+            ZoomCmd::Fit => None,
+            ZoomCmd::Actual => at(1.0, middle),
+            ZoomCmd::In => at(scale / std::f32::consts::SQRT_2, middle),
+            ZoomCmd::Out => at(scale * std::f32::consts::SQRT_2, middle),
+            // One wheel notch is a √2 step; touchpads scroll in fractions of it.
+            ZoomCmd::Scroll { dy, at: p } => at(scale * 2f32.powf(dy as f32 / 2.0), p),
+            ZoomCmd::Toggle(p) => self.zoom.map_or_else(|| at(1.0, p), |_| None),
+            // The primary button drags the before/after split while comparing.
+            ZoomCmd::Pan { button: 1, .. } if self.compare => return,
+            ZoomCmd::Pan { d, .. } => self.zoom.map(|z| z.pan(d, &crop, canvas)),
+        };
+        if zoom != self.zoom {
+            self.set_zoom(zoom);
+        }
+    }
+
     fn on_gpu(&mut self, done: Done) {
         match done {
             Done::Ready(name) => self.toast(&format!("GPU: {name}")),
@@ -2695,6 +2824,10 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
         (gettext("Show clipping"), "c"),
         (gettext("Skin tone line"), "k"),
         (gettext("Grid of all photos"), "g"),
+        (gettext("Zoom to fit"), "<Control>0"),
+        (gettext("Actual size"), "<Control>1"),
+        (gettext("Zoom in"), "<Control>plus"),
+        (gettext("Zoom out"), "<Control>minus"),
         (gettext("Save preset"), "<Control>s"),
         (gettext("Grade view"), "<Alt>1"),
         (gettext("Compare LUTs view"), "<Alt>2"),

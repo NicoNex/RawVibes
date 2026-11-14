@@ -17,6 +17,73 @@ pub struct Region {
     pub angle: f32,
 }
 
+/// A zoomed view of a crop: `scale` image pixels per device pixel, and
+/// the view's centre in the crop (0..1 on each axis, in its rotated frame).
+/// Canvas sizes and points are in device pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Zoom {
+    pub scale: f32,
+    pub center: [f32; 2],
+}
+
+/// Closest zoom: 800%.
+pub const MIN_SCALE: f32 = 1.0 / 8.0;
+
+impl Zoom {
+    /// The scale at which the whole crop fits the canvas.
+    pub fn fit_scale(crop: &Region, canvas: [f32; 2]) -> f32 {
+        (crop.size[0] / canvas[0]).max(crop.size[1] / canvas[1])
+    }
+
+    /// Visible half-extent in crop units (0.5 = the whole axis).
+    fn half(&self, crop: &Region, canvas: [f32; 2]) -> [f32; 2] {
+        [0, 1].map(|i| (canvas[i] * self.scale / crop.size[i] / 2.0).min(0.5))
+    }
+
+    fn clamped(mut self, crop: &Region, canvas: [f32; 2]) -> Self {
+        let h = self.half(crop, canvas);
+        self.center = [0, 1].map(|i| self.center[i].clamp(h[i], 1.0 - h[i]));
+        self
+    }
+
+    /// The visible part of the crop, and its size on screen.
+    pub fn view(&self, crop: &Region, canvas: [f32; 2]) -> (Region, u32, u32) {
+        let z = self.clamped(crop, canvas);
+        let h = z.half(crop, canvas);
+        let out = [0, 1].map(|i| ((2.0 * h[i] * crop.size[i] / self.scale).round() as u32).max(1));
+        let (sin, cos) = crop.angle.to_radians().sin_cos();
+        let (dx, dy) = ((z.center[0] - 0.5) * crop.size[0], (z.center[1] - 0.5) * crop.size[1]);
+        let region = Region {
+            center: [crop.center[0] + cos * dx - sin * dy, crop.center[1] + sin * dx + cos * dy],
+            size: [out[0] as f32 * self.scale, out[1] as f32 * self.scale],
+            angle: crop.angle,
+        };
+        (region, out[0], out[1])
+    }
+
+    /// Zoom from `from` (None = fit) to `scale`, keeping the crop point under
+    /// canvas point `at` in place. None when `scale` shows the whole crop.
+    pub fn zoom_at(from: Option<Zoom>, scale: f32, at: [f32; 2], crop: &Region, canvas: [f32; 2]) -> Option<Zoom> {
+        let fit = Self::fit_scale(crop, canvas);
+        if scale >= fit {
+            return None;
+        }
+        let from = from.unwrap_or(Zoom { scale: fit, center: [0.5, 0.5] });
+        // The view is centred in the canvas, so a canvas offset from the
+        // middle is that offset × scale in the crop.
+        let offset = [0, 1].map(|i| (at[i] - canvas[i] / 2.0) / crop.size[i]);
+        let point = [0, 1].map(|i| from.center[i] + offset[i] * from.scale);
+        let center = [0, 1].map(|i| point[i] - offset[i] * scale);
+        Some(Zoom { scale: scale.max(MIN_SCALE), center }.clamped(crop, canvas))
+    }
+
+    /// Moves the view by a drag of `d` canvas pixels, kept inside the crop.
+    pub fn pan(self, d: [f32; 2], crop: &Region, canvas: [f32; 2]) -> Self {
+        let center = [0, 1].map(|i| self.center[i] - d[i] * self.scale / crop.size[i]);
+        Zoom { center, ..self }.clamped(crop, canvas)
+    }
+}
+
 /// The photo at full resolution and halved copies down to 1×1.
 #[derive(Debug)]
 pub struct Pyramid {
@@ -136,6 +203,57 @@ mod tests {
         let out = Pyramid::new(src).resample(&Region { center: [2.0, 2.0], size: [4.0, 4.0], angle: 90.0 }, 4, 4);
         let bright: Vec<_> = (0..16).filter(|&i| out.pixels[i][0] > 0.5).map(|i| (i % 4, i / 4)).collect();
         assert_eq!(bright, [(0, 3)]);
+    }
+
+    const CROP: Region = Region { center: [3000.0, 2000.0], size: [6000.0, 4000.0], angle: 0.0 };
+    const CANVAS: [f32; 2] = [1500.0, 1000.0];
+
+    #[test]
+    fn fit_scale_fits_the_crop() {
+        assert_eq!(Zoom::fit_scale(&CROP, CANVAS), 4.0);
+    }
+
+    #[test]
+    fn centred_view_at_100_percent() {
+        let (r, w, h) = Zoom { scale: 1.0, center: [0.5, 0.5] }.view(&CROP, CANVAS);
+        assert_eq!((r, w, h), (Region { center: [3000.0, 2000.0], size: [1500.0, 1000.0], angle: 0.0 }, 1500, 1000));
+    }
+
+    #[test]
+    fn zoom_keeps_the_point_under_the_cursor() {
+        // At fit the canvas's top-left corner shows the image's; zooming there keeps it.
+        let z = Zoom::zoom_at(None, 1.0, [0.0, 0.0], &CROP, CANVAS).unwrap();
+        let (r, ..) = z.view(&CROP, CANVAS);
+        assert_eq!((r.center, r.size), ([750.0, 500.0], [1500.0, 1000.0]));
+    }
+
+    #[test]
+    fn zooming_out_past_fit_is_fit() {
+        assert_eq!(Zoom::zoom_at(None, 5.0, [10.0, 10.0], &CROP, CANVAS), None);
+    }
+
+    #[test]
+    fn pan_stays_inside_the_crop() {
+        let z = Zoom { scale: 1.0, center: [0.5, 0.5] }.pan([1e6, -1e6], &CROP, CANVAS);
+        let (r, ..) = z.view(&CROP, CANVAS);
+        // Dragging right/up shows the left/bottom edge.
+        assert_eq!(r.center, [750.0, 3500.0]);
+    }
+
+    #[test]
+    fn small_crop_is_shown_whole_at_100_percent() {
+        let small = Region { center: [400.0, 300.0], size: [800.0, 600.0], angle: 0.0 };
+        let (r, w, h) = Zoom { scale: 1.0, center: [0.2, 0.9] }.view(&small, CANVAS);
+        assert_eq!((r.center, w, h), ([400.0, 300.0], 800, 600));
+    }
+
+    #[test]
+    fn view_follows_a_rotated_crop() {
+        let rotated = Region { angle: 90.0, ..CROP };
+        let (r, ..) = Zoom { scale: 1.0, center: [0.0, 0.5] }.pan([0.0, 0.0], &rotated, CANVAS).view(&rotated, CANVAS);
+        // The crop's left edge, turned 90°, lies above its centre.
+        assert_eq!(r.center.map(f32::round), [3000.0, 2000.0 - 3000.0 + 750.0]);
+        assert_eq!(r.angle, 90.0);
     }
 
     #[test]

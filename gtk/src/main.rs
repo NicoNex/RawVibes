@@ -88,7 +88,6 @@ enum Msg {
     Reload,
     /// A sidebar section switched off/on (`None` = the LUTs after the grade).
     Bypass(Option<Stage>, bool),
-    /// Compare LUTs on the untouched photo instead of on top of the grade.
     /// LUT browser shown or hidden.
     Browse(bool),
     /// LUT browser: preview library LUT i on the photo (None: none), its
@@ -257,7 +256,6 @@ struct App {
     /// Sections switched off with their eye toggle; they are left out of preview and export.
     bypassed: Vec<Stage>,
     looks_off: bool,
-    /// Compare LUTs on top of the Grade page's edits (off: on the untouched photo).
     /// The LUT browser is open (its thumbnails follow the grade).
     browsing: bool,
     /// Library LUT previewed after the looks (not part of them until
@@ -269,7 +267,7 @@ struct App {
     flash_new_look: bool,
     /// What the Compare base was last built from: grade, looks (by identity), profile.
     base_key: Option<BaseKey>,
-    /// Thumbnails need re-rendering (new source or library) next time Compare is shown.
+    /// Thumbnails need re-rendering (new source or library) next time the browser opens.
     gallery_stale: bool,
     lab_input: Profile,
     lab_blend: Blend,
@@ -616,7 +614,7 @@ impl App {
         }
     }
 
-    /// Hands the Grade page's result to Compare LUTs; true when it changed.
+    /// Hands the Grade page's result to the browser thumbnails; true when it changed.
     fn sync_compare_base(&mut self) -> bool {
         let input = self.source_profile();
         let (grade, looks) = (self.graded(), self.look_layers());
@@ -745,7 +743,8 @@ impl App {
                         self.source_profile(),
                         sender,
                     );
-                    self.ui.sidebar.look_blend.set_visible(self.looks.len() > 1);
+                    // Shown with two looks, and while Mix is on so it can be switched back.
+                    self.ui.sidebar.look_blend.set_visible(self.looks.len() > 1 || self.look_blend == Blend::Mix);
                     // Show where a LUT added from the browser went.
                     let last = self.ui.sidebar.looks.row_at_index(self.looks.len() as i32 - 1);
                     if let Some(row) = last.filter(|_| std::mem::take(&mut self.flash_new_look)) {
@@ -763,7 +762,7 @@ impl App {
     /// Sends the looks, plus the previewed candidate, to the photo and the filmstrip.
     fn show_looks(&mut self) {
         let mut layers = self.look_layers();
-        if let Some((_, lut)) = &self.candidate {
+        if let Some((_, lut)) = self.candidate.as_ref().filter(|_| !self.looks_off) {
             let input = Profile::guess_from_name(&lut.title);
             layers.push(Layer { source: Source::Lut(lut.clone()), intensity: 1.0, input });
         }
@@ -790,11 +789,15 @@ impl App {
     /// Reloads the library when files appear, change or go in its folder or
     /// sub-folders (a new sub-folder is seen by its parent, then watched).
     fn watch_folders(&mut self, sender: &ComponentSender<Self>) {
-        let root = settings::folder(settings::LUT_FOLDER);
-        let parents = self.luts.iter().filter_map(|l| l.path.parent().map(PathBuf::from));
-        let mut dirs: Vec<PathBuf> = root.into_iter().chain(parents).collect();
-        dirs.sort();
-        dirs.dedup();
+        // Every folder, empty ones too, so LUTs copied into a new sub-folder show up.
+        let mut dirs: Vec<PathBuf> = settings::folder(settings::LUT_FOLDER).into_iter().collect();
+        let mut i = 0;
+        while let Some(d) = dirs.get(i).cloned() {
+            i += 1;
+            let subs = std::fs::read_dir(&d).into_iter().flatten().flatten();
+            // file_type() does not follow symlinks, so a link loop cannot recurse forever.
+            dirs.extend(subs.filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.path()));
+        }
         self.monitors = dirs
             .iter()
             .filter_map(|d| {
@@ -1675,6 +1678,8 @@ impl SimpleComponent for App {
         // ---------------- compare page
         let flow = gtk::FlowBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
+            // A click previews; Enter or a double-click adds.
+            .activate_on_single_click(false)
             .min_children_per_line(2)
             .max_children_per_line(2)
             .homogeneous(true)
@@ -1965,7 +1970,7 @@ impl SimpleComponent for App {
         prefs_row.add_suffix(&prefs_btn);
         let prefs_group = adw::PreferencesGroup::builder()
             .title(gettext("LUT library"))
-            .description(gettext("LUT files in this folder and its subfolders appear in Compare LUTs."))
+            .description(gettext("LUT files in this folder and its subfolders appear in the LUT browser."))
             .build();
         prefs_group.add(&prefs_row);
         let prefs_page =
@@ -2561,6 +2566,8 @@ impl SimpleComponent for App {
                 self.ui
                     .folder_label
                     .set_label(&dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+                // Watched before the scan, so files added while it runs trigger another one.
+                self.watch_folders(&sender);
                 let s = sender.input_sender().clone();
                 std::thread::spawn(move || {
                     let (luts, errors, truncated) = Lut3d::load_dir(&dir);
@@ -2576,12 +2583,18 @@ impl SimpleComponent for App {
                 let keep_selected = self.selected.and_then(path_of);
                 let keep_candidate = self.candidate.as_ref().and_then(|c| path_of(c.0));
                 let keep_group = self.group.take();
+                let flow = self.ui.flow.clone();
+                let had_focus = flow.root().and_then(|r| r.focus()).is_some_and(|f| f.is_ancestor(&flow));
+                if had_focus {
+                    // Focus falling back into an emptied FlowBox selects its first new card: park it.
+                    self.ui.sidebar.browse_btn.grab_focus();
+                }
                 self.ui.flow.remove_all();
                 self.ui.thumbs.clear();
                 if truncated {
                     self.toast(&gettext!("Very large library: showing the first {} LUTs", MAX_LIBRARY));
                 }
-                for lut in &luts {
+                for (i, lut) in luts.iter().enumerate() {
                     let pic = gtk::Picture::builder().content_fit(gtk::ContentFit::Cover).height_request(64).build();
                     let badge = gtk::Label::builder()
                         .label(lut.format.badge())
@@ -2609,7 +2622,7 @@ impl SimpleComponent for App {
                         lut.size
                     )));
                     let motion = gtk::EventControllerMotion::new();
-                    let (s, i) = (sender.input_sender().clone(), self.ui.flow.observe_children().n_items() as usize);
+                    let s = sender.input_sender().clone();
                     motion.connect_enter(move |_, _, _| s.emit(Msg::Hover(Some(i))));
                     card.add_controller(motion);
                     self.ui.flow.append(&card);
@@ -2631,7 +2644,6 @@ impl SimpleComponent for App {
                 self.ui.groups.set_selected(group.map_or(0, |i| i as u32 + 1));
                 self.lut_paths = Arc::new(luts.iter().map(|l| l.path.clone()).collect());
                 self.luts = luts;
-                self.watch_folders(&sender);
                 self.filter_gallery();
                 let find = |p: Option<PathBuf>| p.and_then(|p| self.luts.iter().position(|l| l.path == p));
                 self.selected = find(keep_selected);
@@ -2639,8 +2651,12 @@ impl SimpleComponent for App {
                     (Some(i), Some(c)) => c.0 = i,
                     _ => self.drop_candidate(),
                 }
-                if let Some(c) = self.selected.and_then(|i| self.ui.flow.child_at_index(i as i32)) {
-                    self.ui.flow.select_child(&c);
+                let kept = self.selected.and_then(|i| flow.child_at_index(i as i32));
+                if let Some(c) = &kept {
+                    flow.select_child(c);
+                }
+                if had_focus {
+                    kept.or_else(|| flow.child_at_index(0)).map_or_else(|| flow.grab_focus(), |c| c.grab_focus());
                 }
                 self.gallery_stale = true;
                 self.refresh_gallery();
@@ -2671,16 +2687,26 @@ impl SimpleComponent for App {
                 if on {
                     // Once revealed: the sidebar scrolls to the browser and the grid takes the
                     // keyboard, so arrows browse at once.
-                    let (flow, btn, scroll) =
-                        (self.ui.flow.clone(), self.ui.sidebar.browse_btn.clone(), self.ui.sidebar.scroll.clone());
+                    let (flow, btn, scroll, browse) = (
+                        self.ui.flow.clone(),
+                        self.ui.sidebar.browse_btn.clone(),
+                        self.ui.sidebar.scroll.clone(),
+                        self.ui.sidebar.browse.clone(),
+                    );
                     glib::timeout_add_local_once(std::time::Duration::from_millis(260), move || {
                         if let Some(p) =
                             scroll.child().and_then(|c| btn.compute_point(&c, &gtk::graphene::Point::zero()))
                         {
                             scroll.vadjustment().set_value(p.y() as f64 - 12.0);
                         }
-                        flow.child_at_index(0).map_or_else(|| flow.grab_focus(), |c| c.grab_focus());
+                        // Ctrl+F put the focus in the search entry: leave it there.
+                        let inside = browse.root().and_then(|r| r.focus()).is_some_and(|f| f.is_ancestor(&browse));
+                        if !inside {
+                            flow.child_at_index(0).map_or_else(|| flow.grab_focus(), |c| c.grab_focus());
+                        }
                     });
+                } else {
+                    self.drop_candidate();
                 }
                 self.refresh_gallery();
             }
@@ -2731,15 +2757,23 @@ impl SimpleComponent for App {
             }
             Msg::HoverSettled(..) => {}
             Msg::Commit(i) => {
+                self.flash_new_look = true;
                 match self.candidate.take().filter(|c| c.0 == i) {
                     Some((_, lut)) => self.push_lut(Layers::Look, lut, &sender),
                     None => {
                         self.candidate = None;
-                        sender.input(Msg::LayerAdd(Layers::Look, LabAdd::Selected));
+                        if let Some(entry) = self.luts.get(i) {
+                            let (p, s) = (entry.path.clone(), sender.input_sender().clone());
+                            std::thread::spawn(move || {
+                                s.emit(Msg::LayerLoaded(Layers::Look, p.clone(), Lut3d::load(&p)))
+                            });
+                        }
                     }
                 }
+                // Added: no longer a preview, so leaving the grid cannot bring it back on top of itself.
                 self.preview_req = None;
-                self.flash_new_look = true;
+                self.selected = None;
+                self.ui.flow.unselect_all();
             }
             Msg::Escape => {
                 if self.editing.is_some() {
@@ -2817,7 +2851,10 @@ impl SimpleComponent for App {
                 sender.input(Msg::LayerAdd(Layers::Lab, LabAdd::Selected));
             }
             Msg::LayerLoaded(which, _, Ok(lut)) => self.push_lut(which, Arc::new(lut), &sender),
-            Msg::LayerLoaded(_, p, Err(e)) => self.toast(&gettext!("Cannot read {}: {}", p.display(), e)),
+            Msg::LayerLoaded(_, p, Err(e)) => {
+                self.flash_new_look = false;
+                self.toast(&gettext!("Cannot read {}: {}", p.display(), e))
+            }
             Msg::LayerRemove(which, i) => {
                 if i < self.layers_mut(which).len() {
                     self.layers_mut(which).remove(i);
@@ -2869,7 +2906,10 @@ impl SimpleComponent for App {
                     s.emit(Msg::FolderSettled(n))
                 });
             }
-            Msg::FolderSettled(n) if n == self.folder_changes => sender.input(Msg::Reload),
+            Msg::FolderSettled(n) if n == self.folder_changes => match settings::folder(settings::LUT_FOLDER) {
+                Some(dir) => sender.input(Msg::Folder(dir)),
+                None => self.toast(&gettext("The LUT folder was moved or deleted: press F5 to choose it again")),
+            },
             Msg::FolderSettled(_) => {}
             Msg::LabBlend(b) => {
                 self.lab_blend = b;

@@ -156,7 +156,7 @@ pub fn build(sender: &ComponentSender<App>, export_menu: &gio::Menu) -> LabUi {
     // 1 · Layers
     let add_menu = gio::Menu::new();
     add_menu.append(Some(gettext("LUT from file…").as_str()), Some("win.lab-add::file"));
-    add_menu.append(Some(gettext("LUT selected in Compare").as_str()), Some("win.lab-add::selected"));
+    add_menu.append(Some(gettext("LUT selected in the browser").as_str()), Some("win.lab-add::selected"));
     add_menu.append(Some(gettext("Current grade").as_str()), Some("win.lab-add::grade"));
     add_menu.append(Some(gettext("Profile conversion").as_str()), Some("win.lab-add::convert"));
     let add = gtk::MenuButton::builder()
@@ -350,12 +350,15 @@ pub fn layer_rows(
             .active(!l.on)
             .css_classes(["flat", "circular"])
             .build();
-        eye.update_property(&[gtk::accessible::Property::Label(&gettext!("Switch off {}", title))]);
-        let snd = sender.clone();
+        let label = if l.on { gettext!("Switch off {}", title) } else { gettext!("Switch on {}", title) };
+        eye.update_property(&[gtk::accessible::Property::Label(&label)]);
+        let (snd, title) = (sender.clone(), title.clone());
         eye.connect_toggled(move |b| {
             let on = !b.is_active();
             b.set_icon_name(if on { "view-reveal-symbolic" } else { "view-conceal-symbolic" });
             b.set_tooltip_text(Some(&if on { gettext("Switch off") } else { gettext("Switch on") }));
+            let label = if on { gettext!("Switch off {}", title) } else { gettext!("Switch on {}", title) };
+            b.update_property(&[gtk::accessible::Property::Label(&label)]);
             snd.input(Msg::LayerOn(which, i, on));
         });
         head.append(&eye);

@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use image::metadata::Orientation;
 use image::{DynamicImage, ImageDecoder, ImageReader, Rgba32FImage};
-use rawler::imgop::develop::{Intermediate, ProcessingStep, RawDevelop};
 pub use rawler::imgop::matrix::multiply_row1;
 pub use rawler::imgop::srgb::{srgb_apply_gamma, srgb_invert_gamma};
 use rayon::prelude::*;
@@ -184,6 +183,14 @@ impl Photo {
             .expect("pixel count matches dimensions")
     }
 
+    /// Turned as EXIF `orientation` (1–8) says.
+    pub(crate) fn oriented(self, orientation: u16) -> Self {
+        let o = Orientation::from_exif(orientation as u8).unwrap_or(Orientation::NoTransforms);
+        let mut img = DynamicImage::ImageRgba32F(self.into_image());
+        img.apply_orientation(o);
+        Self::from_image(img.into_rgba32f())
+    }
+
     pub(crate) fn from_image(img: Rgba32FImage) -> Self {
         Self { width: img.width(), height: img.height(), pixels: bytemuck::allocation::cast_vec(img.into_raw()) }
     }
@@ -257,39 +264,15 @@ pub const RAW_SMALL: u32 = 1024;
 // shortcut: filmstrip photos and match references skip the GPU (RCD, inpaint opposed); route them through
 // `Gpu::load_raw` + `Gpu::small` if their highlights ever look wrong at strip size.
 fn load_raw_small(path: &Path, max: u32) -> Result<Decoded, String> {
-    let src = rawler::rawsource::RawSource::new(path).map_err(|e| e.to_string())?;
-    let params = rawler::decoders::RawDecodeParams::default();
-    let raw = rawler::decode(&src, &params).map_err(|e| e.to_string())?;
-    // Decoders such as Panasonic's leave `raw.orientation` at Normal; the EXIF
-    // Orientation tag is the reliable source (6/8 = portrait shots).
-    let exif_orientation = rawler::get_decoder(&src)
-        .and_then(|d| d.raw_metadata(&src, &params))
-        .ok()
-        .and_then(|m| m.exif.orientation)
-        .unwrap_or_else(|| raw.orientation.to_u16());
-    use ProcessingStep::*;
-    let dev = RawDevelop::new_with(&[Rescale, Demosaic, FujiRotate, CropActiveArea, CropDefault]);
-    let mut camera = crate::raw::camera(&raw);
-    let g = camera.as_shot;
-    let (small, w, h) = match dev.develop_intermediate(&raw).map_err(|e| e.to_string())? {
-        Intermediate::ThreeColor(px) => {
-            let rgba = |p: &[f32; 3]| balanced(std::array::from_fn(|c| p[c] * g[c]));
-            (box_downscale(&px.data, px.width as u32, px.height as u32, max, rgba), px.width, px.height)
-        }
-        Intermediate::FourColor(px) => {
-            camera = Camera::neutral();
-            let cal = crate::raw::four_colour(&raw);
-            let rgba = |p: &[f32; 4]| balanced(cal(p));
-            (box_downscale(&px.data, px.width as u32, px.height as u32, max, rgba), px.width, px.height)
-        }
-        Intermediate::Monochrome(_) => return Err("unsupported sensor layout".into()),
-    };
-    let orientation = Orientation::from_exif(exif_orientation as u8).unwrap_or(Orientation::NoTransforms);
-    let mut img = DynamicImage::ImageRgba32F(small.into_image());
-    img.apply_orientation(orientation);
-    let quarter = matches!(exif_orientation, 5..=8);
-    let size = if quarter { (h as u32, w as u32) } else { (w as u32, h as u32) };
-    Ok(Decoded::raw(Photo::from_image(img.into_rgba32f()), camera, size))
+    let (raw, orientation) = crate::raw::decode(path)?;
+    let (rgb, w, h, camera) = crate::raw::cpu_rgb(&raw)?;
+    let small = box_downscale(&rgb, w as u32, h as u32, max, |p| balanced(*p)).oriented(orientation);
+    Ok(Decoded::raw(small, camera, oriented_size((w as u32, h as u32), orientation)))
+}
+
+/// `size` after EXIF `orientation`: 5–8 turn the image a quarter.
+pub fn oriented_size((w, h): (u32, u32), orientation: u16) -> (u32, u32) {
+    if matches!(orientation, 5..=8) { (h, w) } else { (w, h) }
 }
 
 /// A balanced camera colour with clipped highlights faded to neutral: a

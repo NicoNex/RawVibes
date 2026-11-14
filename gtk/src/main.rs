@@ -431,8 +431,6 @@ struct App {
     /// A development control is moving: RAW views render at the draft scale.
     drafting: bool,
     develop_tick: u64,
-    /// The white-balance picker waits for a click on the photo.
-    picking: bool,
     /// The camera match of a file, once computed.
     camera_match: Option<(PathBuf, Match)>,
     /// The match in flight is the camera's, for this file.
@@ -450,8 +448,6 @@ struct App {
     looks_loading: bool,
     /// A sidecar write failed this session (reported once).
     save_failed: bool,
-    /// The RAW whose GPU load is in flight, by load generation (`Done::RawLoaded` carries no path).
-    raw_loading: Vec<(u64, PathBuf)>,
     encode_again: bool,
     encoded: Option<Region>,
     ui: Ui,
@@ -972,7 +968,6 @@ impl App {
                 self.ui.sidebar.develop.picker.set_active(false);
             }
             DevelopEdit::Pick(on) => {
-                self.picking = on;
                 self.ui.grade_pic.set_cursor_from_name(on.then_some("crosshair"));
                 return;
             }
@@ -2705,7 +2700,6 @@ impl SimpleComponent for App {
             quality: PreviewQuality::stored(),
             drafting: false,
             develop_tick: 0,
-            picking: false,
             camera_match: None,
             camera_job: None,
             match_parts: (true, true),
@@ -2714,7 +2708,6 @@ impl SimpleComponent for App {
             save_tick: 0,
             looks_loading: false,
             save_failed: false,
-            raw_loading: Vec::new(),
             encode_again: false,
             encoded: None,
             ui: Ui {
@@ -2925,7 +2918,7 @@ impl SimpleComponent for App {
                 }
             }
             Msg::CanvasClick(p) => {
-                if let Some(at) = self.image_point(p).filter(|_| self.picking) {
+                if let Some(at) = self.image_point(p).filter(|_| self.ui.sidebar.develop.picker.is_active()) {
                     self.send(Job::SampleRaw { at, radius: 4 });
                 }
             }
@@ -2951,10 +2944,7 @@ impl SimpleComponent for App {
                     s.emit(Msg::RollLoaded(path, small));
                 });
             }
-            Msg::RawRead(generation, path, Ok(raw)) => {
-                self.raw_loading.push((generation, path));
-                self.send(Job::LoadRaw(generation, raw));
-            }
+            Msg::RawRead(generation, path, Ok(raw)) => self.send(Job::LoadRaw(generation, path, raw)),
             Msg::RawRead(generation, path, Err(e)) => {
                 sender.input(Msg::RollLoaded(path.clone(), Err(e.clone())));
                 sender.input(Msg::Loaded(generation, path, Err(e)));
@@ -3465,7 +3455,7 @@ impl SimpleComponent for App {
                 self.clear_selection();
             }
             Msg::Escape => {
-                if self.picking {
+                if self.ui.sidebar.develop.picker.is_active() {
                     self.ui.sidebar.develop.picker.set_active(false);
                 } else if self.editing.is_some() {
                     sender.input(Msg::CropCancel);
@@ -3845,15 +3835,16 @@ impl App {
                     self.ui.filmstrip.set_frame(index, &texture(width, height, rgba));
                 }
             }
-            Done::RawLoaded(generation, r) => {
-                let Some(i) = self.raw_loading.iter().position(|l| l.0 == generation) else { return };
+            Done::RawLoaded(generation, path, r) => {
                 // The strip copy always; `Loaded` drops itself when a newer open superseded it.
-                let (_, path) = self.raw_loading.remove(i);
                 let small = r.as_ref().map(|d| roll_copy(d, self.profile)).map_err(String::clone);
                 self.input.emit(Msg::RollLoaded(path.clone(), small));
                 self.input.emit(Msg::Loaded(generation, path, r));
             }
-            Done::Developed { view: false, profile, photo, .. } => self.input.emit(Msg::Encoded(profile, photo)),
+            Done::Developed { view: false, profile, photo: Some(photo), .. } => {
+                self.input.emit(Msg::Encoded(profile, photo))
+            }
+            Done::Developed { view: false, .. } => {}
             Done::Developed { view: true, generation, profile, .. } => {
                 // Already what the GPU renders: only redraw, onto the photo it was cut from.
                 let shown = self.photo.as_ref().map(|p| p.1);

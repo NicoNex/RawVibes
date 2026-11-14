@@ -268,7 +268,7 @@ pub enum Job {
     SetPhoto(Arc<Photo>),
     /// A RAW to develop on the GPU from now on (replaces the previous one);
     /// answered by `Done::RawLoaded` with the same generation.
-    LoadRaw(u64, Arc<RawData>),
+    LoadRaw(u64, PathBuf, Arc<RawData>),
     /// The loaded RAW developed into what the grade renders: the fitted
     /// photo (`view: false`, also feeds the thumbnails) or a zoomed view.
     DevelopRaw {
@@ -394,13 +394,14 @@ pub enum Done {
     },
     Matched(u64, Match),
     /// A RAW is on the GPU: its small CPU copy, camera and full size.
-    RawLoaded(u64, Result<Decoded, String>),
+    RawLoaded(u64, PathBuf, Result<Decoded, String>),
     /// What `Job::DevelopRaw` produced, now also what the grade renders.
     Developed {
         generation: u64,
         view: bool,
         profile: Profile,
-        photo: Arc<Photo>,
+        /// The fitted photo on the CPU (`None` for views: nobody reads them back).
+        photo: Option<Arc<Photo>>,
     },
     /// What `Job::SampleRaw` read: as-shot-balanced camera RGB.
     Sampled([f32; 3]),
@@ -488,27 +489,28 @@ impl Worker {
                 self.photo = Some(gpu.upload(&p));
                 self.source = Some(p);
             }
-            Job::LoadRaw(generation, data) => {
+            Job::LoadRaw(generation, path, data) => {
                 // The previous RAW stays until this one loads: a failed open keeps editing it.
                 let loaded = gpu.load_raw(&data).map(|raw| {
-                    let (w, h) = raw.size();
-                    let size = if matches!(raw.orientation, 5..=8) { (h, w) } else { (w, h) };
+                    let size = raw.oriented_size();
                     let small = gpu.small(&raw, RAW_SMALL);
                     let decoded = Decoded::raw(small, raw.camera.clone(), size);
                     self.raw = Some(raw);
                     decoded
                 });
-                notify(Done::RawLoaded(generation, loaded));
+                notify(Done::RawLoaded(generation, path, loaded));
             }
             Job::DevelopRaw { generation, region, width, height, develop, profile, view } => {
                 let Some(raw) = &self.raw else { return };
                 // shortcut: a develop too large for the GPU is skipped (the preview stays); only a huge HiDPI canvas gets there.
                 let Ok(ph) = gpu.develop(raw, &region, width, height, &develop, profile) else { return };
-                let photo = Arc::new(gpu.read_photo(&ph));
                 if view {
                     self.viewing = true;
                     self.photo = Some(ph);
-                } else {
+                    return notify(Done::Developed { generation, view, profile, photo: None });
+                }
+                let photo = Arc::new(gpu.read_photo(&ph));
+                {
                     self.thumb = Some(gpu.upload(&photo.downscaled(THUMB_MAX)));
                     // SetPhoto with these pixels is then a no-op: they are already on the GPU.
                     self.source = Some(photo.clone());
@@ -519,7 +521,7 @@ impl Worker {
                         self.photo = Some(ph);
                     }
                 }
-                notify(Done::Developed { generation, view, profile, photo });
+                notify(Done::Developed { generation, view, profile, photo: Some(photo) });
             }
             Job::SampleRaw { at, radius } => {
                 if let Some(raw) = &self.raw {

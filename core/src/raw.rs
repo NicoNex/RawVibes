@@ -48,17 +48,7 @@ impl std::fmt::Debug for RawData {
 
 /// Decodes `path` up to the point where the GPU takes over.
 pub fn read_raw(path: &Path) -> Result<RawData, String> {
-    let src = rawler::rawsource::RawSource::new(path).map_err(|e| e.to_string())?;
-    let params = rawler::decoders::RawDecodeParams::default();
-    let mut raw = rawler::decode(&src, &params).map_err(|e| e.to_string())?;
-    // Decoders such as Panasonic's leave `raw.orientation` at Normal; the EXIF
-    // Orientation tag is the reliable source (6/8 = portrait shots).
-    let orientation = rawler::get_decoder(&src)
-        .and_then(|d| d.raw_metadata(&src, &params))
-        .ok()
-        .and_then(|m| m.exif.orientation)
-        .unwrap_or_else(|| raw.orientation.to_u16());
-    let camera = camera(&raw);
+    let (mut raw, orientation) = decode(path)?;
     let (w, h) = (raw.width as u32, raw.height as u32);
     let bayer = match &raw.photometric {
         RawPhotometricInterpretation::Cfa(c) if raw.cpp == 1 && c.cfa.is_rgb() && c.sensor == SensorType::Bayer => {
@@ -84,24 +74,10 @@ pub fn read_raw(path: &Path) -> Result<RawData, String> {
             pattern_size: [cfa.width as u32, cfa.height as u32],
             crop,
             orientation,
-            camera,
+            camera: camera(&raw),
         });
     }
-    // X-Trans, 4-colour and linear RAWs: rawler demosaics on the CPU.
-    use ProcessingStep::*;
-    let dev = RawDevelop::new_with(&[Rescale, Demosaic, FujiRotate, CropActiveArea, CropDefault]);
-    let (rgb, w, h, camera) = match dev.develop_intermediate(&raw).map_err(|e| e.to_string())? {
-        Intermediate::ThreeColor(px) => {
-            let g = camera.as_shot;
-            (px.data.iter().map(|p| std::array::from_fn(|c| p[c] * g[c])).collect(), px.width, px.height, camera)
-        }
-        // shortcut: CYGM/RGBE sensors are calibrated to Rec.2020 here, so Kelvin WB acts on Rec.2020; upgrade if one is reported.
-        Intermediate::FourColor(px) => {
-            let cal = four_colour(&raw);
-            (px.data.iter().map(cal).collect(), px.width, px.height, Camera::neutral())
-        }
-        Intermediate::Monochrome(_) => return Err("unsupported sensor layout".into()),
-    };
+    let (rgb, w, h, camera) = cpu_rgb(&raw)?;
     let (w, h) = (w as u32, h as u32);
     Ok(RawData {
         pixels: Pixels::Rgb(rgb),
@@ -115,14 +91,57 @@ pub fn read_raw(path: &Path) -> Result<RawData, String> {
     })
 }
 
+/// A RAW file decoded by rawler, and its EXIF orientation (1–8).
+pub(crate) fn decode(path: &Path) -> Result<(rawler::RawImage, u16), String> {
+    let src = rawler::rawsource::RawSource::new(path).map_err(|e| e.to_string())?;
+    let params = rawler::decoders::RawDecodeParams::default();
+    let raw = rawler::decode(&src, &params).map_err(|e| e.to_string())?;
+    // Decoders such as Panasonic's leave `raw.orientation` at Normal; the EXIF
+    // Orientation tag is the reliable source (6/8 = portrait shots).
+    let orientation = rawler::get_decoder(&src)
+        .and_then(|d| d.raw_metadata(&src, &params))
+        .ok()
+        .and_then(|m| m.exif.orientation)
+        .unwrap_or_else(|| raw.orientation.to_u16());
+    Ok((raw, orientation))
+}
+
+/// Camera RGB pixels, width, height and camera model.
+pub(crate) type CpuRgb = (Vec<[f32; 3]>, usize, usize, Camera);
+
+/// Demosaiced by rawler on the CPU (X-Trans, 4-colour and linear RAWs, small
+/// copies): as-shot-balanced camera RGB, its size, and the camera model.
+pub(crate) fn cpu_rgb(raw: &rawler::RawImage) -> Result<CpuRgb, String> {
+    use ProcessingStep::*;
+    let dev = RawDevelop::new_with(&[Rescale, Demosaic, FujiRotate, CropActiveArea, CropDefault]);
+    match dev.develop_intermediate(raw).map_err(|e| e.to_string())? {
+        Intermediate::ThreeColor(mut px) => {
+            let camera = camera(raw);
+            let g = camera.as_shot;
+            px.data.iter_mut().for_each(|p| (0..3).for_each(|c| p[c] *= g[c]));
+            Ok((px.data, px.width, px.height, camera))
+        }
+        // shortcut: CYGM/RGBE sensors are calibrated to Rec.2020 here, so Kelvin WB acts on Rec.2020; upgrade if one is reported.
+        Intermediate::FourColor(px) => {
+            let cal = four_colour(raw);
+            Ok((px.data.iter().map(cal).collect(), px.width, px.height, Camera::neutral()))
+        }
+        Intermediate::Monochrome(_) => Err("unsupported sensor layout".into()),
+    }
+}
+
+/// D65-adapted XYZ → camera matrix of an N-colour sensor, when the file has one.
+fn xyz2cam<const N: usize>(raw: &rawler::RawImage) -> Option<[[f32; 3]; N]> {
+    use Illuminant::*;
+    let (illu, m) = raw.color_matrix_find_first([D65, A, B, C, D50, D55, D75, Daylight, Flash])?;
+    let m = transform_1d::<N, 3>(m.get(..N * 3)?)?;
+    Some(if illu == D65 { m } else { multiply(&m, &bradford_adaption_matrix(&illu, &D65)) })
+}
+
 /// The camera's colour model from the file: D65-adapted colour matrix and
 /// as-shot multipliers.
 pub(crate) fn camera(raw: &rawler::RawImage) -> Camera {
-    use Illuminant::*;
-    let xyz2cam = raw.color_matrix_find_first([D65, A, B, C, D50, D55, D75, Daylight, Flash]).and_then(|(illu, m)| {
-        let m = transform_1d::<3, 3>(m.get(..9)?)?;
-        Some(if illu == D65 { m } else { multiply(&m, &bradford_adaption_matrix(&illu, &D65)) })
-    });
+    let xyz2cam = xyz2cam::<3>(raw);
     let as_shot = [raw.wb_coeffs[0], raw.wb_coeffs[1], raw.wb_coeffs[2]];
     match xyz2cam {
         // shortcut: DNG BaselineExposure is not exposed by rawler 0.8; 0 EV until it is.
@@ -144,6 +163,11 @@ impl GpuRaw {
     pub fn size(&self) -> (u32, u32) {
         (self.levels[0].1, self.levels[0].2)
     }
+
+    /// Full-resolution size as shown (after orientation).
+    pub fn oriented_size(&self) -> (u32, u32) {
+        crate::photo::oriented_size(self.size(), self.orientation)
+    }
 }
 
 /// Longest side of the smallest mip level.
@@ -152,13 +176,9 @@ const MIP_MIN: u32 = 256;
 /// CYGM/RGBE camera values → linear Rec.2020: as-shot WB and the 4×3 colour
 /// matrix, as phase 1 calibrated them (to Rec.709 then).
 pub(crate) fn four_colour(raw: &rawler::RawImage) -> impl Fn(&[f32; 4]) -> [f32; 3] + Sync + use<> {
-    use Illuminant::*;
     let wb: [f32; 4] =
         std::array::from_fn(|c| if raw.wb_coeffs[0].is_nan() { 1.0 } else { raw.wb_coeffs[c] / raw.wb_coeffs[1] });
-    let xyz2cam = raw.color_matrix_find_first([D65, A, B, C, D50, D55, D75, Daylight, Flash]).and_then(|(illu, m)| {
-        let m = transform_1d::<4, 3>(m.get(..12)?)?;
-        Some(if illu == D65 { m } else { multiply(&m, &bradford_adaption_matrix(&illu, &D65)) })
-    });
+    let xyz2cam = xyz2cam::<4>(raw);
     let cam2rgb: Option<[[f32; 4]; 3]> =
         xyz2cam.map(|m| pseudo_inverse(normalize(multiply(&m, &crate::profiles::rec2020_to_xyz()))));
     move |p| {
@@ -187,6 +207,8 @@ pub struct Pipelines {
     rgb_pack: wgpu::ComputePipeline,
     mip: wgpu::ComputePipeline,
     develop: wgpu::ComputePipeline,
+    /// The OETF table of the last profile developed into.
+    oetf: std::cell::RefCell<Option<(Profile, wgpu::Buffer)>>,
 }
 
 impl Pipelines {
@@ -220,6 +242,7 @@ impl Pipelines {
             rgb_pack: pipeline("rgb_pack"),
             mip: pipeline("mip"),
             develop: pipeline("develop"),
+            oetf: Default::default(),
         }
     }
 }
@@ -419,11 +442,15 @@ impl Gpu {
             _pad: [0.0; 3],
         };
         let params = self.storage(bytemuck::bytes_of(&params));
-        let table = self.storage(bytemuck::cast_slice(&oetf_table(profile)));
+        let mut oetf = self.raw.oetf.borrow_mut();
+        if oetf.as_ref().is_none_or(|(p, _)| *p != profile) {
+            *oetf = Some((profile, self.storage(bytemuck::cast_slice(&oetf_table(profile)))));
+        }
+        let table = &oetf.as_ref().expect("set above").1;
         let n = w as u64 * h as u64;
         let src = self.buffer(n * 16, wgpu::BufferUsages::COPY_SRC);
         let p = &self.raw;
-        self.passes(&[(&p.develop, &[(10, level), (12, &params), (13, &src), (14, &table)], grid(w * h))]);
+        self.passes(&[(&p.develop, &[(10, level), (12, &params), (13, &src), (14, table)], grid(w * h))]);
         let (out, staging) = self.output(n * 4);
         Ok(GpuPhoto { src, out, staging, width: w, height: h })
     }
@@ -442,18 +469,9 @@ impl Gpu {
     /// camera RGB on the CPU (filmstrip copy, match source).
     pub fn small(&self, raw: &GpuRaw, max: u32) -> Photo {
         let k = raw.levels.iter().position(|l| l.1.max(l.2) <= max).unwrap_or(raw.levels.len() - 1);
-        let (_, w, h) = raw.levels[k];
-        let img = image::Rgba32FImage::from_fn(w, h, |_, _| image::Rgba([0.0; 4]));
-        let mut img = image::DynamicImage::ImageRgba32F(img);
-        if let image::DynamicImage::ImageRgba32F(buf) = &mut img {
-            for (dst, c) in buf.pixels_mut().zip(self.read_level(raw, k)) {
-                *dst = image::Rgba([c[0], c[1], c[2], 1.0]);
-            }
-        }
-        let o = image::metadata::Orientation::from_exif(raw.orientation as u8)
-            .unwrap_or(image::metadata::Orientation::NoTransforms);
-        img.apply_orientation(o);
-        Photo::from_image(img.into_rgba32f())
+        let (_, width, height) = raw.levels[k];
+        let pixels = self.read_level(raw, k).into_iter().map(|[r, g, b]| [r, g, b, 1.0]).collect();
+        Photo { width, height, pixels }.oriented(raw.orientation)
     }
 
     /// Mean camera RGB (as-shot balanced) of the full-resolution pixels within
@@ -502,8 +520,7 @@ impl Gpu {
     /// A mip level as f32 RGB.
     fn read_level(&self, raw: &GpuRaw, k: usize) -> Vec<[f32; 3]> {
         let words: Vec<u32> = bytemuck::cast_slice(&self.read_f32(&raw.levels[k].0)).to_vec();
-        let half = |h: u32| f16_to_f32(h as u16);
-        words.chunks_exact(2).map(|w| [half(w[0]), half(w[0] >> 16), half(w[1])]).collect()
+        words.chunks_exact(2).map(unpack).collect()
     }
 
     /// The mosaic white-balanced as shot, with clipped highlights rebuilt.
@@ -546,6 +563,11 @@ fn sensor_point([x, y]: [f32; 2], orientation: u16, w: u32, h: u32) -> [f32; 2] 
         8 => [w - y, x],
         _ => [x, y],
     }
+}
+
+/// A packed level pixel (two words of f16, as `pack` in `raw.wgsl` writes them) as RGB.
+fn unpack(w: &[u32]) -> [f32; 3] {
+    [f16_to_f32(w[0] as u16), f16_to_f32((w[0] >> 16) as u16), f16_to_f32(w[1] as u16)]
 }
 
 /// IEEE half → f32 (CPU readback of mip levels).

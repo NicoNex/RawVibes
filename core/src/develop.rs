@@ -11,7 +11,6 @@ use crate::photo::{RAW_TO_SCENE, view_transform};
 use crate::profiles::{Profile, rec2020_to_rec709, rec2020_to_xyz};
 
 type M3 = [[f32; 3]; 3];
-const IDENTITY: M3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 /// What the user set in the Develop group.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -66,7 +65,7 @@ impl Camera {
 
     /// Pixels already in linear Rec.2020 (4-colour sensors, calibrated at load).
     pub fn neutral() -> Self {
-        Self::new(invert(&rec2020_to_xyz()), [1.0; 3], 0.0)
+        Self::new(pseudo_inverse(rec2020_to_xyz()), [1.0; 3], 0.0)
     }
 
     /// WB multipliers for `kelvin`/`tint`, relative to as shot (G = 1).
@@ -80,7 +79,7 @@ impl Camera {
     pub fn kelvin_tint(&self, gains: [f32; 3]) -> [f32; 2] {
         // The neutral those gains make grey, as a camera colour, then as uv.
         let cam: [f32; 3] = std::array::from_fn(|c| 1.0 / (gains[c] * self.as_shot[c]).max(1e-6));
-        let target = xy_to_uv(xyz_to_xy(multiply_row1(&invert(&self.xyz2cam), &cam)));
+        let target = xy_to_uv(xyz_to_xy(multiply_row1(&pseudo_inverse(self.xyz2cam), &cam)));
         // Nearest locus point, searched in mired (perceptually even).
         let dist = |mired: f32| {
             let p = locus_uv(1e6 / mired, 0.0);
@@ -214,20 +213,6 @@ fn xyz_to_xy(c: [f32; 3]) -> [f32; 2] {
     [c[0] / s, c[1] / s]
 }
 
-fn invert(m: &M3) -> M3 {
-    let d = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
-        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
-    if d.abs() < 1e-12 {
-        return IDENTITY;
-    }
-    let c = |a: usize, b: usize, e: usize, f: usize| m[a][b] * m[e][f] - m[a][f] * m[e][b];
-    [
-        [c(1, 1, 2, 2) / d, -c(0, 1, 2, 2) / d, c(0, 1, 1, 2) / d],
-        [-c(1, 0, 2, 2) / d, c(0, 0, 2, 2) / d, -c(0, 0, 1, 2) / d],
-        [c(1, 0, 2, 1) / d, -c(0, 0, 2, 1) / d, c(0, 0, 1, 1) / d],
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,17 +224,6 @@ mod tests {
         let xyz2cam = [[0.7, -0.15, -0.06], [-0.42, 1.24, 0.19], [-0.08, 0.17, 0.62]];
         let as_shot = Camera::new(xyz2cam, [1.0; 3], 0.0).gains(5200.0, 3.0);
         Camera::new(xyz2cam, as_shot, 0.0)
-    }
-
-    #[test]
-    fn invert_inverts() {
-        let m = [[2.0, 0.5, 0.1], [0.3, 1.5, -0.2], [0.0, 0.4, 0.9]];
-        let p = multiply(&m, &invert(&m));
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!((p[i][j] - IDENTITY[i][j]).abs() < 1e-5, "{p:?}");
-            }
-        }
     }
 
     #[test]

@@ -12,5 +12,6 @@ pub mod matching;
 pub mod photo;
 pub mod preset;
 pub mod profiles;
+pub mod raw;
 pub mod scopes;
 pub mod view;

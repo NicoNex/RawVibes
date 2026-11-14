@@ -15,8 +15,8 @@ use crate::profiles::Profile;
 use crate::scopes::Scopes;
 
 pub struct Gpu {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    pub(crate) device: wgpu::Device,
+    pub(crate) queue: wgpu::Queue,
     preview: wgpu::ComputePipeline,
     apply: wgpu::ComputePipeline,
     bake: wgpu::ComputePipeline,
@@ -25,6 +25,8 @@ pub struct Gpu {
     curves: wgpu::Buffer,
     /// Bound in place of a look LUT when there is none.
     no_lut: wgpu::Buffer,
+    /// RAW load and develop passes (`raw.wgsl`).
+    pub(crate) raw: crate::raw::Pipelines,
     pub name: String,
 }
 
@@ -43,7 +45,7 @@ pub struct GpuLut {
     size: u32,
 }
 
-const WORKGROUP: u32 = 256;
+pub(crate) const WORKGROUP: u32 = 256;
 /// Pixels sampled per image for the reference match.
 const MATCH_SAMPLES: usize = 200_000;
 
@@ -93,13 +95,14 @@ impl Gpu {
             params: uniform(std::mem::size_of::<Params>()),
             curves: uniform(CURVES * CURVE_RES * 4),
             no_lut: uniform(16),
+            raw: crate::raw::Pipelines::new(&device),
             name: format!("{} ({:?})", info.name, info.backend),
             device,
             queue,
         })
     }
 
-    fn storage(&self, bytes: &[u8]) -> wgpu::Buffer {
+    pub(crate) fn storage(&self, bytes: &[u8]) -> wgpu::Buffer {
         self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
             contents: bytes,
@@ -122,7 +125,7 @@ impl Gpu {
         )
     }
 
-    fn bind(&self, pipeline: &wgpu::ComputePipeline, entries: &[(u32, &wgpu::Buffer)]) -> wgpu::BindGroup {
+    pub(crate) fn bind(&self, pipeline: &wgpu::ComputePipeline, entries: &[(u32, &wgpu::Buffer)]) -> wgpu::BindGroup {
         let entries: Vec<_> = entries
             .iter()
             .map(|(b, buf)| wgpu::BindGroupEntry { binding: *b, resource: buf.as_entire_binding() })

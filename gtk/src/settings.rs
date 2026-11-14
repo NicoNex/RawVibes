@@ -1,4 +1,4 @@
-//! Tiny persisted preferences under `$XDG_CONFIG_HOME/vibinglut/`.
+//! Tiny persisted preferences under `$XDG_CONFIG_HOME/rawvalley/`.
 // ponytail: one file per value; switch to GSettings once there are many.
 
 use std::path::{Path, PathBuf};
@@ -11,7 +11,7 @@ pub const LUT_FOLDER: &str = "lut-folder";
 pub const PHOTO_FOLDER: &str = "photo-folder";
 
 fn file(name: &str) -> PathBuf {
-    glib::user_config_dir().join("vibinglut").join(name)
+    glib::user_config_dir().join("rawvalley").join(name)
 }
 
 pub fn folder(key: &str) -> Option<PathBuf> {
@@ -25,7 +25,7 @@ pub fn set_folder(key: &str, dir: &Path) -> std::io::Result<()> {
     std::fs::write(f, dir.to_string_lossy().as_bytes())
 }
 
-/// Where presets are saved (`vibinglut_core::preset` JSON files).
+/// Where presets are saved (`rawvalley_core::preset` JSON files).
 pub fn presets_dir() -> PathBuf {
     file("presets")
 }

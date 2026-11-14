@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="data/io.github.vibinglut.VibingLUT.svg" width="112" alt="VibingLUT app icon">
+<img src="data/io.github.rawvalley.RawValley.svg" width="112" alt="RawValley app icon">
 
-# VibingLUT
+# RawValley
 
 ### The colorist's workbench for 3D LUTs.
 
@@ -17,19 +17,19 @@ Free, open source, native Linux desktop app.
 ![GPU: Vulkan · Metal](https://img.shields.io/badge/GPU-Vulkan%20·%20Metal-8b5cf6)
 ![Formats](https://img.shields.io/badge/LUT-.cube%20·%20.vlt%20·%20HALD-22c55e)
 
-<img src="docs/screenshots/grade.jpg" alt="VibingLUT grading a seaside photo with a before/after split, scopes and colour controls" width="100%">
+<img src="docs/screenshots/grade.jpg" alt="RawValley grading a seaside photo with a before/after split, scopes and colour controls" width="100%">
 
 </div>
 
 ---
 
-## Why VibingLUT?
+## Why RawValley?
 
 Every colorist ends up with the same problems: dozens of LUTs nobody remembers, looks
 built for the wrong log curve, and a full NLE to open just to bake or audition one
 cube.
 
-VibingLUT is a dedicated **LUT workbench**. Grade a still with professional tools and
+RawValley is a dedicated **LUT workbench**. Grade a still with professional tools and
 get a mathematically exact LUT out of it. Audition your whole collection on the same
 frame. Chain or mix LUTs, and retarget them between log profiles: a look built for
 ARRI LogC4 can run on Sony S-Log3, and a Fujifilm F-Log LUT can run on Panasonic
@@ -70,7 +70,7 @@ V-Log or Rec.709. The results go to your grading suite, your editor or your came
 
 <img src="docs/screenshots/compare.jpg" alt="Compare LUTs view: a gallery of LUT thumbnails rendered on the same photo" width="100%">
 
-Point VibingLUT at a folder (sub-folders included) and every LUT is rendered on
+Point RawValley at a folder (sub-folders included) and every LUT is rendered on
 **your** photo as a thumbnail, with tetrahedral interpolation on the GPU. You can
 search by name, filter by sub-folder, and click a thumbnail to see it full size with
 a before/after split. `.cube`, `.vlt` and HALD `.png` LUTs are all recognised, with a
@@ -143,7 +143,7 @@ exactly, with no second decode.
 ## How it works
 
 1. **Open a photo:** drag it in, press `Ctrl+O`, or right-click it in your file
-   manager and choose *Open With → VibingLUT*.
+   manager and choose *Open With → RawValley*.
 2. **Pick the input profile:** *Standard* for normal Photo Styles, or the log
    profile you shoot in.
 3. **Grade:** use the wheels, curves and selective colour, stack existing LUTs, and
@@ -162,7 +162,7 @@ not only on V-Log.
 
 ## Under the hood
 
-VibingLUT keeps colour handling exact and avoids shortcuts:
+RawValley keeps colour handling exact and avoids shortcuts:
 
 - **Exact bake.** The grade is evaluated directly at every lattice point of the
   cube. The GPU preview and the CPU reference are tested against each other.
@@ -174,12 +174,12 @@ VibingLUT keeps colour handling exact and avoids shortcuts:
   scene-linear light to display.
 - **Tested maths.** Unit tests cover round trips between every pair of profiles,
   identity bakes, chain and mix semantics, LUT retargeting and format readers.
-- **Separate engine.** `vibinglut-core` has no UI dependency, so other front-ends
+- **Separate engine.** `rawvalley-core` has no UI dependency, so other front-ends
   (CLI, plug-ins…) can reuse it.
 
 ```
-core/   vibinglut-core: colour science, profiles, LUT I/O, LUT Lab, GPU engine (wgpu + WGSL)
-gtk/    vibinglut: GTK4 / libadwaita desktop app (Relm4)
+core/   rawvalley-core: colour science, profiles, LUT I/O, LUT Lab, GPU engine (wgpu + WGSL)
+gtk/    rawvalley: GTK4 / libadwaita desktop app (Relm4)
 po/     translations (gettext)
 ```
 
@@ -191,7 +191,7 @@ po/     translations (gettext)
 
 ```sh
 make arch                       # builds a package from the committed HEAD
-sudo pacman -U packaging/arch/vibinglut-*.pkg.tar.zst
+sudo pacman -U packaging/arch/rawvalley-*.pkg.tar.zst
 ```
 
 ### From source (any Linux)
@@ -232,7 +232,7 @@ macOS builds from source are possible, but they are not tested or packaged yet.
 ## Translations
 
 The interface is in English, with an Italian translation. Translations use gettext:
-copy `po/vibinglut.pot` to `po/<language>.po`, translate it, and `make` picks it up
+copy `po/rawvalley.pot` to `po/<language>.po`, translate it, and `make` picks it up
 automatically. Pull requests for new languages are welcome.
 
 ## FAQ
@@ -250,7 +250,7 @@ No. Any Vulkan-capable integrated or discrete GPU is enough, and the gallery ren
 thumbnails one at a time so the interface stays responsive.
 
 **Is it free?**
-Yes. VibingLUT is free software under the GPL-3.0.
+Yes. RawValley is free software under the GPL-3.0.
 
 ## License
 

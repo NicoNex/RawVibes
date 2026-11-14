@@ -1,4 +1,4 @@
-//! VibingLUT engine: UI-agnostic photo loading, GPU grading, LUT baking and
+//! RawValley engine: UI-agnostic photo loading, GPU grading, LUT baking and
 //! scopes. Front-ends talk to it through [`gpu::spawn`] jobs/results.
 
 pub mod chart;

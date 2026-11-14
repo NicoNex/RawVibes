@@ -59,7 +59,7 @@ impl Gpu {
         .map_err(|e| format!("no Vulkan/Metal GPU: {e}"))?;
         let info = adapter.get_info();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("vibinglut"),
+            label: Some("rawvalley"),
             required_limits: adapter.limits(),
             ..Default::default()
         }))

@@ -1,4 +1,4 @@
-// VibingLUT grade pipeline. Input and output are display-encoded
+// RawValley grade pipeline. Input and output are display-encoded
 // (sRGB / Rec.709) in 0..1 — the signal a camera "Standard" profile carries,
 // so baking `grade()` on a lattice gives an exact .cube for that profile.
 

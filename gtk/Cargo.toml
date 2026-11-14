@@ -1,11 +1,11 @@
 [package]
-name = "vibinglut"
-description = "VibingLUT: GTK4/libadwaita colour grading and LUT creation tool"
+name = "rawvalley"
+description = "RawValley: GTK4/libadwaita colour grading and LUT creation tool"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-vibinglut-core = { path = "../core" }
+rawvalley-core = { path = "../core" }
 relm4 = { version = "0.11", features = ["libadwaita", "gnome_50"] }
 gettext-rs = { version = "0.8.0", features = ["gettext-system"] }

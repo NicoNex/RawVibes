@@ -46,7 +46,7 @@ pub fn is_raw(path: &Path) -> bool {
     path.extension().is_some_and(|e| RAW_EXTS.contains(&e.to_string_lossy().to_lowercase().as_str()))
 }
 
-/// A file VibingLUT opens as a photo (raster or camera RAW).
+/// A file RawValley opens as a photo (raster or camera RAW).
 pub fn is_photo(path: &Path) -> bool {
     is_raw(path) || path.extension().is_some_and(|e| RASTER_EXTS.contains(&e.to_string_lossy().to_lowercase().as_str()))
 }
@@ -299,10 +299,10 @@ mod tests {
     }
 
     /// Portrait RAWs must come out portrait. Uses local sample files when
-    /// present (set VIBINGLUT_PORTRAIT_RAW), otherwise skips.
+    /// present (set RAWVALLEY_PORTRAIT_RAW), otherwise skips.
     #[test]
     fn portrait_raw_is_rotated() {
-        let Ok(path) = std::env::var("VIBINGLUT_PORTRAIT_RAW") else { return eprintln!("no sample, skipped") };
+        let Ok(path) = std::env::var("RAWVALLEY_PORTRAIT_RAW") else { return eprintln!("no sample, skipped") };
         let Decoded::Raw(p) = Decoded::load(Path::new(&path)).unwrap() else { panic!("not a RAW") };
         assert!(p.height > p.width, "{}×{} is landscape", p.width, p.height);
     }

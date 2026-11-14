@@ -1,7 +1,7 @@
 //! Grade presets as readable JSON.
 //!
 //! ```json
-//! { "format": "vibinglut-preset", "version": 1, "name": "Teal & orange",
+//! { "format": "rawvalley-preset", "version": 1, "name": "Teal & orange",
 //!   "params": { "exposure": 0.3, "lift": [0.1, -0.2, 0.0, 0.0], … },
 //!   "curves": { "master": [[0.0, 0.0], [1.0, 1.0]], … } }
 //! ```
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::grade::{CURVES, Curve, Grade, Params, is_periodic, neutral_curve};
 
-const FORMAT: &str = "vibinglut-preset";
+const FORMAT: &str = "rawvalley-preset";
 const VERSION: u32 = 1;
 pub const EXT: &str = "json";
 
@@ -82,11 +82,12 @@ impl Preset {
     /// to feed NaN or broken curves into the grade.
     pub fn from_json(text: &str) -> Result<Self, String> {
         let file: File = serde_json::from_str(text).map_err(|e| e.to_string())?;
-        if file.format != FORMAT {
-            return Err(format!("not a VibingLUT preset ({})", file.format));
+        // VibingLUT presets share the same schema and stay importable.
+        if file.format != FORMAT && file.format != "vibinglut-preset" {
+            return Err(format!("not a RawValley preset ({})", file.format));
         }
         if file.version > VERSION {
-            return Err(format!("made by a newer VibingLUT (preset version {})", file.version));
+            return Err(format!("made by a newer RawValley (preset version {})", file.version));
         }
         let floats: &[f32] = bytemuck::cast_slice(std::slice::from_ref(&file.params));
         if floats.iter().any(|v| !v.is_finite()) {
@@ -191,16 +192,16 @@ mod tests {
     /// Missing fields are neutral; preview-only state never comes from a file.
     #[test]
     fn partial_and_hostile_files() {
-        let p = Preset::from_json(r#"{"format":"vibinglut-preset","version":1,"name":"x","params":{"exposure":0.5,"width":9999,"overlay":1}}"#).unwrap();
+        let p = Preset::from_json(r#"{"format":"rawvalley-preset","version":1,"name":"x","params":{"exposure":0.5,"width":9999,"overlay":1}}"#).unwrap();
         let mut want = Grade::default();
         want.params.exposure = 0.5;
         assert_eq!(p.grade, want);
         for bad in [
             r#"{"format":"other","version":1,"name":"x"}"#,
-            r#"{"format":"vibinglut-preset","version":99,"name":"x"}"#,
-            r#"{"format":"vibinglut-preset","version":1,"name":"x","curves":{"red":[[0.0,0.0],[0.5,0.2],[0.4,0.3],[1.0,1.0]]}}"#,
-            r#"{"format":"vibinglut-preset","version":1,"name":"x","curves":{"blue":[[0.0,2.0],[1.0,1.0]]}}"#,
-            r#"{"format":"vibinglut-preset","version":1,"name":"x","params":{"exposure":1e999}}"#,
+            r#"{"format":"rawvalley-preset","version":99,"name":"x"}"#,
+            r#"{"format":"rawvalley-preset","version":1,"name":"x","curves":{"red":[[0.0,0.0],[0.5,0.2],[0.4,0.3],[1.0,1.0]]}}"#,
+            r#"{"format":"rawvalley-preset","version":1,"name":"x","curves":{"blue":[[0.0,2.0],[1.0,1.0]]}}"#,
+            r#"{"format":"rawvalley-preset","version":1,"name":"x","params":{"exposure":1e999}}"#,
         ] {
             assert!(Preset::from_json(bad).is_err(), "accepted {bad}");
         }

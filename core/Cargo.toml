@@ -1,5 +1,5 @@
 [package]
-name = "vibinglut-core"
+name = "rawvalley-core"
 description = "Colour grading engine that bakes 3D LUTs (.cube) from photos, GPU-accelerated with wgpu"
 version.workspace = true
 edition.workspace = true

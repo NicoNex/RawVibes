@@ -1,4 +1,4 @@
-//! VibingLUT GTK4/libadwaita front-end over `vibinglut-core`.
+//! RawValley GTK4/libadwaita front-end over `rawvalley-core`.
 
 /// `gettext` with `{}` placeholders filled in order (translations may not reorder them).
 macro_rules! gettext {
@@ -21,23 +21,23 @@ use filmstrip::{Filmstrip, MAX_ROLL, ROLL_PX};
 use gettextrs::gettext;
 use lab_page::{LabAdd, LabKind, LabLayer, LabUi, Layers, caption};
 use presets_ui::PresetsUi;
+use rawvalley_core::chart::test_chart;
+use rawvalley_core::gpu::{self, CompareBase, Done, Job};
+use rawvalley_core::grade::{
+    BAND_HUE_RANGE, BAND_HUES, Curve, Grade, HUE_HUE, HUE_SAT, LUM_SAT, LUMA, MASTER, MATCH_L, Params, Stage,
+};
+use rawvalley_core::lab::{Blend, Layer, Source, Stack, oklch_to_srgb};
+use rawvalley_core::lut::{Format, Lut3d, LutEntry, MAX_LIBRARY};
+use rawvalley_core::photo::{Decoded, Photo, RASTER_EXTS, RAW_EXTS, is_photo};
+use rawvalley_core::preset::{self, Preset};
+use rawvalley_core::profiles::Profile;
+use rawvalley_core::scopes::{HIST_H, HIST_W, Scopes, VEC_SIZE};
 use relm4::adw::prelude::*;
 use relm4::gtk::{gdk, gio, glib};
 use relm4::{ComponentParts, ComponentSender, RelmApp, SimpleComponent, adw, gtk};
-use vibinglut_core::chart::test_chart;
-use vibinglut_core::gpu::{self, CompareBase, Done, Job};
-use vibinglut_core::grade::{
-    BAND_HUE_RANGE, BAND_HUES, Curve, Grade, HUE_HUE, HUE_SAT, LUM_SAT, LUMA, MASTER, MATCH_L, Params, Stage,
-};
-use vibinglut_core::lab::{Blend, Layer, Source, Stack, oklch_to_srgb};
-use vibinglut_core::lut::{Format, Lut3d, LutEntry, MAX_LIBRARY};
-use vibinglut_core::photo::{Decoded, Photo, RASTER_EXTS, RAW_EXTS, is_photo};
-use vibinglut_core::preset::{self, Preset};
-use vibinglut_core::profiles::Profile;
-use vibinglut_core::scopes::{HIST_H, HIST_W, Scopes, VEC_SIZE};
 use widgets::{ColorWheel, CurveEditor, Slider};
 
-const APP_ID: &str = "io.github.vibinglut.VibingLUT";
+const APP_ID: &str = "io.github.rawvalley.RawValley";
 
 type Field = fn(&mut Params) -> &mut f32;
 
@@ -1379,7 +1379,7 @@ impl SimpleComponent for App {
             .default_height(900)
             .width_request(360)
             .height_request(300)
-            .title("VibingLUT")
+            .title("RawValley")
             .build()
     }
 
@@ -1676,7 +1676,7 @@ impl SimpleComponent for App {
         let section_menu = gio::Menu::new();
         section_menu.append(Some(gettext("Preferences").as_str()), Some("win.preferences"));
         section_menu.append(Some(gettext("Keyboard Shortcuts").as_str()), Some("win.show-help-overlay"));
-        section_menu.append(Some(gettext("About VibingLUT").as_str()), Some("win.about"));
+        section_menu.append(Some(gettext("About RawValley").as_str()), Some("win.about"));
         menu.append_section(None, &section_menu);
         header.pack_end(
             &gtk::MenuButton::builder()
@@ -1787,7 +1787,7 @@ impl SimpleComponent for App {
         let w = window.clone();
         about.connect_activate(move |_, _| {
             adw::AboutDialog::builder()
-                .application_name("VibingLUT")
+                .application_name("RawValley")
                 .application_icon(APP_ID)
                 .version(env!("CARGO_PKG_VERSION"))
                 .comments(gettext(
@@ -2066,7 +2066,7 @@ impl SimpleComponent for App {
                     self.load_gen += 1;
                     self.cancel_match();
                     (self.decoded, self.photo, self.path) = (None, None, None);
-                    self.ui.window.set_title(Some("VibingLUT"));
+                    self.ui.window.set_title(Some("RawValley"));
                     self.show_source();
                 } else if was_active {
                     self.load_active(i.min(self.roll.len() - 1), &sender);
@@ -2080,7 +2080,7 @@ impl SimpleComponent for App {
             }
             Msg::Loaded(generation, ..) if generation != self.load_gen => {}
             Msg::Loaded(_, path, Ok(decoded)) => {
-                self.ui.window.set_title(Some(&format!("{} — VibingLUT", file_label(&path))));
+                self.ui.window.set_title(Some(&format!("{} — RawValley", file_label(&path))));
                 self.decoded = Some(decoded);
                 self.path = Some(path);
                 // Opening a photo means you want to see it.
@@ -2725,12 +2725,12 @@ fn fill(template: &str, args: &[String]) -> String {
     out
 }
 
-/// Installed: `<prefix>/bin/vibinglut` → `<prefix>/share/locale`; dev: `make` puts catalogs in `target/locale`.
+/// Installed: `<prefix>/bin/rawvalley` → `<prefix>/share/locale`; dev: `make` puts catalogs in `target/locale`.
 fn locale_dir() -> PathBuf {
     std::env::current_exe()
         .ok()
         .and_then(|exe| Some(exe.parent()?.parent()?.join("share/locale")))
-        .filter(|d| d.join("it/LC_MESSAGES/vibinglut.mo").exists())
+        .filter(|d| d.join("it/LC_MESSAGES/rawvalley.mo").exists())
         .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/locale")))
 }
 
@@ -2760,11 +2760,11 @@ thread_local! {
 
 fn main() {
     // gtk_init calls setlocale; a missing catalog just leaves the English source strings.
-    let _ = gettextrs::bindtextdomain("vibinglut", locale_dir());
-    let _ = gettextrs::bind_textdomain_codeset("vibinglut", "UTF-8");
-    let _ = gettextrs::textdomain("vibinglut");
+    let _ = gettextrs::bindtextdomain("rawvalley", locale_dir());
+    let _ = gettextrs::bind_textdomain_codeset("rawvalley", "UTF-8");
+    let _ = gettextrs::textdomain("rawvalley");
     // HANDLES_OPEN: files from the command line or a file manager ("Open With")
-    // arrive here, also when VibingLUT is already running.
+    // arrive here, also when RawValley is already running.
     let app = adw::Application::builder().application_id(APP_ID).flags(gio::ApplicationFlags::HANDLES_OPEN).build();
     app.connect_open(|app, files, _| {
         let paths: Vec<PathBuf> = files.iter().filter_map(|f| f.path()).collect();
@@ -2773,7 +2773,7 @@ fn main() {
         }
         app.activate();
     });
-    // When VibingLUT is already running this process only forwards the files,
+    // When RawValley is already running this process only forwards the files,
     // and RelmApp::run then blocks on one last main-loop iteration: keep waking
     // the loop until we turn out to be the primary instance (startup).
     static STARTED: AtomicBool = AtomicBool::new(false);
@@ -2804,7 +2804,7 @@ fn photo_dialog(title: &str) -> gtk::FileDialog {
 }
 
 fn preset_dialog(title: &str) -> gtk::FileDialog {
-    let filters = file_filters(&gettext("VibingLUT presets"), &[preset::EXT.into()]);
+    let filters = file_filters(&gettext("RawValley presets"), &[preset::EXT.into()]);
     gtk::FileDialog::builder().title(title).filters(&filters).modal(true).build()
 }
 

@@ -5,13 +5,13 @@ use std::f64::consts::TAU;
 use std::rc::Rc;
 
 use gettextrs::gettext;
+use rawvalley_core::grade::{
+    CURVES, Curve, HUE_HUE, LUM_SAT, is_periodic, neutral_curve, sample_curve, sample_periodic,
+};
+use rawvalley_core::lab::oklch_to_srgb;
 use relm4::gtk;
 use relm4::gtk::prelude::*;
 use relm4::gtk::{cairo, gdk};
-use vibinglut_core::grade::{
-    CURVES, Curve, HUE_HUE, LUM_SAT, is_periodic, neutral_curve, sample_curve, sample_periodic,
-};
-use vibinglut_core::lab::oklch_to_srgb;
 
 // ------------------------------------------------------------------ slider
 

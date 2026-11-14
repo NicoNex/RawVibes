@@ -2,6 +2,7 @@
 //! scopes. Front-ends talk to it through [`gpu::spawn`] jobs/results.
 
 pub mod chart;
+pub mod crop;
 pub mod gpu;
 pub mod grade;
 pub mod lab;

@@ -128,12 +128,39 @@ fn camera(raw: &rawler::RawImage) -> Camera {
     }
 }
 
+/// A developed RAW on the GPU: as-shot-balanced camera RGB of the visible
+/// area, f16, level 0 at full resolution and each next one half the size.
+pub struct GpuRaw {
+    pub(crate) levels: Vec<(wgpu::Buffer, u32, u32)>,
+    pub camera: Camera,
+    pub orientation: u16,
+}
+
+impl GpuRaw {
+    /// Full-resolution size, before orientation.
+    pub fn size(&self) -> (u32, u32) {
+        (self.levels[0].1, self.levels[0].2)
+    }
+}
+
+/// Longest side of the smallest mip level.
+const MIP_MIN: u32 = 256;
+
 /// Compute pipelines of `raw.wgsl`.
 pub struct Pipelines {
     white_balance: wgpu::ComputePipeline,
     hl_partials: wgpu::ComputePipeline,
     hl_reduce: wgpu::ComputePipeline,
     hl_apply: wgpu::ComputePipeline,
+    rcd_init: wgpu::ComputePipeline,
+    rcd_vh: wgpu::ComputePipeline,
+    rcd_green: wgpu::ComputePipeline,
+    rcd_pq: wgpu::ComputePipeline,
+    rcd_rb: wgpu::ComputePipeline,
+    rcd_rb_green: wgpu::ComputePipeline,
+    rcd_pack: wgpu::ComputePipeline,
+    rgb_pack: wgpu::ComputePipeline,
+    mip: wgpu::ComputePipeline,
 }
 
 impl Pipelines {
@@ -157,6 +184,15 @@ impl Pipelines {
             hl_partials: pipeline("hl_partials"),
             hl_reduce: pipeline("hl_reduce"),
             hl_apply: pipeline("hl_apply"),
+            rcd_init: pipeline("rcd_init"),
+            rcd_vh: pipeline("rcd_vh"),
+            rcd_green: pipeline("rcd_green"),
+            rcd_pq: pipeline("rcd_pq"),
+            rcd_rb: pipeline("rcd_rb"),
+            rcd_rb_green: pipeline("rcd_rb_green"),
+            rcd_pack: pipeline("rcd_pack"),
+            rgb_pack: pipeline("rgb_pack"),
+            mip: pipeline("mip"),
         }
     }
 }
@@ -172,6 +208,8 @@ struct Params {
     groups: u32,
     _pad: [u32; 3],
     clip: [f32; 4],
+    crop: [u32; 4],
+    size: [u32; 4],
     pattern: [u32; 36],
 }
 
@@ -229,6 +267,71 @@ impl Gpu {
         out
     }
 
+    fn raw_params(&self, raw: &RawData, size: [u32; 4]) -> wgpu::Buffer {
+        let g = raw.camera.as_shot;
+        let (gx, gy) = grid(raw.width * raw.height);
+        self.storage(bytemuck::bytes_of(&Params {
+            width: raw.width,
+            height: raw.height,
+            pw: raw.pattern_size[0],
+            ph: raw.pattern_size[1],
+            groups: gx * gy,
+            _pad: [0; 3],
+            clip: [g[0], g[1], g[2], 0.0],
+            crop: raw.crop,
+            size,
+            pattern: raw.pattern,
+        }))
+    }
+
+    /// Develops `raw` up to camera RGB and its mip chain: highlights
+    /// rebuilt, RCD demosaic (Bayer), cropped to the visible area.
+    pub fn load_raw(&self, raw: &RawData) -> Result<GpuRaw, String> {
+        let [_, _, cw, ch] = raw.crop;
+        let n = raw.width * raw.height;
+        let level0 = self.buffer(cw as u64 * ch as u64 * 8, wgpu::BufferUsages::COPY_SRC);
+        let p = &self.raw;
+        let params = self.raw_params(raw, [0; 4]);
+        match &raw.pixels {
+            Pixels::Bayer(mosaic) => {
+                let cfa = self.reconstruct(raw, mosaic)?;
+                let plane = || self.buffer(n as u64 * 4, wgpu::BufferUsages::COPY_SRC);
+                let (r, g, b, dir, lpf) = (plane(), plane(), plane(), plane(), plane());
+                let all = grid(n);
+                self.passes(&[
+                    (&p.rcd_init, &[(0, &params), (2, &cfa), (5, &r), (6, &g), (7, &b), (9, &lpf)], all),
+                    (&p.rcd_vh, &[(0, &params), (2, &cfa), (8, &dir)], all),
+                    (&p.rcd_green, &[(0, &params), (2, &cfa), (6, &g), (8, &dir), (9, &lpf)], all),
+                    (&p.rcd_pq, &[(0, &params), (2, &cfa), (9, &lpf)], all),
+                    (&p.rcd_rb, &[(0, &params), (5, &r), (6, &g), (7, &b), (9, &lpf)], all),
+                    (&p.rcd_rb_green, &[(0, &params), (5, &r), (6, &g), (7, &b), (8, &dir)], all),
+                    (&p.rcd_pack, &[(0, &params), (5, &r), (6, &g), (7, &b), (10, &level0)], grid(cw * ch)),
+                ]);
+            }
+            Pixels::Rgb(px) => {
+                let rgb = self.storage(bytemuck::cast_slice(px));
+                self.passes(&[(&p.rgb_pack, &[(0, &params), (1, &rgb), (10, &level0)], grid(n))]);
+            }
+        }
+        let mut levels = vec![(level0, cw, ch)];
+        while let Some(&(ref src, w, h)) = levels.last().filter(|l| l.1.max(l.2) > MIP_MIN) {
+            let (nw, nh) = (w.div_ceil(2), h.div_ceil(2));
+            let dst = self.buffer(nw as u64 * nh as u64 * 8, wgpu::BufferUsages::COPY_SRC);
+            let params = self.raw_params(raw, [w, h, nw, nh]);
+            self.passes(&[(&p.mip, &[(0, &params), (10, src), (11, &dst)], grid(nw * nh))]);
+            levels.push((dst, nw, nh));
+        }
+        Ok(GpuRaw { levels, camera: raw.camera.clone(), orientation: raw.orientation })
+    }
+
+    /// A mip level as f32 RGB (tests).
+    #[cfg(test)]
+    fn read_level(&self, raw: &GpuRaw, k: usize) -> Vec<[f32; 3]> {
+        let words: Vec<u32> = bytemuck::cast_slice(&self.read_f32(&raw.levels[k].0)).to_vec();
+        let half = |h: u32| f16_to_f32(h as u16);
+        words.chunks_exact(2).map(|w| [half(w[0]), half(w[0] >> 16), half(w[1])]).collect()
+    }
+
     /// The mosaic white-balanced as shot, with clipped highlights rebuilt.
     pub fn reconstruct(&self, raw: &RawData, mosaic: &[f32]) -> Result<wgpu::Buffer, String> {
         let n = raw.width * raw.height;
@@ -237,19 +340,8 @@ impl Gpu {
         if bytes > limits.max_storage_buffer_binding_size || bytes > limits.max_buffer_size {
             return Err(format!("photo too large for this GPU ({} MP)", n / 1_000_000));
         }
-        let g = raw.camera.as_shot;
         let (gx, gy) = grid(n);
-        let params = Params {
-            width: raw.width,
-            height: raw.height,
-            pw: raw.pattern_size[0],
-            ph: raw.pattern_size[1],
-            groups: gx * gy,
-            _pad: [0; 3],
-            clip: [g[0], g[1], g[2], 0.0],
-            pattern: raw.pattern,
-        };
-        let params = self.storage(bytemuck::bytes_of(&params));
+        let params = self.raw_params(raw, [0; 4]);
         let cfa = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("cfa"),
             contents: bytemuck::cast_slice(mosaic),
@@ -267,6 +359,23 @@ impl Gpu {
         ]);
         Ok(out)
     }
+}
+
+/// IEEE half → f32 (tests and CPU readback of mip levels).
+#[cfg(test)]
+pub(crate) fn f16_to_f32(h: u16) -> f32 {
+    let (sign, exp, frac) = ((h >> 15) as u32, ((h >> 10) & 0x1f) as u32, (h & 0x3ff) as u32);
+    let bits = match exp {
+        0 if frac == 0 => sign << 31,
+        0 => {
+            // Subnormal: renormalise.
+            let shift = frac.leading_zeros() - 21;
+            (sign << 31) | ((113 - shift) << 23) | (((frac << shift) & 0x3ff) << 13)
+        }
+        31 => (sign << 31) | (0xff << 23) | (frac << 13),
+        _ => (sign << 31) | ((exp + 112) << 23) | (frac << 13),
+    };
+    f32::from_bits(bits)
 }
 
 #[cfg(test)]
@@ -299,6 +408,161 @@ mod tests {
     /// A mosaic sampling `f(x, y) -> rgb` (scene before white balance).
     fn mosaic(w: u32, h: u32, f: impl Fn(u32, u32) -> [f32; 3]) -> Vec<f32> {
         (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).map(|(x, y)| f(x, y)[colour(x, y)]).collect()
+    }
+
+    #[test]
+    fn f16_decodes() {
+        assert_eq!(f16_to_f32(0x3c00), 1.0);
+        assert_eq!(f16_to_f32(0x3800), 0.5);
+        assert_eq!(f16_to_f32(0xc000), -2.0);
+        assert_eq!(f16_to_f32(0x0001), 2f32.powi(-24));
+    }
+
+    /// `mosaic` developed by `load_raw` (Bayer RGGB unless `pattern` says otherwise).
+    fn develop(gpu: &Gpu, raw: &RawData, m: Vec<f32>) -> GpuRaw {
+        let raw = RawData { pixels: Pixels::Bayer(m), camera: raw.camera.clone(), ..*raw };
+        gpu.load_raw(&raw).unwrap()
+    }
+
+    fn rggb_at(phase: [u32; 4]) -> [u32; 36] {
+        let mut p = [0; 36];
+        p[..4].copy_from_slice(&phase);
+        p
+    }
+
+    #[test]
+    fn flat_field_is_exact() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let raw = data(48, 40, [1.0; 3]);
+        let out = develop(&gpu, &raw, mosaic(48, 40, |_, _| [0.3, 0.5, 0.2]));
+        for (i, c) in gpu.read_level(&out, 0).iter().enumerate() {
+            assert!((0..3).all(|k| (c[k] - [0.3, 0.5, 0.2][k]).abs() < 1e-3), "{i}: {c:?}");
+        }
+    }
+
+    #[test]
+    fn every_bayer_phase_works() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        for phase in [[0, 1, 1, 2], [2, 1, 1, 0], [1, 0, 2, 1], [1, 2, 0, 1]] {
+            let mut raw = data(32, 32, [1.0; 3]);
+            raw.pattern = rggb_at(phase);
+            let want = [0.25, 0.6, 0.15];
+            let m = (0..32 * 32).map(|i| want[phase[((i / 32 % 2) * 2 + i % 2) as usize] as usize]).collect();
+            for c in gpu.read_level(&develop(&gpu, &raw, m), 0) {
+                assert!((0..3).all(|k| (c[k] - want[k]).abs() < 1e-3), "{phase:?}: {c:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn smooth_gradient_is_close() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (64, 64);
+        let f = |x: u32, y: u32| {
+            let (u, v) = (x as f32 / w as f32, y as f32 / h as f32);
+            [0.1 + 0.5 * u, 0.2 + 0.4 * v, 0.15 + 0.3 * u + 0.2 * v]
+        };
+        let out = gpu.read_level(&develop(&gpu, &data(w, h, [1.0; 3]), mosaic(w, h, f)), 0);
+        for y in 8..h - 8 {
+            for x in 8..w - 8 {
+                let (c, t) = (out[(y * w + x) as usize], f(x, y));
+                assert!((0..3).all(|k| (c[k] - t[k]).abs() < 3e-3), "({x}, {y}): {c:?} vs {t:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn sharp_edge_has_no_zipper() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (48, 32);
+        let out = gpu.read_level(
+            &develop(&gpu, &data(w, h, [1.0; 3]), mosaic(w, h, |x, _| if x < 24 { [0.05; 3] } else { [0.8; 3] })),
+            0,
+        );
+        for y in 8..h - 8 {
+            for x in [20, 27] {
+                let c = out[(y * w + x) as usize];
+                assert!((c[1] - c[0]).abs() < 0.05 && (c[1] - c[2]).abs() < 0.05, "({x}, {y}): {c:?}");
+            }
+        }
+    }
+
+    /// Grey fine detail (vertical and diagonal waves near half Nyquist):
+    /// RCD must clearly beat bilinear, which blurs it and adds false colour.
+    #[test]
+    fn rcd_beats_bilinear_on_fine_detail() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (96, 96);
+        let f = |x: u32, y: u32| {
+            let v = 0.4 + 0.25 * (x as f32 * 1.2).sin() + 0.15 * ((x + y) as f32 * 0.9).sin();
+            [v; 3]
+        };
+        let m = mosaic(w, h, f);
+        let bilinear = |x: u32, y: u32, c: usize| {
+            let (mut s, mut k) = (0.0, 0.0);
+            for yy in y - 1..=y + 1 {
+                for xx in x - 1..=x + 1 {
+                    if colour(xx, yy) == c {
+                        (s, k) = (s + m[(yy * w + xx) as usize], k + 1.0);
+                    }
+                }
+            }
+            s / k
+        };
+        let out = gpu.read_level(&develop(&gpu, &data(w, h, [1.0; 3]), m.clone()), 0);
+        let (mut rcd, mut bil) = (0.0, 0.0);
+        for y in 8..h - 8 {
+            for x in 8..w - 8 {
+                let t = f(x, y);
+                for c in 0..3 {
+                    rcd += (out[(y * w + x) as usize][c] - t[c]).abs();
+                    bil += (bilinear(x, y, c) - t[c]).abs();
+                }
+            }
+        }
+        assert!(rcd < 0.7 * bil, "RCD error {rcd}, bilinear {bil}");
+    }
+
+    #[test]
+    fn crop_keeps_the_visible_area() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let mut raw = data(40, 30, [1.0; 3]);
+        raw.crop = [8, 6, 20, 14];
+        let out = develop(&gpu, &raw, mosaic(40, 30, |x, _| if x < 18 { [0.2; 3] } else { [0.7; 3] }));
+        assert_eq!(out.size(), (20, 14));
+        let px = gpu.read_level(&out, 0);
+        assert!((px[7 * 20 + 2][1] - 0.2).abs() < 1e-3 && (px[7 * 20 + 17][1] - 0.7).abs() < 1e-3);
+    }
+
+    #[test]
+    fn mips_preserve_the_mean() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (600, 400);
+        let out = develop(&gpu, &data(w, h, [1.0; 3]), mosaic(w, h, |x, y| [x as f32 / 600.0, y as f32 / 400.0, 0.3]));
+        assert!(out.levels.len() >= 2 && out.levels.last().unwrap().1.max(out.levels.last().unwrap().2) <= MIP_MIN);
+        let mean = |px: Vec<[f32; 3]>| {
+            let n = px.len() as f32;
+            px.iter().fold([0.0; 3], |a, c| std::array::from_fn(|k| a[k] + c[k] / n))
+        };
+        let m0 = mean(gpu.read_level(&out, 0));
+        for k in 1..out.levels.len() {
+            let mk = mean(gpu.read_level(&out, k));
+            assert!((0..3).all(|c| (mk[c] - m0[c]).abs() < 1e-3), "level {k}: {mk:?} vs {m0:?}");
+        }
+    }
+
+    /// Times a real file (RAWVALLEY_RAW): `cargo test --release -p rawvalley-core open_time -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn open_time() {
+        let Ok(path) = std::env::var("RAWVALLEY_RAW") else { return eprintln!("no sample, skipped") };
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let t = std::time::Instant::now();
+        let raw = read_raw(Path::new(&path)).unwrap();
+        let read = t.elapsed();
+        let out = gpu.load_raw(&raw).unwrap();
+        gpu.read_f32(&out.levels.last().unwrap().0); // waits for the GPU
+        eprintln!("read {read:?}, total {:?}, {:?}", t.elapsed(), out.size());
     }
 
     #[test]

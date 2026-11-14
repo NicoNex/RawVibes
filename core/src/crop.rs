@@ -116,6 +116,102 @@ pub fn region(c: &Crop, img_w: u32, img_h: u32) -> Region {
     }
 }
 
+/// What a pointer grabs on the crop rectangle.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Handle {
+    Move,
+    N,
+    S,
+    E,
+    W,
+    NE,
+    NW,
+    SE,
+    SW,
+}
+
+/// The handle under `p` (normalised frame coordinates), corners first,
+/// within `tol` (normalised, per axis) of an edge.
+pub fn hit(c: &Crop, p: [f32; 2], tol: [f32; 2]) -> Option<Handle> {
+    let [x, y, w, h] = c.rect;
+    let (x1, y1) = (x + w, y + h);
+    if !(x - tol[0]..=x1 + tol[0]).contains(&p[0]) || !(y - tol[1]..=y1 + tol[1]).contains(&p[1]) {
+        return None;
+    }
+    let near = |v: f32, edge: f32, t: f32| (v - edge).abs() <= t;
+    let (l, r) = (near(p[0], x, tol[0]), near(p[0], x1, tol[0]));
+    let (t, b) = (near(p[1], y, tol[1]), near(p[1], y1, tol[1]));
+    Some(match (l, r, t, b) {
+        (true, _, true, _) => Handle::NW,
+        (_, true, true, _) => Handle::NE,
+        (true, _, _, true) => Handle::SW,
+        (_, true, _, true) => Handle::SE,
+        (_, _, true, _) => Handle::N,
+        (_, _, _, true) => Handle::S,
+        (true, ..) => Handle::W,
+        (_, true, ..) => Handle::E,
+        _ => Handle::Move,
+    })
+}
+
+/// `start` with `h` dragged by `d` (normalised frame units). With
+/// `aspect` (pixel w/h), resizing keeps it. Never leaves the image.
+pub fn drag(start: Crop, h: Handle, d: [f32; 2], aspect: Option<f32>, img_w: u32, img_h: u32) -> Crop {
+    use Handle::*;
+    /// Smallest crop side, normalised.
+    const MIN: f32 = 0.02;
+    // Pixel aspect of a normalised unit square.
+    let px = img_w as f32 / img_h as f32;
+    let resized = |t: f32| {
+        let [dx, dy] = d.map(|v| v * t);
+        let [x, y, w, hh] = start.rect;
+        let (mut x0, mut y0, mut x1, mut y1) = (x, y, x + w, y + hh);
+        if matches!(h, W | NW | SW) {
+            x0 = (x0 + dx).min(x1 - MIN);
+        }
+        if matches!(h, E | NE | SE) {
+            x1 = (x1 + dx).max(x0 + MIN);
+        }
+        if matches!(h, N | NW | NE) {
+            y0 = (y0 + dy).min(y1 - MIN);
+        }
+        if matches!(h, S | SW | SE) {
+            y1 = (y1 + dy).max(y0 + MIN);
+        }
+        if let Some(a) = aspect {
+            // Normalised width for a normalised height at this pixel aspect, and back.
+            let (wn, hn) = ((y1 - y0) * a / px, (x1 - x0) * px / a);
+            let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+            match h {
+                N | S => (x0, x1) = (cx - wn / 2.0, cx + wn / 2.0),
+                E | W => (y0, y1) = (cy - hn / 2.0, cy + hn / 2.0),
+                // Corners follow the larger pointer motion, anchored at the opposite corner.
+                _ if dx.abs() * px >= dy.abs() => {
+                    if matches!(h, N | NW | NE) {
+                        y0 = y1 - hn
+                    } else {
+                        y1 = y0 + hn
+                    }
+                }
+                _ => {
+                    if matches!(h, W | NW | SW) {
+                        x0 = x1 - wn
+                    } else {
+                        x1 = x0 + wn
+                    }
+                }
+            }
+        }
+        Crop { rect: [x0, y0, x1 - x0, y1 - y0], ..start }
+    };
+    if h == Move {
+        let [x, y, w, hh] = start.rect;
+        return clamp(Crop { rect: [x + d[0], y + d[1], w, hh], ..start }, img_w, img_h);
+    }
+    let fits = |c: &Crop| corners(&region(c, img_w, img_h), img_w as f32, img_h as f32);
+    if fits(&resized(1.0)) { resized(1.0) } else { resized(search(|t| fits(&resized(t)), true)) }
+}
+
 /// Width / height of the crop in pixels.
 pub fn aspect(c: &Crop, img_w: u32, img_h: u32) -> f32 {
     c.rect[2] * img_w as f32 / (c.rect[3] * img_h as f32)
@@ -127,6 +223,52 @@ mod tests {
 
     fn inside(r: &Region, w: f32, h: f32) -> bool {
         corners(&Region { size: r.size.map(|v| v - 2e-2), ..*r }, w, h)
+    }
+
+    const RECT: Crop = Crop { rect: [0.2, 0.2, 0.6, 0.6], angle: 0.0 };
+
+    #[test]
+    fn hit_finds_corners_edges_and_inside() {
+        let tol = [0.02, 0.02];
+        assert_eq!(hit(&RECT, [0.21, 0.79], tol), Some(Handle::SW));
+        assert_eq!(hit(&RECT, [0.5, 0.2], tol), Some(Handle::N));
+        assert_eq!(hit(&RECT, [0.5, 0.5], tol), Some(Handle::Move));
+        assert_eq!(hit(&RECT, [0.05, 0.5], tol), None);
+    }
+
+    #[test]
+    fn free_edge_drag_moves_only_that_edge() {
+        let c = drag(RECT, Handle::E, [-0.1, 0.3], None, 6000, 4000);
+        assert!(c.rect.iter().zip([0.2, 0.2, 0.5, 0.6]).all(|(a, b)| (a - b).abs() < 1e-5), "{c:?}");
+    }
+
+    #[test]
+    fn corner_drag_keeps_ratio_and_anchors_the_opposite_corner() {
+        let start = Crop { rect: [0.2, 0.2, 0.4, 0.4], angle: 0.0 }; // 2400×1600 px = 3:2
+        let c = drag(start, Handle::SE, [0.1, 0.0], Some(1.5), 6000, 4000);
+        assert!((aspect(&c, 6000, 4000) - 1.5).abs() < 1e-3, "{c:?}");
+        assert!((c.rect[0] - 0.2).abs() < 1e-5 && (c.rect[1] - 0.2).abs() < 1e-5, "{c:?}");
+        assert!(c.rect[2] > 0.45, "{c:?}");
+    }
+
+    #[test]
+    fn move_keeps_size_and_stays_inside() {
+        let c = drag(RECT, Handle::Move, [5.0, -5.0], None, 6000, 4000);
+        assert!((c.rect[2] - 0.6).abs() < 1e-5 && (c.rect[3] - 0.6).abs() < 1e-5, "{c:?}");
+        assert!(inside(&region(&c, 6000, 4000), 6000.0, 4000.0), "{c:?}");
+    }
+
+    #[test]
+    fn resize_never_leaves_the_rotated_image() {
+        let start = fit_ratio(Ratio::Original, 6000, 4000, 10.0);
+        let c = drag(start, Handle::NW, [-1.0, -1.0], None, 6000, 4000);
+        assert!(inside(&region(&c, 6000, 4000), 6000.0, 4000.0), "{c:?}");
+    }
+
+    #[test]
+    fn edges_cannot_cross() {
+        let c = drag(RECT, Handle::W, [2.0, 0.0], None, 6000, 4000);
+        assert!(c.rect[2] > 0.0, "{c:?}");
     }
 
     #[test]

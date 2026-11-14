@@ -71,10 +71,10 @@ impl ZoomUi {
 
         let click = gtk::GestureClick::new();
         let (s, f) = (sender.clone(), to_area.clone());
-        click.connect_pressed(move |_, n, x, y| {
-            if n == 2 {
-                s.input(Msg::Zoom(ZoomCmd::Toggle(f(x, y))));
-            }
+        click.connect_pressed(move |_, n, x, y| match n {
+            1 => s.input(Msg::CanvasClick(f(x, y))),
+            2 => s.input(Msg::Zoom(ZoomCmd::Toggle(f(x, y)))),
+            _ => {}
         });
         canvas.add_controller(click);
 

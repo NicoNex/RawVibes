@@ -26,7 +26,7 @@ use lab_page::{LabAdd, LabKind, LabLayer, LabUi, Layers, caption};
 use presets_ui::PresetsUi;
 use rawvalley_core::chart::test_chart;
 use rawvalley_core::crop::{self, Crop, PRESETS, Ratio};
-use rawvalley_core::develop::Develop;
+use rawvalley_core::develop::{Camera, Develop, KELVIN, WB_PRESETS};
 use rawvalley_core::gpu::{self, Done, Job, ThumbBase};
 use rawvalley_core::grade::{
     BAND_HUE_RANGE, BAND_HUES, Curve, Grade, HUE_HUE, HUE_SAT, LUM_SAT, LUMA, MASTER, MATCH_L, Params, Stage,
@@ -68,6 +68,12 @@ enum Page {
 enum Msg {
     Open,
     Loaded(u64, PathBuf, Result<Decoded, String>),
+    Develop(DevelopEdit),
+    /// A click on the canvas, in canvas device pixels.
+    CanvasClick([f32; 2]),
+    /// No development change for `DEVELOP_SETTLE` since tick `u64`: full quality.
+    DevelopSettled(u64),
+    Quality(u32),
     /// A RAW read on the CPU, ready for the GPU (load generation, file).
     RawRead(u64, PathBuf, Result<Arc<RawData>, String>),
     /// The preview encoded for a profile.
@@ -188,6 +194,66 @@ struct RollItem {
     small: Option<Decoded>,
     encoded: Option<(Profile, Arc<Photo>)>,
 }
+
+/// A change in the Develop group.
+#[derive(Debug, Clone, Copy)]
+enum DevelopEdit {
+    AsShot,
+    /// Dropdown index: 0 As shot, then `WB_PRESETS`, then Custom.
+    Preset(u32),
+    Kelvin(f32),
+    Tint(f32),
+    Exposure(f32),
+    CameraExposure,
+    Pick(bool),
+    Picked([f32; 2]),
+}
+
+/// How the RAW preview trades resolution for fluidity while a development
+/// control moves; the full-quality frame follows `DEVELOP_SETTLE` later.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PreviewQuality {
+    Fast,
+    Balanced,
+    Best,
+}
+
+impl PreviewQuality {
+    const ALL: [PreviewQuality; 3] = [PreviewQuality::Fast, PreviewQuality::Balanced, PreviewQuality::Best];
+
+    fn key(self) -> &'static str {
+        match self {
+            PreviewQuality::Fast => "fast",
+            PreviewQuality::Balanced => "balanced",
+            PreviewQuality::Best => "best",
+        }
+    }
+
+    fn label(self) -> String {
+        match self {
+            PreviewQuality::Fast => gettext("Fast"),
+            PreviewQuality::Balanced => gettext("Balanced"),
+            PreviewQuality::Best => gettext("Best"),
+        }
+    }
+
+    /// Linear scale of the preview while dragging.
+    fn draft(self) -> f32 {
+        match self {
+            PreviewQuality::Fast => 0.5,
+            PreviewQuality::Balanced => 0.75,
+            PreviewQuality::Best => 1.0,
+        }
+    }
+
+    fn stored() -> Self {
+        let v = settings::value(settings::PREVIEW_QUALITY);
+        Self::ALL.into_iter().find(|q| v.as_deref() == Some(q.key())).unwrap_or(PreviewQuality::Balanced)
+    }
+}
+
+/// Quiet time after the last development change before the full-quality frame.
+const DEVELOP_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// Pointer rest on a LUT card before it is previewed.
 const HOVER_REST: std::time::Duration = std::time::Duration::from_millis(120);
@@ -326,6 +392,12 @@ struct App {
     encoding: bool,
     /// What the user set in the Develop group (RAWs only).
     develop: Develop,
+    quality: PreviewQuality,
+    /// A development control is moving: RAW views render at the draft scale.
+    drafting: bool,
+    develop_tick: u64,
+    /// The white-balance picker waits for a click on the photo.
+    picking: bool,
     /// The RAW whose GPU load is in flight, by load generation (`Done::RawLoaded` carries no path).
     raw_loading: Option<(u64, PathBuf)>,
     encode_again: bool,
@@ -713,7 +785,12 @@ impl App {
         }
         let profile = self.profile;
         if d.is_raw() {
-            let (width, height) = Decoded::fit_size(&r, PREVIEW_MAX);
+            // Best also renders HiDPI canvases at their full device size.
+            let max = match self.quality {
+                PreviewQuality::Best => PREVIEW_MAX.max(self.canvas[0].max(self.canvas[1]) as u32),
+                _ => PREVIEW_MAX,
+            };
+            let (width, height) = self.draft_size(Decoded::fit_size(&r, max));
             let develop = self.develop;
             return self.send(Job::DevelopRaw {
                 generation: 0,
@@ -729,6 +806,87 @@ impl App {
         std::thread::spawn(move || {
             s.emit(Msg::Encoded(profile, d.encode_fit(&r, PREVIEW_MAX, profile, &Develop::default())))
         });
+    }
+
+    fn camera(&self) -> Option<&Camera> {
+        self.decoded.as_ref()?.camera()
+    }
+
+    /// Applies a Develop edit; re-develops only when something changed.
+    fn edit_develop(&mut self, edit: DevelopEdit, sender: &ComponentSender<Self>) {
+        let Some(cam) = self.camera().cloned() else { return };
+        let mut dev = self.develop;
+        let [k, t] = dev.wb.unwrap_or_else(|| cam.as_shot_kelvin_tint());
+        match edit {
+            DevelopEdit::AsShot | DevelopEdit::Preset(0) => dev.wb = None,
+            DevelopEdit::Preset(i) => match WB_PRESETS.get(i as usize - 1) {
+                Some(&(_, k, t)) => dev.wb = Some([k, t]),
+                None => return, // Custom: whatever the sliders say
+            },
+            // Slider echoes of the values shown (e.g. after As shot) change nothing.
+            DevelopEdit::Kelvin(v) if (v - k).abs() < 0.5 => return,
+            DevelopEdit::Tint(v) if (v - t).abs() < 0.05 => return,
+            DevelopEdit::Kelvin(v) => dev.wb = Some([v, t]),
+            DevelopEdit::Tint(v) => dev.wb = Some([k, v]),
+            DevelopEdit::Exposure(v) => dev.exposure = v,
+            DevelopEdit::CameraExposure => dev.exposure = cam.baseline_ev,
+            DevelopEdit::Picked(kt) => {
+                dev.wb = Some(kt);
+                self.ui.sidebar.develop.picker.set_active(false);
+            }
+            DevelopEdit::Pick(on) => {
+                self.picking = on;
+                self.ui.grade_pic.set_cursor_from_name(on.then_some("crosshair"));
+                return;
+            }
+        }
+        if dev != self.develop {
+            self.develop = dev;
+            self.sync_develop();
+            self.develop_changed(sender);
+        }
+    }
+
+    /// The Develop controls as `self.develop` has them.
+    fn sync_develop(&self) {
+        let ui = &self.ui.sidebar.develop;
+        ui.root.set_visible(self.camera().is_some());
+        let Some(cam) = self.camera() else { return };
+        let [k, t] = self.develop.wb.unwrap_or_else(|| cam.as_shot_kelvin_tint());
+        ui.kelvin.adj.set_value(k as f64);
+        ui.tint.adj.set_value(t as f64);
+        ui.exposure.adj.set_value(self.develop.exposure as f64);
+        let preset = match self.develop.wb {
+            None => 0,
+            Some(kt) => WB_PRESETS.iter().position(|&(_, k, t)| [k, t] == kt).map_or(WB_CUSTOM, |i| i as u32 + 1),
+        };
+        ui.preset.set_selected(preset);
+    }
+
+    /// The point of the oriented full-resolution image under a canvas point.
+    fn image_point(&self, p: [f32; 2]) -> Option<[f32; 2]> {
+        let crop = self.crop_region()?;
+        let (r, scale) = match self.view_zoom() {
+            Some(z) => (z.view(&crop, self.canvas).0, z.scale),
+            None => (crop, Zoom::fit_scale(&crop, self.canvas)),
+        };
+        Some(r.point([(p[0] - self.canvas[0] / 2.0) * scale, (p[1] - self.canvas[1] / 2.0) * scale]))
+    }
+
+    /// `size` at the draft scale while a development control moves.
+    fn draft_size(&self, (w, h): (u32, u32)) -> (u32, u32) {
+        let k = if self.drafting { self.quality.draft() } else { 1.0 };
+        (((w as f32 * k) as u32).max(1), ((h as f32 * k) as u32).max(1))
+    }
+
+    /// Re-develops the RAW after a Develop change: a draft now, full quality once it settles.
+    fn develop_changed(&mut self, sender: &ComponentSender<Self>) {
+        self.drafting = self.quality != PreviewQuality::Best;
+        self.encode_photo(sender);
+        self.request_view();
+        self.develop_tick += 1;
+        let (s, tick) = (self.input.clone(), self.develop_tick);
+        glib::timeout_add_local_once(DEVELOP_SETTLE, move || s.emit(Msg::DevelopSettled(tick)));
     }
 
     fn layers_mut(&mut self, which: Layers) -> &mut Vec<LabLayer> {
@@ -872,7 +1030,7 @@ fn texture(width: u32, height: u32, rgba: Vec<u8>) -> gdk::MemoryTexture {
 
 /// Card with a collapsible header, like the sections of a grading panel.
 fn section(title: &str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
-    section_with(title, child, None, true)
+    section_with(title, child, &[], true)
 }
 
 /// Section with an eye toggle that switches it off (`which` = None: the LUTs
@@ -882,6 +1040,18 @@ fn bypassable(
     child: &impl IsA<gtk::Widget>,
     which: Option<Stage>,
     open: bool,
+    sender: &ComponentSender<App>,
+) -> gtk::Box {
+    bypassable_with(title, child, which, open, &[], sender)
+}
+
+/// [`bypassable`] with `extra` header buttons before the eye (e.g. "As in camera").
+fn bypassable_with(
+    title: &str,
+    child: &impl IsA<gtk::Widget>,
+    which: Option<Stage>,
+    open: bool,
+    extra: &[gtk::Widget],
     sender: &ComponentSender<App>,
 ) -> gtk::Box {
     let eye = gtk::ToggleButton::builder()
@@ -902,10 +1072,34 @@ fn bypassable(
         }
         snd.input(Msg::Bypass(which, off));
     });
-    section_with(title, child, Some(&eye), open)
+    let mut header: Vec<gtk::Widget> = extra.to_vec();
+    header.push(eye.upcast());
+    section_with(title, child, &header, open)
 }
 
-fn section_with(title: &str, child: &impl IsA<gtk::Widget>, eye: Option<&gtk::ToggleButton>, open: bool) -> gtk::Box {
+/// "As in camera" button for a section header.
+fn camera_button(tip: &str, msg: fn() -> Msg, sender: &ComponentSender<App>) -> gtk::Button {
+    let b = gtk::Button::builder()
+        .icon_name("camera-photo-symbolic")
+        .tooltip_text(tip)
+        .valign(gtk::Align::Center)
+        .css_classes(["flat", "circular"])
+        .build();
+    b.update_property(&[gtk::accessible::Property::Label(tip)]);
+    let snd = sender.clone();
+    b.connect_clicked(move |_| snd.input(msg()));
+    b
+}
+
+/// Heading of a sidebar group (Develop, Grade, Finish).
+fn group_heading(text: &str) -> gtk::Label {
+    let l = gtk::Label::builder().label(text).xalign(0.0).css_classes(["caption-heading", "dim-label"]).build();
+    l.set_margin_top(6);
+    l.set_margin_start(6);
+    l
+}
+
+fn section_with(title: &str, child: &impl IsA<gtk::Widget>, header: &[gtk::Widget], open: bool) -> gtk::Box {
     let arrow = gtk::Image::from_icon_name(if open { "pan-down-symbolic" } else { "pan-end-symbolic" });
     let head = gtk::Box::builder().spacing(6).build();
     head.append(&gtk::Label::builder().label(title).css_classes(["heading"]).xalign(0.0).hexpand(true).build());
@@ -938,9 +1132,11 @@ fn section_with(title: &str, child: &impl IsA<gtk::Widget>, eye: Option<&gtk::To
     let top = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     button.set_hexpand(true);
     top.append(&button);
-    if let Some(eye) = eye {
-        eye.set_margin_end(6);
-        top.append(eye);
+    for (i, w) in header.iter().enumerate() {
+        if i + 1 == header.len() {
+            w.set_margin_end(6);
+        }
+        top.append(w);
     }
     card.append(&top);
     card.append(&revealer);
@@ -1140,6 +1336,83 @@ struct Sidebar {
     /// The LUT browser, revealed under the look stack.
     browse: gtk::Revealer,
     browse_btn: gtk::ToggleButton,
+    develop: DevelopUi,
+}
+
+/// The Develop group (RAWs only).
+struct DevelopUi {
+    root: gtk::Box,
+    preset: gtk::DropDown,
+    kelvin: Slider,
+    tint: Slider,
+    picker: gtk::ToggleButton,
+    exposure: Slider,
+}
+
+/// Index of "Custom" in the white-balance preset dropdown (after As shot and the presets).
+const WB_CUSTOM: u32 = WB_PRESETS.len() as u32 + 1;
+
+fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
+    let root = vbox(12);
+    root.append(&group_heading(&gettext("Develop · not in LUT")));
+
+    let wb = vbox(4);
+    let names: Vec<String> = std::iter::once(gettext("As shot"))
+        // Same order as WB_PRESETS (literal calls, so xgettext finds them).
+        .chain([
+            gettext("Daylight"),
+            gettext("Cloudy"),
+            gettext("Shade"),
+            gettext("Tungsten"),
+            gettext("Fluorescent"),
+            gettext("Flash"),
+        ])
+        .chain([gettext("Custom")])
+        .collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let preset = gtk::DropDown::from_strings(&names);
+    preset.set_hexpand(true);
+    preset.update_property(&[gtk::accessible::Property::Label(&gettext("White balance preset"))]);
+    let snd = sender.clone();
+    preset.connect_selected_notify(move |d| snd.input(Msg::Develop(DevelopEdit::Preset(d.selected()))));
+    let picker = gtk::ToggleButton::builder()
+        .icon_name("color-select-symbolic")
+        .tooltip_text(gettext("Pick a neutral grey on the photo (Escape cancels)"))
+        .css_classes(["flat"])
+        .build();
+    picker.update_property(&[gtk::accessible::Property::Label(&gettext("White balance picker"))]);
+    let snd = sender.clone();
+    picker.connect_toggled(move |b| snd.input(Msg::Develop(DevelopEdit::Pick(b.is_active()))));
+    let row = gtk::Box::builder().spacing(6).css_classes(["slider-row"]).build();
+    row.append(&preset);
+    row.append(&picker);
+    wb.append(&row);
+    let kelvin =
+        Slider::new(&gettext("Temperature"), KELVIN[0] as f64, KELVIN[1] as f64, 5500.0, 0, Some("track-temp"));
+    let snd = sender.clone();
+    kelvin.connect(move |v| snd.input(Msg::Develop(DevelopEdit::Kelvin(v as f32))));
+    let tint = Slider::new(&gettext("Tint"), -100.0, 100.0, 0.0, 0, Some("track-tint"));
+    let snd = sender.clone();
+    tint.connect(move |v| snd.input(Msg::Develop(DevelopEdit::Tint(v as f32))));
+    wb.append(&kelvin.root);
+    wb.append(&tint.root);
+    let as_shot =
+        camera_button(&gettext("As in camera: white balance as shot"), || Msg::Develop(DevelopEdit::AsShot), sender);
+    root.append(&section_with(&gettext("White balance"), &wb, &[as_shot.upcast()], true));
+
+    let exp = vbox(4);
+    let exposure = Slider::new(&gettext("Exposure"), -3.0, 3.0, 0.0, 2, None);
+    let snd = sender.clone();
+    exposure.connect(move |v| snd.input(Msg::Develop(DevelopEdit::Exposure(v as f32))));
+    exp.append(&exposure.root);
+    let cam_ev = camera_button(
+        &gettext("As in camera: the exposure the camera asks for"),
+        || Msg::Develop(DevelopEdit::CameraExposure),
+        sender,
+    );
+    root.append(&section_with(&gettext("Exposure"), &exp, &[cam_ev.upcast()], true));
+    root.set_visible(false);
+    DevelopUi { root, preset, kelvin, tint, picker, exposure }
 }
 
 /// Curve editor with a channel selector and a reset button.
@@ -1327,6 +1600,9 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     scopes_box.append(&scope_head);
     scopes_box.append(&scope_stack);
     panel.append(&section(&gettext("Scopes"), &scopes_box));
+    let develop = build_develop(sender);
+    panel.append(&develop.root);
+    panel.append(&group_heading(&gettext("Grade · in LUT")));
 
     // Input profile: the signal the LUT will receive in camera.
     let profile_box = vbox(6);
@@ -1359,7 +1635,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     let wb = vbox(4);
     add(&wb, &gettext("Temperature"), -100.0, 100.0, 0, Some("track-temp"), |p| &mut p.temperature);
     add(&wb, &gettext("Tint"), -100.0, 100.0, 0, Some("track-tint"), |p| &mut p.tint);
-    panel.append(&bypassable(&gettext("White balance"), &wb, Some(Stage::WhiteBalance), true, sender));
+    panel.append(&bypassable(&gettext("Warmth"), &wb, Some(Stage::WhiteBalance), true, sender));
 
     let tone = vbox(4);
     add(&tone, &gettext("Exposure"), -3.0, 3.0, 2, None, |p| &mut p.exposure);
@@ -1518,6 +1794,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     look_box.append(&browse);
     look_box.append(&caption(&gettext("Applied after the grade, top to bottom, and included in the exported LUT.")));
     panel.append(&bypassable(&gettext("LUTs"), &look_box, None, true, sender));
+    panel.append(&group_heading(&gettext("Finish · not in LUT")));
     panel.append(crop);
 
     let reset = gtk::Button::builder()
@@ -1552,6 +1829,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         look_blend,
         browse,
         browse_btn,
+        develop,
     }
 }
 
@@ -2018,9 +2296,24 @@ impl SimpleComponent for App {
             .description(gettext("LUT files in this folder and its subfolders appear in the LUT browser."))
             .build();
         prefs_group.add(&prefs_row);
+        let labels: Vec<String> = PreviewQuality::ALL.map(PreviewQuality::label).to_vec();
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let quality_row = adw::ComboRow::builder()
+            .title(gettext("Preview while editing"))
+            .subtitle(gettext(
+                "Faster previews are softer while you drag; the full-quality frame follows when you stop.",
+            ))
+            .model(&gtk::StringList::new(&labels))
+            .selected(PreviewQuality::ALL.iter().position(|q| *q == PreviewQuality::stored()).unwrap_or(1) as u32)
+            .build();
+        let snd = sender.clone();
+        quality_row.connect_selected_notify(move |r| snd.input(Msg::Quality(r.selected())));
+        let view_group = adw::PreferencesGroup::builder().title(gettext("RAW development")).build();
+        view_group.add(&quality_row);
         let prefs_page =
             adw::PreferencesPage::builder().title(gettext("General")).icon_name("preferences-system-symbolic").build();
         prefs_page.add(&prefs_group);
+        prefs_page.add(&view_group);
         let prefs = adw::PreferencesDialog::new();
         prefs.add(&prefs_page);
         let help = gio::SimpleAction::new("show-help-overlay", None);
@@ -2162,6 +2455,10 @@ impl SimpleComponent for App {
             view_gen: 0,
             encoding: false,
             develop: Develop::default(),
+            quality: PreviewQuality::stored(),
+            drafting: false,
+            develop_tick: 0,
+            picking: false,
             raw_loading: None,
             encode_again: false,
             encoded: None,
@@ -2316,6 +2613,25 @@ impl SimpleComponent for App {
                     self.ui.grid_btn.set_active(on);
                 }
             }
+            Msg::Develop(edit) => self.edit_develop(edit, &sender),
+            Msg::CanvasClick(p) => {
+                if let Some(at) = self.image_point(p).filter(|_| self.picking) {
+                    self.send(Job::SampleRaw { at, radius: 4 });
+                }
+            }
+            Msg::DevelopSettled(tick) if tick == self.develop_tick && self.drafting => {
+                self.drafting = false;
+                self.encode_photo(&sender);
+                self.request_view();
+            }
+            Msg::DevelopSettled(_) => {}
+            Msg::Quality(i) => {
+                self.quality = PreviewQuality::ALL[i as usize % 3];
+                if let Err(e) = settings::set_value(settings::PREVIEW_QUALITY, self.quality.key()) {
+                    self.toast(&gettext!("Cannot save the setting: {}", e));
+                }
+                self.encode_photo(&sender);
+            }
             Msg::RawRead(generation, ..) if generation != self.load_gen => {}
             Msg::RawRead(generation, path, Ok(raw)) => {
                 self.raw_loading = Some((generation, path));
@@ -2332,6 +2648,8 @@ impl SimpleComponent for App {
                 self.reset_crop();
                 self.decoded = Some(decoded);
                 self.path = Some(path);
+                self.develop = Develop::default();
+                self.sync_develop();
                 // Opening a photo means you want to see it.
                 if self.show_chart {
                     self.show_chart = false;
@@ -2385,6 +2703,11 @@ impl SimpleComponent for App {
             }
             Msg::ResetAll => {
                 let before = self.grade.clone();
+                if self.develop != Develop::default() {
+                    self.develop = Develop::default();
+                    self.sync_develop();
+                    self.develop_changed(&sender);
+                }
                 self.apply_grade(Grade::default());
                 self.undo_toast(&gettext("Grade reset"), move || Msg::RestoreGrade(Box::new(before.clone())));
             }
@@ -2805,7 +3128,9 @@ impl SimpleComponent for App {
                 self.clear_selection();
             }
             Msg::Escape => {
-                if self.editing.is_some() {
+                if self.picking {
+                    self.ui.sidebar.develop.picker.set_active(false);
+                } else if self.editing.is_some() {
                     sender.input(Msg::CropCancel);
                 } else if self.candidate.is_some() || self.preview_req.is_some() {
                     self.clear_selection();
@@ -3094,16 +3419,8 @@ impl App {
         self.view_gen += 1;
         let (s, generation, profile) = (self.input.clone(), self.view_gen, self.profile);
         if d.is_raw() {
-            let develop = self.develop;
-            return self.send(Job::DevelopRaw {
-                generation,
-                region: r,
-                width: w,
-                height: h,
-                develop,
-                profile,
-                view: true,
-            });
+            let ((width, height), develop) = (self.draft_size((w, h)), self.develop);
+            return self.send(Job::DevelopRaw { generation, region: r, width, height, develop, profile, view: true });
         }
         // shortcut: one thread per request; a scroll burst resamples views nobody sees. Pool them if it shows.
         let dev = Develop::default();
@@ -3206,6 +3523,10 @@ impl App {
                     self.render();
                 }
             }
+            Done::Sampled(c) => match self.camera().and_then(|cam| cam.neutral_for(c)) {
+                Some(kt) => self.input.emit(Msg::Develop(DevelopEdit::Picked(kt))),
+                None => self.toast(&gettext("Pick a grey area that is not too dark or too bright")),
+            },
             Done::Matched(generation, _) if generation != self.match_gen => {}
             Done::Matched(_, m) => {
                 self.grade.params.match_ab = m.ab;

@@ -280,6 +280,11 @@ pub enum Job {
         profile: Profile,
         view: bool,
     },
+    /// Mean camera RGB around a point of the loaded RAW (white-balance picker).
+    SampleRaw {
+        at: [f32; 2],
+        radius: u32,
+    },
     /// LUTs applied after the grade on the Grade page (empty = none).
     SetLook(Stack),
     /// Base of the LUT browser thumbnails; None = neutral grade and no looks.
@@ -397,6 +402,8 @@ pub enum Done {
         profile: Profile,
         photo: Arc<Photo>,
     },
+    /// What `Job::SampleRaw` read: as-shot-balanced camera RGB.
+    Sampled([f32; 3]),
 }
 
 /// A filmstrip photo on the GPU and the grade its frame was last rendered with.
@@ -499,6 +506,11 @@ impl Worker {
                 }
                 self.photo = Some(ph);
                 notify(Done::Developed { generation, view, profile, photo });
+            }
+            Job::SampleRaw { at, radius } => {
+                if let Some(raw) = &self.raw {
+                    notify(Done::Sampled(gpu.sample(raw, at, radius)));
+                }
             }
             Job::SetView(p) => {
                 self.photo = Some(gpu.upload(&p));

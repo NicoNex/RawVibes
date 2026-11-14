@@ -292,21 +292,7 @@ impl Gpu {
 
     /// Reads a buffer of f32 back to the CPU (tests, samples).
     pub fn read_f32(&self, buf: &wgpu::Buffer) -> Vec<f32> {
-        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: buf.size(),
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let mut enc = self.device.create_command_encoder(&Default::default());
-        enc.copy_buffer_to_buffer(buf, 0, &staging, 0, buf.size());
-        self.queue.submit([enc.finish()]);
-        let slice = staging.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |r| r.expect("GPU readback failed"));
-        self.device.poll(wgpu::PollType::wait_indefinitely()).expect("GPU device lost");
-        let out = bytemuck::cast_slice(&slice.get_mapped_range().expect("map GPU readback")).to_vec();
-        staging.unmap();
-        out
+        bytemuck::cast_slice(&self.read_range(buf, 0, buf.size())).to_vec()
     }
 
     fn raw_params(&self, raw: &RawData, size: [u32; 4]) -> wgpu::Buffer {
@@ -427,6 +413,49 @@ impl Gpu {
         Photo::from_image(img.into_rgba32f())
     }
 
+    /// Mean camera RGB (as-shot balanced) of the full-resolution pixels within
+    /// `radius` of `at`, a point of the oriented image (white-balance picker).
+    pub fn sample(&self, raw: &GpuRaw, at: [f32; 2], radius: u32) -> [f32; 3] {
+        let (w, h) = raw.size();
+        let [x, y] = sensor_point(at, raw.orientation, w, h).map(|v| v.max(0.0) as u32);
+        let (x, y) = (x.min(w - 1), y.min(h - 1));
+        let (y0, y1) = (y.saturating_sub(radius), (y + radius).min(h - 1));
+        let (x0, x1) = (x.saturating_sub(radius), (x + radius).min(w - 1));
+        // Whole rows: one contiguous copy.
+        let words = self.read_range(&raw.levels[0].0, y0 as u64 * w as u64 * 8, (y1 - y0 + 1) as u64 * w as u64 * 8);
+        let words: &[u32] = bytemuck::cast_slice(&words);
+        let mut sum = [0.0; 3];
+        for yy in 0..=(y1 - y0) {
+            for xx in x0..=x1 {
+                let i = (yy * w + xx) as usize * 2;
+                let c =
+                    [f16_to_f32(words[i] as u16), f16_to_f32((words[i] >> 16) as u16), f16_to_f32(words[i + 1] as u16)];
+                (0..3).for_each(|k| sum[k] += c[k]);
+            }
+        }
+        let n = ((y1 - y0 + 1) * (x1 - x0 + 1)) as f32;
+        sum.map(|v| v / n)
+    }
+
+    /// `len` bytes of `buf` from `offset`, back on the CPU.
+    fn read_range(&self, buf: &wgpu::Buffer, offset: u64, len: u64) -> Vec<u8> {
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: len,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        enc.copy_buffer_to_buffer(buf, offset, &staging, 0, len);
+        self.queue.submit([enc.finish()]);
+        let slice = staging.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |r| r.expect("GPU readback failed"));
+        self.device.poll(wgpu::PollType::wait_indefinitely()).expect("GPU device lost");
+        let out = slice.get_mapped_range().expect("map GPU readback").to_vec();
+        staging.unmap();
+        out
+    }
+
     /// A mip level as f32 RGB.
     fn read_level(&self, raw: &GpuRaw, k: usize) -> Vec<[f32; 3]> {
         let words: Vec<u32> = bytemuck::cast_slice(&self.read_f32(&raw.levels[k].0)).to_vec();
@@ -460,6 +489,22 @@ impl Gpu {
             (&p.hl_apply, &[(0, &params), (1, &cfa), (2, &out), (4, &chroma)], (gx, gy)),
         ]);
         Ok(out)
+    }
+}
+
+/// Sensor (unoriented) position of a point of the oriented image; `w` × `h`
+/// is the sensor size. Same mapping as `sensor` in `raw.wgsl`.
+fn sensor_point([x, y]: [f32; 2], orientation: u16, w: u32, h: u32) -> [f32; 2] {
+    let (w, h) = (w as f32, h as f32);
+    match orientation {
+        2 => [w - x, y],
+        3 => [w - x, h - y],
+        4 => [x, h - y],
+        5 => [y, x],
+        6 => [y, h - x],
+        7 => [w - y, h - x],
+        8 => [w - y, x],
+        _ => [x, y],
     }
 }
 
@@ -761,7 +806,36 @@ mod tests {
             / (3.0 * n))
             .sqrt();
         eprintln!("RMSE GPU vs CPU: {rmse}");
+        // Preview frame cost (develop + readback) at Best, Balanced and Fast drafts of a 2048 px fit.
+        let (pw, ph) = crate::photo::Decoded::fit_size(&r, 2048);
+        for k in [1.0, 0.75, 0.5] {
+            let (w, h) = ((pw as f32 * k) as u32, (ph as f32 * k) as u32);
+            let t = std::time::Instant::now();
+            for _ in 0..10 {
+                gpu.read_photo(&gpu.develop(&raw, &r, w, h, &dev, Profile::Standard));
+            }
+            eprintln!("frame {w}×{h}: {:?}", t.elapsed() / 10);
+        }
         assert!(rmse < 0.03, "RMSE {rmse}");
+    }
+
+    /// The picker reads the pixel shown at a point, whatever the orientation.
+    #[test]
+    fn sample_follows_orientation() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (6, 4);
+        let px: Vec<[f32; 3]> = (0..w * h).map(|i| [i as f32 / 32.0, 0.5, 0.25]).collect();
+        for o in 1..=8u16 {
+            let raw = rgb_raw(&gpu, w, h, px.clone(), o, Camera::neutral());
+            let (ow, oh) = if o >= 5 { (h, w) } else { (w, h) };
+            let shown = gpu.read_photo(&gpu.develop(&raw, &whole(ow, oh), ow, oh, &Develop::default(), Profile::VLog));
+            for (x, y) in [(0, 0), (ow - 1, 0), (1, oh - 1)] {
+                let s = gpu.sample(&raw, [x as f32 + 0.5, y as f32 + 0.5], 0);
+                let enc = crate::develop::develop_pixel(s, &Camera::neutral(), &Develop::default(), Profile::VLog);
+                let got = shown.pixels[(y * ow + x) as usize];
+                assert!((got[0] - enc[0]).abs() < 2e-3, "orientation {o} at ({x}, {y})");
+            }
+        }
     }
 
     #[test]

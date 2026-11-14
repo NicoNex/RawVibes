@@ -14,6 +14,9 @@ fn file(name: &str) -> PathBuf {
     glib::user_config_dir().join("rawvalley").join(name)
 }
 
+/// Preview quality while editing: "fast", "balanced" or "best".
+pub const PREVIEW_QUALITY: &str = "preview-quality";
+
 /// The canvas background: "default", "black" or "white".
 pub const BACKGROUND: &str = "background";
 

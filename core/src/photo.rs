@@ -104,6 +104,14 @@ impl Decoded {
         }
     }
 
+    /// The camera model of a RAW.
+    pub fn camera(&self) -> Option<&Camera> {
+        match self {
+            Decoded::Raw { camera, .. } => Some(camera),
+            Decoded::Raster(_) => None,
+        }
+    }
+
     pub fn is_raw(&self) -> bool {
         matches!(self, Decoded::Raw { .. })
     }

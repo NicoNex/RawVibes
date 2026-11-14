@@ -141,9 +141,27 @@ impl Gpu {
     }
 
     pub fn upload(&self, photo: &Photo) -> GpuPhoto {
-        let src = self.storage(bytemuck::cast_slice(&photo.pixels));
-        let (out, staging) = self.output(photo.width as u64 * photo.height as u64 * 4);
-        GpuPhoto { src, out, staging, width: photo.width, height: photo.height }
+        let mut slot = None;
+        self.upload_into(&mut slot, photo);
+        slot.expect("just uploaded")
+    }
+
+    /// `photo` into `slot`, reusing its buffers when the size matches, so zoom
+    /// and drag frames allocate nothing.
+    pub(crate) fn upload_into(&self, slot: &mut Option<GpuPhoto>, photo: &Photo) {
+        let p = self.photo_slot(slot, photo.width, photo.height);
+        self.queue.write_buffer(&p.src, 0, bytemuck::cast_slice(&photo.pixels));
+    }
+
+    /// The photo buffers in `slot` for `w` × `h`: kept when the size matches, new otherwise.
+    pub(crate) fn photo_slot<'a>(&self, slot: &'a mut Option<GpuPhoto>, w: u32, h: u32) -> &'a GpuPhoto {
+        if slot.as_ref().is_none_or(|p| (p.width, p.height) != (w, h)) {
+            let n = w as u64 * h as u64;
+            let src = self.buffer(n * 16, wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC);
+            let (out, staging) = self.output(n * 4);
+            *slot = Some(GpuPhoto { src, out, staging, width: w, height: h });
+        }
+        slot.as_ref().expect("set above")
     }
 
     pub fn upload_lut(&self, lut: &Lut3d) -> GpuLut {
@@ -400,7 +418,8 @@ pub enum Done {
         generation: u64,
         view: bool,
         profile: Profile,
-        /// The fitted photo on the CPU (`None` for views: nobody reads them back).
+        /// A small CPU copy of the fitted photo, which `SetPhoto` takes back to show it
+        /// (`None` for views: nobody reads them back).
         photo: Option<Arc<Photo>>,
     },
     /// What `Job::SampleRaw` read: as-shot-balanced camera RGB.
@@ -418,11 +437,19 @@ struct RollFrame {
 struct Worker {
     /// The RAW being edited, at full resolution.
     raw: Option<GpuRaw>,
-    /// A zoomed view is what renders; a fitted RAW developed meanwhile waits in `fit`.
-    viewing: bool,
+    /// The whole (cropped) uploaded photo — a raster or the test chart — and its pixels.
     fit: Option<GpuPhoto>,
     source: Option<Arc<Photo>>,
-    photo: Option<GpuPhoto>,
+    /// The whole (cropped) RAW developed on the GPU, and its small CPU copy
+    /// (`Done::Developed`), which `SetPhoto` hands back to show it again.
+    raw_fit: Option<GpuPhoto>,
+    raw_small: Option<Arc<Photo>>,
+    /// `raw_fit` is the photo shown, not `fit`.
+    show_raw: bool,
+    /// A zoomed view, rendered instead of the whole photo while there is one.
+    view: Option<GpuPhoto>,
+    /// Scratch slot of the small CPU copy of the developed RAW.
+    small_slot: Option<GpuPhoto>,
     thumb: Option<GpuPhoto>,
     /// Composite of the Grade page's look LUTs.
     look: Option<GpuLut>,
@@ -440,7 +467,15 @@ struct Worker {
     grade_lut: std::cell::RefCell<Option<(Grade, Arc<Lut3d>)>>,
 }
 
+/// Longest side of the CPU copy of each developed RAW frame.
+const SMALL_COPY: u32 = 512;
+
 impl Worker {
+    /// What renders: the zoomed view, else the whole photo (RAW or uploaded).
+    fn shown(&self) -> Option<&GpuPhoto> {
+        self.view.as_ref().or(if self.show_raw { self.raw_fit.as_ref() } else { self.fit.as_ref() })
+    }
+
     /// Renders the next gallery thumbnail; false once the pass is done.
     fn gallery_step(&mut self, gpu: &Gpu, notify: &impl Fn(Done)) -> bool {
         let (Some((generation, paths, index)), Some(th)) = (&mut self.gallery, &self.thumb) else {
@@ -476,17 +511,16 @@ impl Worker {
     fn handle(&mut self, gpu: &Gpu, job: Job, notify: &impl Fn(Done)) {
         match job {
             Job::SetPhoto(p) => {
-                // Same pixels (e.g. only the input profile changed): keep the upload,
-                // or bring back the fitted RAW that waited while zoomed.
-                if self.source.as_ref().is_some_and(|s| Arc::ptr_eq(s, &p)) {
-                    if std::mem::take(&mut self.viewing) {
-                        self.photo = Some(self.fit.take().unwrap_or_else(|| gpu.upload(&p)));
-                    }
+                // Always back to the whole photo; same pixels (e.g. only the input
+                // profile changed, or a zoom-out): keep the upload.
+                self.view = None;
+                let same = |s: &Option<Arc<Photo>>| s.as_ref().is_some_and(|s| Arc::ptr_eq(s, &p));
+                self.show_raw = same(&self.raw_small);
+                if self.show_raw || same(&self.source) {
                     return;
                 }
-                (self.viewing, self.fit) = (false, None);
-                self.thumb = Some(gpu.upload(&p.downscaled(THUMB_MAX)));
-                self.photo = Some(gpu.upload(&p));
+                gpu.upload_into(&mut self.thumb, &p.downscaled(THUMB_MAX));
+                gpu.upload_into(&mut self.fit, &p);
                 self.source = Some(p);
             }
             Job::LoadRaw(generation, path, data) => {
@@ -503,24 +537,22 @@ impl Worker {
             Job::DevelopRaw { generation, region, width, height, develop, profile, view } => {
                 let Some(raw) = &self.raw else { return };
                 // shortcut: a develop too large for the GPU is skipped (the preview stays); only a huge HiDPI canvas gets there.
-                let Ok(ph) = gpu.develop(raw, &region, width, height, &develop, profile) else { return };
+                let slot = if view { &mut self.view } else { &mut self.raw_fit };
+                if gpu.develop_into(slot, raw, &region, width, height, &develop, profile).is_err() {
+                    return;
+                }
                 if view {
-                    self.viewing = true;
-                    self.photo = Some(ph);
                     return notify(Done::Developed { generation, view, profile, photo: None });
                 }
-                let photo = Arc::new(gpu.read_photo(&ph));
-                {
-                    self.thumb = Some(gpu.upload(&photo.downscaled(THUMB_MAX)));
-                    // SetPhoto with these pixels is then a no-op: they are already on the GPU.
-                    self.source = Some(photo.clone());
-                    // While zoomed the view keeps rendering; the fit waits for the zoom-out.
-                    if self.viewing {
-                        self.fit = Some(ph);
-                    } else {
-                        self.photo = Some(ph);
-                    }
+                // The full frame stays on the GPU: reading it back costs ~30 ms per 2048 px
+                // frame. A small copy serves the CPU (match source, thumbnails).
+                let (w, h) = Decoded::fit_size(&region, SMALL_COPY);
+                if gpu.develop_into(&mut self.small_slot, raw, &region, w, h, &develop, profile).is_err() {
+                    return;
                 }
+                let photo = Arc::new(gpu.read_photo(self.small_slot.as_ref().expect("developed")));
+                gpu.upload_into(&mut self.thumb, &photo.downscaled(THUMB_MAX));
+                self.raw_small = Some(photo.clone());
                 notify(Done::Developed { generation, view, profile, photo: Some(photo) });
             }
             Job::SampleRaw { at, radius } => {
@@ -529,10 +561,7 @@ impl Worker {
                 }
             }
             Job::SetView(p) => {
-                self.viewing = true;
-                self.photo = Some(gpu.upload(&p));
-                // The next SetPhoto must upload again, even with the same pixels.
-                self.source = None;
+                gpu.upload_into(&mut self.view, &p);
             }
             Job::SetLook(stack) => {
                 // ponytail: 33³ preview composite, like the Lab; exports compose exactly.
@@ -548,7 +577,7 @@ impl Worker {
                 });
             }
             Job::Render(grade, split) => {
-                let Some(ph) = &self.photo else { return };
+                let Some(ph) = self.shown() else { return };
                 let rgba = gpu.render(ph, &grade, self.look.as_ref(), split);
                 let scopes = Scopes::compute(&rgba, ph.width, ph.height, split);
                 notify(Done::Graded { width: ph.width, height: ph.height, rgba, scopes });
@@ -589,7 +618,7 @@ impl Worker {
             // Rendered one thumbnail at a time by `gallery_step`, so previews never wait for a pass.
             Job::Gallery(generation, paths) => self.gallery = Some((generation, paths, 0)),
             Job::Lab { stack, split } => {
-                let Some(ph) = &self.photo else { return };
+                let Some(ph) = self.shown() else { return };
                 // ponytail: 33³ preview lattice; exports compose at full size.
                 let lut = lab::compose(&stack, 33, &|g| self.bake_cached(gpu, g));
                 let rgba = gpu.apply_lut(ph, &gpu.upload_lut(&lut), split);
@@ -655,6 +684,61 @@ pub fn spawn(notify: impl Fn(Done) + Send + 'static) -> mpsc::Sender<Job> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The RAW renders at the size it was developed at, from the GPU; the
+    /// small CPU copy it hands back only brings it back (e.g. after the chart).
+    #[test]
+    fn raw_renders_full_size_and_comes_back_after_the_chart() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (1200, 800);
+        let data = Arc::new(RawData {
+            pixels: crate::raw::Pixels::Rgb(vec![[0.2, 0.3, 0.25]; (w * h) as usize]),
+            width: w,
+            height: h,
+            pattern: [0; 36],
+            pattern_size: [1, 1],
+            crop: [0, 0, w, h],
+            orientation: 1,
+            camera: crate::develop::Camera::neutral(),
+        });
+        let done = std::cell::RefCell::new(Vec::new());
+        let notify = |d: Done| done.borrow_mut().push(d);
+        let mut worker = Worker::default();
+        worker.handle(&gpu, Job::LoadRaw(1, PathBuf::new(), data), &notify);
+        let region = Region { center: [600.0, 400.0], size: [1200.0, 800.0], angle: 0.0 };
+        let develop = Develop::default();
+        let job = |view| Job::DevelopRaw {
+            generation: 1,
+            region,
+            width: 1000,
+            height: 667,
+            develop,
+            profile: Profile::Standard,
+            view,
+        };
+        worker.handle(&gpu, job(false), &notify);
+        let small = done.borrow().iter().find_map(|d| match d {
+            Done::Developed { photo: Some(p), .. } => Some(p.clone()),
+            _ => None,
+        });
+        let small = small.expect("developed");
+        assert!(small.width.max(small.height) <= SMALL_COPY);
+        let rendered = |worker: &mut Worker| {
+            done.borrow_mut().clear();
+            worker.handle(&gpu, Job::Render(Grade::default(), 0.0), &notify);
+            match done.borrow().last() {
+                Some(Done::Graded { width, height, .. }) => (*width, *height),
+                other => panic!("{other:?}"),
+            }
+        };
+        worker.handle(&gpu, Job::SetPhoto(small.clone()), &notify);
+        assert_eq!(rendered(&mut worker), (1000, 667));
+        let chart = Arc::new(Photo { width: 8, height: 4, pixels: vec![[0.5, 0.5, 0.5, 1.0]; 32] });
+        worker.handle(&gpu, Job::SetPhoto(chart), &notify);
+        assert_eq!(rendered(&mut worker), (8, 4));
+        worker.handle(&gpu, Job::SetPhoto(small), &notify);
+        assert_eq!(rendered(&mut worker), (1000, 667));
+    }
 
     /// The neutral grade must bake to an identity LUT, and the baked LUT
     /// must reproduce the direct per-pixel grade (preview == export).

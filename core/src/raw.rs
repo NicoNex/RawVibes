@@ -209,6 +209,8 @@ pub struct Pipelines {
     develop: wgpu::ComputePipeline,
     /// The OETF table of the last profile developed into.
     oetf: std::cell::RefCell<Option<(Profile, wgpu::Buffer)>>,
+    /// `DevelopParams`, rewritten per frame.
+    develop_params: wgpu::Buffer,
 }
 
 impl Pipelines {
@@ -243,6 +245,12 @@ impl Pipelines {
             mip: pipeline("mip"),
             develop: pipeline("develop"),
             oetf: Default::default(),
+            develop_params: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("develop params"),
+                size: std::mem::size_of::<DevelopParams>() as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
         }
     }
 }
@@ -311,7 +319,7 @@ fn grid(n: u32) -> (u32, u32) {
 }
 
 impl Gpu {
-    fn buffer(&self, bytes: u64, extra: wgpu::BufferUsages) -> wgpu::Buffer {
+    pub(crate) fn buffer(&self, bytes: u64, extra: wgpu::BufferUsages) -> wgpu::Buffer {
         self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: bytes.max(16),
@@ -420,6 +428,24 @@ impl Gpu {
         dev: &Develop,
         profile: Profile,
     ) -> Result<GpuPhoto, String> {
+        let mut slot = None;
+        self.develop_into(&mut slot, raw, r, w, h, dev, profile)?;
+        Ok(slot.expect("developed"))
+    }
+
+    /// [`Gpu::develop`] into `slot`, reusing its buffers when the size matches
+    /// (a drag allocates nothing per frame).
+    #[allow(clippy::too_many_arguments)]
+    pub fn develop_into(
+        &self,
+        slot: &mut Option<GpuPhoto>,
+        raw: &GpuRaw,
+        r: &Region,
+        w: u32,
+        h: u32,
+        dev: &Develop,
+        profile: Profile,
+    ) -> Result<(), String> {
         self.fits(w as u64 * h as u64 * 16)?;
         // The finest level at least as coarse as one output pixel, as `Pyramid::resample` picks.
         let (sx, sy) = (r.size[0] / w as f32, r.size[1] / h as f32);
@@ -441,18 +467,16 @@ impl Gpu {
             k: RAW_TO_SCENE * dev.exposure.exp2(),
             _pad: [0.0; 3],
         };
-        let params = self.storage(bytemuck::bytes_of(&params));
+        self.queue.write_buffer(&self.raw.develop_params, 0, bytemuck::bytes_of(&params));
         let mut oetf = self.raw.oetf.borrow_mut();
         if oetf.as_ref().is_none_or(|(p, _)| *p != profile) {
             *oetf = Some((profile, self.storage(bytemuck::cast_slice(&oetf_table(profile)))));
         }
         let table = &oetf.as_ref().expect("set above").1;
-        let n = w as u64 * h as u64;
-        let src = self.buffer(n * 16, wgpu::BufferUsages::COPY_SRC);
+        let src = &self.photo_slot(slot, w, h).src;
         let p = &self.raw;
-        self.passes(&[(&p.develop, &[(10, level), (12, &params), (13, &src), (14, table)], grid(w * h))]);
-        let (out, staging) = self.output(n * 4);
-        Ok(GpuPhoto { src, out, staging, width: w, height: h })
+        self.passes(&[(&p.develop, &[(10, level), (12, &p.develop_params), (13, src), (14, table)], grid(w * h))]);
+        Ok(())
     }
 
     /// The developed pixels back on the CPU.
@@ -872,9 +896,13 @@ mod tests {
         let (pw, ph) = crate::photo::Decoded::fit_size(&r, 2048);
         for k in [1.0, 0.75, 0.5] {
             let (w, h) = ((pw as f32 * k) as u32, (ph as f32 * k) as u32);
-            let t = std::time::Instant::now();
+            // As the worker does it: the frame stays on the GPU, a 512 px copy comes back.
+            let (sw, sh) = crate::photo::Decoded::fit_size(&r, 512);
+            let (mut slot, mut small, t) = (None, None, std::time::Instant::now());
             for _ in 0..10 {
-                gpu.read_photo(&gpu.develop(&raw, &r, w, h, &dev, Profile::Standard).unwrap());
+                gpu.develop_into(&mut slot, &raw, &r, w, h, &dev, Profile::Standard).unwrap();
+                gpu.develop_into(&mut small, &raw, &r, sw, sh, &dev, Profile::Standard).unwrap();
+                gpu.read_photo(small.as_ref().unwrap());
             }
             eprintln!("frame {w}×{h}: {:?}", t.elapsed() / 10);
         }
@@ -899,6 +927,24 @@ mod tests {
                 assert!((got[0] - enc[0]).abs() < 2e-3, "orientation {o} at ({x}, {y})");
             }
         }
+    }
+
+    /// A second develop of the same size writes into the same buffers.
+    #[test]
+    fn develop_reuses_buffers_of_the_same_size() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let raw = rgb_raw(&gpu, 4, 2, vec![[0.2; 3]; 8], 1, Camera::neutral());
+        let mut slot = None;
+        let dev = Develop::default();
+        gpu.develop_into(&mut slot, &raw, &whole(4, 2), 4, 2, &dev, Profile::Standard).unwrap();
+        let first = slot.as_ref().unwrap().src.clone();
+        let bright = Develop { exposure: 1.0, ..dev };
+        gpu.develop_into(&mut slot, &raw, &whole(4, 2), 4, 2, &bright, Profile::Standard).unwrap();
+        assert!(slot.as_ref().unwrap().src == first, "same size, new buffer");
+        let want = gpu.read_photo(&gpu.develop(&raw, &whole(4, 2), 4, 2, &bright, Profile::Standard).unwrap());
+        assert_eq!(gpu.read_photo(slot.as_ref().unwrap()).pixels, want.pixels);
+        gpu.develop_into(&mut slot, &raw, &whole(4, 2), 2, 1, &dev, Profile::Standard).unwrap();
+        assert_eq!((slot.as_ref().unwrap().width, slot.as_ref().unwrap().height), (2, 1));
     }
 
     /// Buffers past the GPU's limits are refused with an error, not a wgpu panic.

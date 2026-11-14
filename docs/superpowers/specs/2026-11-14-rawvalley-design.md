@@ -222,7 +222,8 @@ LUT Lab pages. Additions:
   hover/click, and the scroll wheel over the list) step through LUTs;
   Enter or a click adds the previewed LUT to the look stack with its
   intensity; Escape leaves the photo as it was. Before/after split works
-  during browsing. The Compare LUTs page is removed once this ships.
+  during browsing. The Compare LUTs page is removed once this ships; the
+  LUT Lab stays a page of its own (author's decision).
 
 ### Testing
 

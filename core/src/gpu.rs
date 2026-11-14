@@ -269,8 +269,8 @@ pub enum Job {
         reference: Arc<Photo>,
         input: Grade,
     },
-    /// The photo through the LUT file at `path` (kept on the GPU while selected).
-    ApplyLut(PathBuf, f32),
+    /// A zoomed view to render instead of the photo; the thumbnails keep the photo.
+    SetView(Arc<Photo>),
     /// Thumbnails of the LUT files, read one at a time; `generation` lets
     /// the UI drop stale results.
     Gallery(u64, Arc<Vec<PathBuf>>),
@@ -300,7 +300,6 @@ pub enum Job {
 #[derive(Clone, Copy, PartialEq)]
 enum Slot {
     Grade,
-    Compare,
     Gallery,
     Lab,
     Look,
@@ -312,7 +311,6 @@ impl Job {
     fn slot(&self) -> Option<Slot> {
         match self {
             Job::Render(..) => Some(Slot::Grade),
-            Job::ApplyLut(..) => Some(Slot::Compare),
             Job::Gallery(..) => Some(Slot::Gallery),
             Job::Lab { .. } => Some(Slot::Lab),
             Job::SetLook(..) => Some(Slot::Look),
@@ -326,40 +324,12 @@ impl Job {
 pub enum Done {
     Ready(String),
     Failed(String),
-    Graded {
-        width: u32,
-        height: u32,
-        rgba: Vec<u8>,
-        scopes: Scopes,
-    },
-    Compared {
-        width: u32,
-        height: u32,
-        rgba: Vec<u8>,
-    },
-    Lab {
-        width: u32,
-        height: u32,
-        rgba: Vec<u8>,
-    },
-    Thumb {
-        generation: u64,
-        index: usize,
-        width: u32,
-        height: u32,
-        rgba: Vec<u8>,
-    },
+    Graded { width: u32, height: u32, rgba: Vec<u8>, scopes: Scopes },
+    Lab { width: u32, height: u32, rgba: Vec<u8> },
+    Thumb { generation: u64, index: usize, width: u32, height: u32, rgba: Vec<u8> },
     Exported(Result<PathBuf, String>),
-    RollFrame {
-        generation: u64,
-        index: usize,
-        width: u32,
-        height: u32,
-        rgba: Vec<u8>,
-    },
+    RollFrame { generation: u64, index: usize, width: u32, height: u32, rgba: Vec<u8> },
     Matched(u64, Match),
-    /// A compared LUT file could not be read (deleted or broken since the scan).
-    Unreadable(PathBuf, String),
 }
 
 /// A filmstrip photo on the GPU and the grade its frame was last rendered with.
@@ -374,13 +344,10 @@ struct Worker {
     source: Option<Arc<Photo>>,
     photo: Option<GpuPhoto>,
     thumb: Option<GpuPhoto>,
-    /// The LUT shown in the comparison view, with the file's modification time
-    /// so an edited file is re-read.
-    selected: Option<(PathBuf, Option<std::time::SystemTime>, GpuLut)>,
     /// Composite of the Grade page's look LUTs.
     look: Option<GpuLut>,
-    /// Compare base composed at 33³ (thumbnails) and 65³ (large preview).
-    base: Option<(Lut3d, Lut3d)>,
+    /// What thumbnails are rendered on (grade + looks), composed at 33³.
+    base: Option<Lut3d>,
     /// Thumbnail pass in progress: generation, LUT files, next index.
     // ponytail: each pass re-reads the files (no lattice cache, keeps memory flat
     // for big libraries); cache by path + mtime if passes get slow.
@@ -403,7 +370,7 @@ impl Worker {
         *index += 1;
         if let Some(Ok(lut)) = paths.get(i).map(|p| Lut3d::load(p)) {
             let lut = match &self.base {
-                Some((small, _)) => after(small, &lut),
+                Some(base) => after(base, &lut),
                 None => lut,
             };
             let rgba = gpu.apply_lut(th, &gpu.upload_lut(&lut), 0.0);
@@ -437,6 +404,11 @@ impl Worker {
                 self.photo = Some(gpu.upload(&p));
                 self.source = Some(p);
             }
+            Job::SetView(p) => {
+                self.photo = Some(gpu.upload(&p));
+                // The next SetPhoto must upload again, even with the same pixels.
+                self.source = None;
+            }
             Job::SetLook(layers) => {
                 // ponytail: 33³ preview composite, like the Lab; exports compose exactly.
                 self.look = (!layers.is_empty()).then(|| {
@@ -449,9 +421,8 @@ impl Worker {
             Job::SetCompareBase(base) => {
                 self.base = base.map(|b| {
                     let bake = |g: &Grade| self.bake_cached(gpu, g);
-                    (b.compose(33, &bake), b.compose(lab::SOURCE_SIZE, &bake))
+                    b.compose(33, &bake)
                 });
-                self.selected = None; // its GPU LUT was folded into the old base
             }
             Job::Render(grade, split) => {
                 let Some(ph) = &self.photo else { return };
@@ -491,28 +462,6 @@ impl Worker {
                     matching::samples_rgba8(&gpu.render(&gpu.upload(&source), &input, None, 0.0), MATCH_SAMPLES);
                 let reference = matching::samples_rgba_f32(&reference.pixels, MATCH_SAMPLES);
                 notify(Done::Matched(generation, matching::transfer(&source, &reference)));
-            }
-            Job::ApplyLut(path, split) => {
-                let Some(ph) = &self.photo else { return };
-                let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-                if self.selected.as_ref().is_none_or(|(p, t, _)| *p != path || *t != mtime) {
-                    match Lut3d::load(&path) {
-                        Ok(l) => {
-                            let l = match &self.base {
-                                Some((_, large)) => after(large, &l),
-                                None => l,
-                            };
-                            self.selected = Some((path, mtime, gpu.upload_lut(&l)))
-                        }
-                        Err(e) => {
-                            self.selected = None;
-                            return notify(Done::Unreadable(path, e));
-                        }
-                    }
-                }
-                let lut = &self.selected.as_ref().expect("loaded above").2;
-                let rgba = gpu.apply_lut(ph, lut, split);
-                notify(Done::Compared { width: ph.width, height: ph.height, rgba });
             }
             // Rendered one thumbnail at a time by `gallery_step`, so previews never wait for a pass.
             Job::Gallery(generation, paths) => self.gallery = Some((generation, paths, 0)),

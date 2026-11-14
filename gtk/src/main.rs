@@ -59,7 +59,6 @@ enum What {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Page {
     Grade,
-    Compare,
     Lab,
 }
 
@@ -90,7 +89,8 @@ enum Msg {
     /// A sidebar section switched off/on (`None` = the LUTs after the grade).
     Bypass(Option<Stage>, bool),
     /// Compare LUTs on the untouched photo instead of on top of the grade.
-    CompareGraded(bool),
+    /// LUT browser shown or hidden.
+    Browse(bool),
     Preferences,
     Page(Page),
     LayerAdd(Layers, LabAdd),
@@ -198,8 +198,6 @@ struct Ui {
     info: gtk::Label,
     sidebar: Sidebar,
     gallery_stack: gtk::Stack,
-    compare_stack: gtk::Stack,
-    compare_pic: gtk::Picture,
     flow: gtk::FlowBox,
     folder_label: gtk::Label,
     groups: gtk::DropDown,
@@ -242,7 +240,8 @@ struct App {
     bypassed: Vec<Stage>,
     looks_off: bool,
     /// Compare LUTs on top of the Grade page's edits (off: on the untouched photo).
-    compare_graded: bool,
+    /// The LUT browser is open (its thumbnails follow the grade).
+    browsing: bool,
     /// What the Compare base was last built from: grade, looks (by identity), profile.
     base_key: Option<BaseKey>,
     /// Thumbnails need re-rendering (new source or library) next time Compare is shown.
@@ -381,7 +380,9 @@ impl App {
     /// worker). Overlay and split do not touch it, so only grade changes
     /// count, and only once a drag settles: the main preview never waits.
     fn render_roll(&mut self) {
-        if self.roll.is_empty() || self.roll_sent.as_ref() == Some(&self.graded()) {
+        // The open LUT browser's thumbnails also follow the settled grade.
+        let roll_current = self.roll.is_empty() || self.roll_sent.as_ref() == Some(&self.graded());
+        if roll_current && !self.browsing {
             return;
         }
         self.roll_tick += 1;
@@ -564,12 +565,6 @@ impl App {
         Preset { name, grade: self.graded().neutral_input() }
     }
 
-    fn render_compare(&self) {
-        if let (Some(i), true) = (self.selected, self.has_source()) {
-            self.send(Job::ApplyLut(self.luts[i].path.clone(), self.split_value()));
-        }
-    }
-
     fn filter_gallery(&self) {
         for (i, l) in self.luts.iter().enumerate() {
             if let Some(c) = self.ui.flow.child_at_index(i as i32) {
@@ -585,11 +580,7 @@ impl App {
     /// Hands the Grade page's result to Compare LUTs; true when it changed.
     fn sync_compare_base(&mut self) -> bool {
         let input = self.source_profile();
-        let (grade, looks) = if self.compare_graded {
-            (self.graded(), self.look_layers())
-        } else {
-            (self.grade.neutralized(), Vec::new())
-        };
+        let (grade, looks) = (self.graded(), self.look_layers());
         let luts = looks
             .iter()
             .filter_map(|l| match &l.source {
@@ -608,6 +599,13 @@ impl App {
         true
     }
 
+    /// Thumbnails, when the browser is open and what they show changed.
+    fn refresh_gallery(&mut self) {
+        if self.browsing && (self.sync_compare_base() || self.gallery_stale) {
+            self.render_gallery();
+        }
+    }
+
     fn render_gallery(&mut self) {
         if self.has_source() && !self.luts.is_empty() {
             self.gallery_stale = false;
@@ -620,7 +618,6 @@ impl App {
     fn redraw(&mut self) {
         match self.page {
             Page::Grade => self.render(),
-            Page::Compare => self.render_compare(),
             Page::Lab => self.render_lab(),
         }
     }
@@ -629,13 +626,6 @@ impl App {
     fn refresh(&mut self) {
         match self.page {
             Page::Grade => self.render(),
-            Page::Compare => {
-                // Thumbnails are rendered only for this page, when their inputs changed.
-                if self.sync_compare_base() || self.gallery_stale {
-                    self.render_gallery();
-                }
-                self.render_compare()
-            }
             Page::Lab => self.render_lab(),
         }
     }
@@ -1007,6 +997,9 @@ struct Sidebar {
     skin: gtk::DrawingArea,
     skin_btn: gtk::ToggleButton,
     looks: gtk::ListBox,
+    /// The LUT browser, revealed under the look stack.
+    browse: gtk::Revealer,
+    browse_btn: gtk::ToggleButton,
 }
 
 /// Curve editor with a channel selector and a reset button.
@@ -1355,17 +1348,27 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     empty.set_margin_end(12);
     looks.set_placeholder(Some(&empty));
     look_box.append(&looks);
-    let add_menu = gio::Menu::new();
-    add_menu.append(Some(gettext("LUT from file…").as_str()), Some("win.look-add::file"));
-    add_menu.append(Some(gettext("LUT selected in Compare").as_str()), Some("win.look-add::selected"));
-    look_box.append(
-        &gtk::MenuButton::builder()
-            .label(gettext("Add LUT"))
-            .menu_model(&add_menu)
-            .halign(gtk::Align::Start)
-            .css_classes(["pill"])
-            .build(),
-    );
+    let browse_btn = gtk::ToggleButton::builder()
+        .child(&adw::ButtonContent::builder().icon_name("view-grid-symbolic").label(gettext("Browse LUTs")).build())
+        .tooltip_text(gettext("Browse the LUT library on this photo (B)"))
+        .css_classes(["pill"])
+        .build();
+    let snd = sender.clone();
+    browse_btn.connect_toggled(move |b| snd.input(Msg::Browse(b.is_active())));
+    let from_file = gtk::Button::builder()
+        .icon_name("document-open-symbolic")
+        .tooltip_text(gettext("Add a LUT from a file"))
+        .css_classes(["flat", "circular"])
+        .action_name("win.look-add")
+        .action_target(&"file".to_variant())
+        .build();
+    from_file.update_property(&[gtk::accessible::Property::Label(&gettext("Add a LUT from a file"))]);
+    let buttons = gtk::Box::builder().spacing(6).build();
+    buttons.append(&browse_btn);
+    buttons.append(&from_file);
+    look_box.append(&buttons);
+    let browse = gtk::Revealer::builder().transition_type(gtk::RevealerTransitionType::SlideDown).build();
+    look_box.append(&browse);
     look_box.append(&caption(&gettext("Applied after the grade, top to bottom, and included in the exported LUT.")));
     panel.append(&bypassable(&gettext("LUTs"), &look_box, None, true, sender));
     panel.append(crop);
@@ -1399,6 +1402,8 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         skin,
         skin_btn,
         looks,
+        browse,
+        browse_btn,
     }
 }
 
@@ -1606,18 +1611,6 @@ impl SimpleComponent for App {
         reload.connect_clicked(move |_| snd.input(Msg::Reload));
         folder_row.append(&reload);
         folder_row.append(&folder_btn);
-        // What the candidates are applied to: the untouched photo, or the Grade page's result.
-        let base_sel =
-            toggles(&[("original", gettext("Original").as_str()), ("graded", gettext("With grade").as_str())]);
-        base_sel.set_active_name(Some("original"));
-        base_sel.set_tooltip_text(Some(&gettext("Apply the LUTs to the untouched photo or to it as edited in Grade")));
-        base_sel.set_margin_start(8);
-        base_sel.set_margin_end(8);
-        base_sel.set_margin_bottom(6);
-        let snd = sender.clone();
-        base_sel.connect_active_name_notify(move |g| {
-            snd.input(Msg::CompareGraded(g.active_name().as_deref() == Some("graded")))
-        });
         let groups = gtk::DropDown::builder().visible(false).margin_start(8).margin_end(8).margin_bottom(4).build();
         groups.update_property(&[gtk::accessible::Property::Label(&gettext("Subfolder"))]);
         let snd = sender.clone();
@@ -1644,58 +1637,28 @@ impl SimpleComponent for App {
             &gtk::ScrolledWindow::builder()
                 .hscrollbar_policy(gtk::PolicyType::Never)
                 .child(&flow)
-                .vexpand(true)
+                .min_content_height(360)
+                .max_content_height(520)
+                .propagate_natural_height(true)
                 .build(),
             Some("grid"),
         );
         let gallery = vbox(0);
-        gallery.add_css_class("sidebar-pane");
         gallery.append(&folder_row);
-        gallery.append(&base_sel);
         gallery.append(&groups);
         gallery.append(&search);
         gallery.append(&gallery_stack);
 
-        let compare_pic = gtk::Picture::builder()
-            .content_fit(gtk::ContentFit::Contain)
-            .can_shrink(true)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-        compare_pic.update_property(&[gtk::accessible::Property::Label(&gettext("Selected LUT preview"))]);
-        add_split_drag(&compare_pic, &sender);
-        let compare_canvas = gtk::Overlay::builder().child(&compare_pic).css_classes(["canvas"]).build();
-        let compare_stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).build();
-        compare_stack.add_named(
-            &empty_state(
-                &sender,
-                "view-grid-symbolic",
-                &gettext("Compare LUTs"),
-                &gettext("Choose a folder of .cube LUTs: each one is applied to the current photo with tetrahedral interpolation on the GPU."),
-                &gettext("Choose Folder…"),
-                || Msg::ChooseFolder,
-            ),
-            Some("empty"),
-        );
-        compare_stack.add_named(&compare_canvas, Some("image"));
-        let compare_split = adw::OverlaySplitView::builder()
-            .sidebar_position(gtk::PackType::Start)
-            .min_sidebar_width(300.0)
-            .max_sidebar_width(380.0)
-            .content(&compare_stack)
-            .sidebar(&gallery)
-            .build();
+        sidebar.browse.set_child(Some(&gallery));
 
         // ---------------- view stack + header
         let stack = adw::ViewStack::new();
         stack.add_titled_with_icon(&grade_split, Some("grade"), "Grade", "color-select-symbolic");
-        stack.add_titled_with_icon(&compare_split, Some("compare"), &gettext("Compare LUTs"), "view-grid-symbolic");
         let lab = lab_page::build(&sender, &export_menu("lab-export", false));
         stack.add_titled_with_icon(&lab.root, Some("lab"), "LUT Lab", "view-list-symbolic");
         let snd = sender.clone();
         stack.connect_visible_child_name_notify(move |s| {
             let page = match s.visible_child_name().as_deref() {
-                Some("compare") => Page::Compare,
                 Some("lab") => Page::Lab,
                 _ => Page::Grade,
             };
@@ -1784,7 +1747,6 @@ impl SimpleComponent for App {
         // Narrow windows: overlay sidebars, switcher moves to the bottom bar.
         let bp = adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 900sp").expect("breakpoint"));
         bp.add_setter(&grade_split, "collapsed", Some(&true.to_value()));
-        bp.add_setter(&compare_split, "collapsed", Some(&true.to_value()));
         bp.add_setter(&lab.root, "collapsed", Some(&true.to_value()));
         bp.add_setter(&sidebar_btn, "visible", Some(&true.to_value()));
         bp.add_setter(&header, "title-widget", Some(&None::<gtk::Widget>.to_value()));
@@ -1826,7 +1788,7 @@ impl SimpleComponent for App {
         }
         let background =
             gio::SimpleAction::new_stateful("background", Some(glib::VariantTy::STRING), &"default".to_variant());
-        let canvases = [canvas.clone(), compare_canvas.clone(), lab.canvas.clone()];
+        let canvases = [canvas.clone(), lab.canvas.clone()];
         background.connect_change_state(move |a, v| {
             let Some(name) = v.and_then(|v| v.str()).filter(|n| ["default", "black", "white"].contains(n)) else {
                 return;
@@ -1923,15 +1885,18 @@ impl SimpleComponent for App {
         let s = stack.clone();
         shortcut("<Alt>1", Box::new(move || s.set_visible_child_name("grade")));
         let s = stack.clone();
-        shortcut("<Alt>2", Box::new(move || s.set_visible_child_name("compare")));
-        let (s, e) = (stack.clone(), search.clone());
+        shortcut("<Alt>2", Box::new(move || s.set_visible_child_name("lab")));
+        let (s, b, e) = (stack.clone(), sidebar.browse_btn.clone(), search.clone());
         shortcut(
             "<Control>f",
             Box::new(move || {
-                s.set_visible_child_name("compare");
+                s.set_visible_child_name("grade");
+                b.set_active(true);
                 e.grab_focus();
             }),
         );
+        let b = sidebar.browse_btn.clone();
+        shortcut("b", Box::new(move || b.set_active(!b.is_active())));
         let w = window.clone();
         let snd = sender.clone();
         shortcut("<Control>comma", Box::new(move || snd.input(Msg::Preferences)));
@@ -1986,7 +1951,7 @@ impl SimpleComponent for App {
             looks: Vec::new(),
             bypassed: Vec::new(),
             looks_off: false,
-            compare_graded: false,
+            browsing: false,
             base_key: None,
             gallery_stale: true,
             lab_input: Profile::Standard,
@@ -2027,8 +1992,6 @@ impl SimpleComponent for App {
                 info,
                 sidebar,
                 gallery_stack,
-                compare_stack,
-                compare_pic,
                 flow,
                 folder_label,
                 groups,
@@ -2129,13 +2092,15 @@ impl SimpleComponent for App {
                 }
                 self.upload_roll(false);
             }
-            Msg::RollTick(tick) => {
+            Msg::RollTick(tick) if tick == self.roll_tick => {
                 let grade = self.graded();
-                if tick == self.roll_tick && self.roll_sent.as_ref() != Some(&grade) {
+                if !self.roll.is_empty() && self.roll_sent.as_ref() != Some(&grade) {
                     self.send(Job::RenderRoll(grade.clone()));
                     self.roll_sent = Some(grade);
                 }
+                self.refresh_gallery();
             }
+            Msg::RollTick(_) => {}
             Msg::RollLoaded(path, Err(e)) => {
                 // An unreadable photo leaves the strip instead of staying a black card.
                 if let Some(i) = self.roll.iter().position(|it| it.path == path) {
@@ -2483,7 +2448,7 @@ impl SimpleComponent for App {
                     self.toast(&gettext!("Very large library: showing the first {} LUTs", MAX_LIBRARY));
                 }
                 for lut in &luts {
-                    let pic = gtk::Picture::builder().content_fit(gtk::ContentFit::Cover).height_request(96).build();
+                    let pic = gtk::Picture::builder().content_fit(gtk::ContentFit::Cover).height_request(64).build();
                     let badge = gtk::Label::builder()
                         .label(lut.format.badge())
                         .halign(gtk::Align::End)
@@ -2528,14 +2493,8 @@ impl SimpleComponent for App {
                 self.luts = luts;
                 self.filter_gallery();
                 self.selected = None;
-                self.ui.compare_stack.set_visible_child_name("empty");
                 self.gallery_stale = true;
-                if matches!(self.page, Page::Compare) {
-                    self.refresh();
-                }
-                if let Some(c) = self.ui.flow.child_at_index(0) {
-                    self.ui.flow.select_child(&c);
-                }
+                self.refresh_gallery();
             }
             Msg::Group(sel) => {
                 // Index 0 shows everything; otherwise only LUTs of that sub-folder.
@@ -2553,9 +2512,27 @@ impl SimpleComponent for App {
                 self.looks_off = off;
                 self.layers_changed(Layers::Look, false, &sender);
             }
-            Msg::CompareGraded(on) => {
-                self.compare_graded = on;
-                self.refresh();
+            Msg::Browse(on) => {
+                self.browsing = on;
+                self.ui.sidebar.browse.set_reveal_child(on);
+                if self.ui.sidebar.browse_btn.is_active() != on {
+                    self.ui.sidebar.browse_btn.set_active(on);
+                }
+                if on {
+                    // Once revealed: the sidebar scrolls to the browser and the grid takes the
+                    // keyboard, so arrows browse at once.
+                    let (flow, btn, scroll) =
+                        (self.ui.flow.clone(), self.ui.sidebar.browse_btn.clone(), self.ui.sidebar.scroll.clone());
+                    glib::timeout_add_local_once(std::time::Duration::from_millis(260), move || {
+                        if let Some(p) =
+                            scroll.child().and_then(|c| btn.compute_point(&c, &gtk::graphene::Point::zero()))
+                        {
+                            scroll.vadjustment().set_value(p.y() as f64 - 12.0);
+                        }
+                        flow.child_at_index(0).map_or_else(|| flow.grab_focus(), |c| c.grab_focus());
+                    });
+                }
+                self.refresh_gallery();
             }
             Msg::Reload => match settings::folder(settings::LUT_FOLDER) {
                 Some(dir) => sender.input(Msg::Folder(dir)),
@@ -2567,9 +2544,8 @@ impl SimpleComponent for App {
             }
             Msg::Preferences => self.ui.prefs.present(Some(&self.ui.window)),
             Msg::SelectLut(i) => {
-                if i < self.luts.len() && self.selected != Some(i) {
+                if i < self.luts.len() {
                     self.selected = Some(i);
-                    self.render_compare();
                 }
             }
             Msg::Profile(profile) => {
@@ -2754,7 +2730,7 @@ impl SimpleComponent for App {
                 // Only onto the photo it was cut from, in the profile the shader decodes.
                 let shown = self.photo.as_ref().map(|p| p.1);
                 if generation == self.view_gen && self.view_zoom().is_some() && shown == Some(profile) {
-                    self.send(Job::SetPhoto(photo));
+                    self.send(Job::SetView(photo));
                     self.sent = None;
                     self.render();
                 }
@@ -2902,10 +2878,6 @@ impl App {
                 v.set_paintable(Some(&texture(VEC_SIZE as u32, VEC_SIZE as u32, vectorscope)));
             }
             Done::Lab { width, height, rgba } => self.ui.lab.pic.set_paintable(Some(&texture(width, height, rgba))),
-            Done::Compared { width, height, rgba } => {
-                self.ui.compare_pic.set_paintable(Some(&texture(width, height, rgba)));
-                self.ui.compare_stack.set_visible_child_name("image");
-            }
             Done::Thumb { generation, index, width, height, rgba } => {
                 if generation != self.gallery_gen {
                     return;
@@ -2932,10 +2904,6 @@ impl App {
                 ui.amount.adj.set_value(100.0);
                 ui.stack.set_visible_child_name("set");
                 self.render();
-            }
-            Done::Unreadable(p, e) => {
-                self.ui.compare_stack.set_visible_child_name("empty");
-                self.toast(&gettext!("Cannot read {}: {}", p.display(), e));
             }
         }
     }
@@ -3010,7 +2978,8 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
         (gettext("Zoom out"), "<Control>minus"),
         (gettext("Save preset"), "<Control>s"),
         (gettext("Grade view"), "<Alt>1"),
-        (gettext("Compare LUTs view"), "<Alt>2"),
+        (gettext("LUT Lab view"), "<Alt>2"),
+        (gettext("Browse LUTs"), "b"),
         (gettext("Search LUTs"), "<Control>f"),
         (gettext("Preferences"), "<Control>comma"),
         (gettext("Keyboard Shortcuts"), "<Control>question"),

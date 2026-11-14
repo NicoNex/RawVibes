@@ -17,8 +17,11 @@ fn file(name: &str) -> PathBuf {
 /// The canvas background: "default", "black" or "white".
 pub const BACKGROUND: &str = "background";
 
+/// The stored value; until RawValley stores its own, VibingLUT's (same keys).
 pub fn value(key: &str) -> Option<String> {
-    Some(std::fs::read_to_string(file(key)).ok()?.trim().to_owned())
+    let vibinglut = glib::user_config_dir().join("vibinglut").join(key);
+    let text = std::fs::read_to_string(file(key)).or_else(|_| std::fs::read_to_string(vibinglut)).ok()?;
+    Some(text.trim().to_owned())
 }
 
 pub fn set_value(key: &str, value: &str) -> std::io::Result<()> {

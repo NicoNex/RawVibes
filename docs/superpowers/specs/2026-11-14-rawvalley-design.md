@@ -47,6 +47,10 @@ works in-camera.
 - Before/after split as in VibingLUT.
 - LUT preview on the photo, fast (GPU), as in Compare LUTs.
 - Export of the photo (JPEG, PNG 16-bit, TIFF 16-bit) at full resolution.
+  Lossy formats have a quality setting the app remembers across runs, and
+  the export dialog shows an estimate of the file size that updates as the
+  quality changes (builder's call: encode the fitted preview at that
+  quality off the UI thread and scale by the pixel-count ratio).
 - Export of professional LUTs (`.cube` 33/65/129, Panasonic `.vlt`, HALD)
   containing only what a LUT can represent (see "LUT boundary").
 - GPU acceleration for all editing: wgpu with Vulkan and Metal.

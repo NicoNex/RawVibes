@@ -31,7 +31,7 @@ struct File {
 
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
-struct Curves {
+pub(crate) struct Curves {
     master: Curve,
     red: Curve,
     green: Curve,
@@ -89,34 +89,7 @@ impl Preset {
         if file.version > VERSION {
             return Err(format!("made by a newer RawValley (preset version {})", file.version));
         }
-        let floats: &[f32] = bytemuck::cast_slice(std::slice::from_ref(&file.params));
-        if floats.iter().any(|v| !v.is_finite()) {
-            return Err("invalid number in params".into());
-        }
-        let mut curves: [Curve; CURVES] = file.curves.into();
-        for (ch, c) in curves.iter_mut().enumerate() {
-            validate_curve(c).map_err(|e| format!("curve {ch}: {e}"))?;
-            if is_periodic(ch) {
-                c.last_mut().expect("validated").1 = c[0].1; // red is one hue at both ends
-            }
-        }
-        // Only the grading fields come from the file; input and preview state stay neutral.
-        let mut params = Params::default();
-        let p = file.params;
-        (params.temperature, params.tint, params.exposure, params.contrast) =
-            (p.temperature, p.tint, p.exposure, p.contrast);
-        (params.highlights, params.shadows, params.whites, params.blacks) =
-            (p.highlights, p.shadows, p.whites, p.blacks);
-        (params.saturation, params.vibrance, params.sat_shadows, params.sat_highlights) =
-            (p.saturation, p.vibrance, p.sat_shadows, p.sat_highlights);
-        (params.lift, params.gamma, params.gain, params.offset) = (p.lift, p.gamma, p.gain, p.offset);
-        (params.hue_shift, params.hue_sat, params.hue_lum) = (p.hue_shift, p.hue_sat, p.hue_lum);
-        (params.mixer, params.mono_mix) = (p.mixer, p.mono_mix);
-        params.mixer_mono = if p.mixer_mono > 0.5 { 1.0 } else { 0.0 };
-        params.mixer_free = if p.mixer_free > 0.5 { 1.0 } else { 0.0 };
-        (params.film_sat, params.film_density) = (p.film_sat, p.film_density);
-        (params.match_amount, params.match_ab) = (p.match_amount, p.match_ab);
-        Ok(Self { name: file.name, grade: Grade { params, curves } })
+        Ok(Self { name: file.name, grade: grade_from(file.params, file.curves)? })
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -129,6 +102,38 @@ impl Preset {
         }
         std::fs::write(path, self.to_json()).map_err(|e| e.to_string())
     }
+}
+
+/// The grading fields of `input` and `curves`, validated: a file from
+/// elsewhere must not be able to feed NaN or broken curves into the grade.
+pub(crate) fn grade_from(input: Params, curves: Curves) -> Result<Grade, String> {
+    let floats: &[f32] = bytemuck::cast_slice(std::slice::from_ref(&input));
+    if floats.iter().any(|v| !v.is_finite()) {
+        return Err("invalid number in params".into());
+    }
+    let mut curves: [Curve; CURVES] = curves.into();
+    for (ch, c) in curves.iter_mut().enumerate() {
+        validate_curve(c).map_err(|e| format!("curve {ch}: {e}"))?;
+        if is_periodic(ch) {
+            c.last_mut().expect("validated").1 = c[0].1; // red is one hue at both ends
+        }
+    }
+    // Only the grading fields come from the file; input and preview state stay neutral.
+    let mut params = Params::default();
+    let p = input;
+    (params.temperature, params.tint, params.exposure, params.contrast) =
+        (p.temperature, p.tint, p.exposure, p.contrast);
+    (params.highlights, params.shadows, params.whites, params.blacks) = (p.highlights, p.shadows, p.whites, p.blacks);
+    (params.saturation, params.vibrance, params.sat_shadows, params.sat_highlights) =
+        (p.saturation, p.vibrance, p.sat_shadows, p.sat_highlights);
+    (params.lift, params.gamma, params.gain, params.offset) = (p.lift, p.gamma, p.gain, p.offset);
+    (params.hue_shift, params.hue_sat, params.hue_lum) = (p.hue_shift, p.hue_sat, p.hue_lum);
+    (params.mixer, params.mono_mix) = (p.mixer, p.mono_mix);
+    params.mixer_mono = if p.mixer_mono > 0.5 { 1.0 } else { 0.0 };
+    params.mixer_free = if p.mixer_free > 0.5 { 1.0 } else { 0.0 };
+    (params.film_sat, params.film_density) = (p.film_sat, p.film_density);
+    (params.match_amount, params.match_ab) = (p.match_amount, p.match_ab);
+    Ok(Grade { params, curves })
 }
 
 fn validate_curve(c: &Curve) -> Result<(), &'static str> {

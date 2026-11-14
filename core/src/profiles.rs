@@ -6,7 +6,7 @@
 //! the published primaries rather than transcribed.
 
 /// Camera signal the LUT will be applied to.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Profile {
     /// Display-referred Rec.709 / sRGB (Standard, Vivid, … photo styles).
     #[default]

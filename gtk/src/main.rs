@@ -39,6 +39,7 @@ use rawvalley_core::preset::{self, Preset};
 use rawvalley_core::profiles::Profile;
 use rawvalley_core::raw::{RawData, read_raw};
 use rawvalley_core::scopes::{HIST_H, HIST_W, Scopes, VEC_SIZE};
+use rawvalley_core::sidecar::{LookRef, Sidecar};
 use rawvalley_core::view::{Region, Zoom};
 use relm4::adw::prelude::*;
 use relm4::gtk::{gdk, gio, glib};
@@ -74,6 +75,10 @@ enum Msg {
     /// The camera JPEG of a RAW, read for "As in camera".
     CameraJpeg(PathBuf, Result<Arc<Photo>, String>),
     AsInCameraOnOpen(bool),
+    /// Write the sidecar if tick `u64` is still the last edit.
+    SaveSidecar(u64),
+    /// Look LUTs named by a sidecar, read.
+    SidecarLooks(Vec<(LookRef, Result<Arc<Lut3d>, String>)>),
     /// A click on the canvas, in canvas device pixels.
     CanvasClick([f32; 2]),
     /// No development change for `DEVELOP_SETTLE` since tick `u64`: full quality.
@@ -270,6 +275,9 @@ impl PreviewQuality {
     }
 }
 
+/// Quiet time after the last edit before the sidecar is written.
+const SAVE_SETTLE: std::time::Duration = std::time::Duration::from_millis(1000);
+
 /// Quiet time after the last development change before the full-quality frame.
 const DEVELOP_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
 
@@ -424,6 +432,13 @@ struct App {
     camera_job: Option<PathBuf>,
     /// Which parts (lightness, colour) the match in flight loads.
     match_parts: (bool, bool),
+    /// The open photo's edits as last read from or written to its sidecar.
+    saved: Option<Sidecar>,
+    save_tick: u64,
+    /// Sidecar looks still loading: nothing is saved meanwhile.
+    looks_loading: bool,
+    /// A sidecar write failed this session (reported once).
+    save_failed: bool,
     /// The RAW whose GPU load is in flight, by load generation (`Done::RawLoaded` carries no path).
     raw_loading: Option<(u64, PathBuf)>,
     encode_again: bool,
@@ -507,6 +522,87 @@ impl App {
             self.send(Job::Render(grade, split));
         }
         self.render_roll();
+        self.schedule_save();
+    }
+
+    /// The open photo's edits, as its sidecar holds them.
+    fn sidecar_state(&self) -> Sidecar {
+        let looks = self
+            .looks
+            .iter()
+            .filter_map(|l| {
+                let path = l.path.clone()?;
+                Some(LookRef { path, intensity: l.intensity, input: l.input, on: l.on })
+            })
+            .collect();
+        Sidecar {
+            develop: self.develop,
+            grade: self.grade.clone(),
+            crop: self.crop,
+            ratio: self.ratio,
+            looks,
+            look_blend: self.look_blend,
+        }
+    }
+
+    /// Saves the sidecar a second after the last edit.
+    fn schedule_save(&mut self) {
+        if self.saved.is_none() {
+            return;
+        }
+        self.save_tick += 1;
+        let (s, tick) = (self.input.clone(), self.save_tick);
+        glib::timeout_add_local_once(SAVE_SETTLE, move || s.emit(Msg::SaveSidecar(tick)));
+    }
+
+    /// Writes the open photo's sidecar if its edits changed since it was read or written.
+    fn save_now(&mut self) {
+        let Some(path) = self.path.clone().filter(|_| !self.looks_loading) else { return };
+        let now = self.sidecar_state();
+        if self.saved.as_ref().is_none_or(|s| *s == now) {
+            return;
+        }
+        match now.save(&path) {
+            Ok(()) => self.saved = Some(now),
+            Err(e) if !std::mem::replace(&mut self.save_failed, true) => {
+                self.toast(&gettext!("Cannot save the edits next to the photo: {}", e))
+            }
+            Err(_) => {}
+        }
+    }
+
+    /// The photo's sidecar into the editor: development and crop always; grade
+    /// and looks only when nothing is graded yet (the filmstrip shares them).
+    fn restore_sidecar(&mut self, sc: Sidecar, sender: &ComponentSender<Self>) {
+        self.develop = sc.develop;
+        self.sync_develop();
+        let row = crop::PRESETS
+            .iter()
+            .position(|(_, r)| {
+                *r == sc.ratio
+                    || matches!((r, sc.ratio), (Ratio::Fixed(a, b), Ratio::Fixed(c, d)) if (*a, *b) == (d, c))
+            })
+            .unwrap_or(0);
+        self.restore_crop(sc.crop, sc.ratio, row as u32);
+        if self.grade.is_neutral() && self.looks.is_empty() {
+            self.apply_grade(sc.grade);
+            self.ui.sidebar.look_blend_toggle.set_active_name(Some(if sc.look_blend == Blend::Mix {
+                "mix"
+            } else {
+                "chain"
+            }));
+            if !sc.looks.is_empty() {
+                self.looks_loading = true;
+                let (s, refs) = (sender.input_sender().clone(), sc.looks);
+                std::thread::spawn(move || {
+                    let loaded = refs.into_iter().map(|r| {
+                        let lut = Lut3d::load(&r.path).map(Arc::new);
+                        (r, lut)
+                    });
+                    s.emit(Msg::SidecarLooks(loaded.collect()));
+                });
+            }
+        }
     }
 
     /// The filmstrip through the current grade (and look LUTs, applied by the
@@ -962,7 +1058,7 @@ impl App {
     }
 
     fn push_layer(&mut self, which: Layers, kind: LabKind, input: Profile, sender: &ComponentSender<Self>) {
-        self.layers_mut(which).push(LabLayer { kind, intensity: 1.0, input, on: true });
+        self.layers_mut(which).push(LabLayer { kind, intensity: 1.0, input, on: true, path: None });
         self.layers_changed(which, true, sender);
     }
 
@@ -972,10 +1068,11 @@ impl App {
         std::thread::spawn(move || s.emit(Msg::LayerLoaded(which, path.clone(), Lut3d::load(&path))));
     }
 
-    fn push_lut(&mut self, which: Layers, lut: Arc<Lut3d>, sender: &ComponentSender<Self>) {
+    fn push_lut(&mut self, which: Layers, lut: Arc<Lut3d>, path: Option<PathBuf>, sender: &ComponentSender<Self>) {
         // Vendors name the input in the file (e.g. "…_FLog_…"): preselect it.
         let input = Profile::guess_from_name(&lut.title);
-        self.push_layer(which, LabKind::Lut(lut), input, sender);
+        self.layers_mut(which).push(LabLayer { kind: LabKind::Lut(lut), intensity: 1.0, input, on: true, path });
+        self.layers_changed(which, true, sender);
     }
 
     fn layers_changed(&mut self, which: Layers, structure: bool, sender: &ComponentSender<Self>) {
@@ -1400,6 +1497,7 @@ struct Sidebar {
     looks: gtk::ListBox,
     /// Chain / Mix of the looks, shown with two or more.
     look_blend: gtk::Box,
+    look_blend_toggle: adw::ToggleGroup,
     /// The LUT browser, revealed under the look stack.
     browse: gtk::Revealer,
     browse_btn: gtk::ToggleButton,
@@ -1861,6 +1959,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     looks.set_placeholder(Some(&empty));
     // How looks combine: only shown with two or more.
     let (blend, hint) = lab_page::blend_toggle(sender, Msg::LookBlend);
+    let look_blend_toggle = blend.clone();
     let look_blend = vbox(6);
     look_blend.set_visible(false);
     look_blend.append(&blend);
@@ -1927,6 +2026,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         browse_btn,
         develop,
         camera_btns: [tone_cam, color_cam],
+        look_blend_toggle,
     }
 }
 
@@ -2577,6 +2677,10 @@ impl SimpleComponent for App {
             camera_match: None,
             camera_job: None,
             match_parts: (true, true),
+            saved: None,
+            save_tick: 0,
+            looks_loading: false,
+            save_failed: false,
             raw_loading: None,
             encode_again: false,
             encoded: None,
@@ -2733,6 +2837,28 @@ impl SimpleComponent for App {
                 }
             }
             Msg::Develop(edit) => self.edit_develop(edit, &sender),
+            Msg::SaveSidecar(tick) if tick == self.save_tick => self.save_now(),
+            Msg::SaveSidecar(_) => {}
+            Msg::SidecarLooks(loaded) => {
+                let missing = loaded.iter().filter(|(_, l)| l.is_err()).count();
+                for (r, lut) in loaded {
+                    if let Ok(lut) = lut {
+                        self.looks.push(LabLayer {
+                            kind: LabKind::Lut(lut),
+                            intensity: r.intensity,
+                            input: r.input,
+                            on: r.on,
+                            path: Some(r.path),
+                        });
+                    }
+                }
+                if missing > 0 {
+                    self.toast(&gettext!("{} LUTs of this photo are missing", missing));
+                }
+                self.layers_changed(Layers::Look, true, &sender);
+                self.looks_loading = false;
+                self.saved = Some(self.sidecar_state());
+            }
             Msg::AsInCamera(part) => self.as_in_camera(part, &sender),
             Msg::CameraJpeg(path, _) if Some(&path) != self.path.as_ref() => {}
             Msg::CameraJpeg(path, Ok(reference)) => {
@@ -2788,6 +2914,7 @@ impl SimpleComponent for App {
             }
             Msg::Loaded(generation, ..) if generation != self.load_gen => {}
             Msg::Loaded(_, path, Ok(decoded)) => {
+                self.save_now(); // the previous photo's last edits
                 self.ui.window.set_title(Some(&format!("{} — RawValley", file_label(&path))));
                 self.zoom = None;
                 self.reset_crop();
@@ -2795,9 +2922,19 @@ impl SimpleComponent for App {
                 self.path = Some(path);
                 self.develop = Develop::default();
                 self.sync_develop();
-                if self.camera().is_some() && settings::value(settings::AS_IN_CAMERA).as_deref() == Some("1") {
-                    sender.input(Msg::AsInCamera(CameraPart::All));
+                self.looks_loading = false;
+                let path = self.path.clone().expect("set above");
+                match Sidecar::load(&path) {
+                    Ok(Some(sc)) => self.restore_sidecar(sc, &sender),
+                    Ok(None) => {
+                        if self.camera().is_some() && settings::value(settings::AS_IN_CAMERA).as_deref() == Some("1") {
+                            sender.input(Msg::AsInCamera(CameraPart::All));
+                        }
+                    }
+                    Err(e) => self.toast(&gettext!("Cannot read the edits saved for {}: {}", file_label(&path), e)),
                 }
+                // Nothing is written until something changes from what was just read.
+                self.saved = Some(self.sidecar_state());
                 // Opening a photo means you want to see it.
                 if self.show_chart {
                     self.show_chart = false;
@@ -3265,7 +3402,10 @@ impl SimpleComponent for App {
             Msg::Commit(i) => {
                 self.flash_new_look = true;
                 match self.candidate.take().filter(|c| c.0 == i) {
-                    Some((_, lut)) => self.push_lut(Layers::Look, lut, &sender),
+                    Some((_, lut)) => {
+                        let path = self.luts.get(i).map(|l| l.path.clone());
+                        self.push_lut(Layers::Look, lut, path, &sender)
+                    }
                     None => {
                         if let Some(entry) = self.luts.get(i) {
                             Self::load_layer(Layers::Look, entry.path.clone(), &sender);
@@ -3341,7 +3481,7 @@ impl SimpleComponent for App {
                 }
                 sender.input(Msg::LayerAdd(Layers::Lab, LabAdd::Selected));
             }
-            Msg::LayerLoaded(which, _, Ok(lut)) => self.push_lut(which, Arc::new(lut), &sender),
+            Msg::LayerLoaded(which, p, Ok(lut)) => self.push_lut(which, Arc::new(lut), Some(p), &sender),
             Msg::LayerLoaded(_, p, Err(e)) => {
                 self.flash_new_look = false;
                 self.toast(&gettext!("Cannot read {}: {}", p.display(), e))

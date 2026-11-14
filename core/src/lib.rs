@@ -14,4 +14,5 @@ pub mod preset;
 pub mod profiles;
 pub mod raw;
 pub mod scopes;
+pub mod sidecar;
 pub mod view;

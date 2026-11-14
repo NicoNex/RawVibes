@@ -32,7 +32,7 @@ pub struct Layer {
     pub input: Profile,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Blend {
     #[default]
     Chain,

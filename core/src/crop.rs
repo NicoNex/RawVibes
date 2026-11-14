@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::view::Region;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum Ratio {
+    #[default]
     Free,
     /// The oriented image's own aspect.
     Original,

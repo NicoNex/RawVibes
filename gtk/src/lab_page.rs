@@ -36,6 +36,8 @@ pub struct LabLayer {
     pub input: Profile,
     /// Off layers keep their settings but are skipped everywhere.
     pub on: bool,
+    /// The LUT's file, when it came from one (saved in the sidecar).
+    pub path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy)]

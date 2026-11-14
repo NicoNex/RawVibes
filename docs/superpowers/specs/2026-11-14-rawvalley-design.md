@@ -220,5 +220,10 @@ environment variables, as `portrait_raw_is_rotated` does today.
 ## Left to the builder
 
 Exact GPU buffer layouts, tile sizes, default slider ranges, file layout
-inside `core` and `gtk`, wording of labels (translated via gettext, Italian
-first as today).
+inside `core` and `gtk`, wording of labels.
+
+## Language
+
+UI strings are written in English in the source and translated to Italian
+through gettext (`po/it.po`), as VibingLUT already does. Every new string
+gets its Italian translation in the same commit.

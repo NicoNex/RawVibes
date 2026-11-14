@@ -77,6 +77,8 @@ enum Msg {
     AsInCameraOnOpen(bool),
     /// Write the sidecar if tick `u64` is still the last edit.
     SaveSidecar(u64),
+    /// The window is closing: write pending edits, then close.
+    Close,
     /// Look LUTs named by a sidecar, read.
     SidecarLooks(Vec<(LookRef, Result<Arc<Lut3d>, String>)>),
     /// A click on the canvas, in canvas device pixels.
@@ -2601,6 +2603,13 @@ impl SimpleComponent for App {
         shortcut("<Control>question", Box::new(move || shortcuts_dialog().present(Some(&w))));
         window.add_controller(shortcuts);
 
+        // Pending edits are written before the window goes.
+        let snd = sender.clone();
+        window.connect_close_request(move |_| {
+            snd.input(Msg::Close);
+            glib::Propagation::Stop
+        });
+
         // Drag & drop a photo anywhere on the window.
         let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
         let snd = sender.clone();
@@ -2839,6 +2848,10 @@ impl SimpleComponent for App {
             Msg::Develop(edit) => self.edit_develop(edit, &sender),
             Msg::SaveSidecar(tick) if tick == self.save_tick => self.save_now(),
             Msg::SaveSidecar(_) => {}
+            Msg::Close => {
+                self.save_now();
+                self.ui.window.destroy();
+            }
             Msg::SidecarLooks(loaded) => {
                 let missing = loaded.iter().filter(|(_, l)| l.is_err()).count();
                 for (r, lut) in loaded {

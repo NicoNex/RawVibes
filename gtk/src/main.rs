@@ -1806,16 +1806,23 @@ impl SimpleComponent for App {
             gio::SimpleAction::new_stateful("background", Some(glib::VariantTy::STRING), &"default".to_variant());
         let canvases = [canvas.clone(), compare_canvas.clone(), lab.canvas.clone()];
         background.connect_change_state(move |a, v| {
-            let Some(v) = v else { return };
-            a.set_state(v);
+            let Some(name) = v.and_then(|v| v.str()).filter(|n| ["default", "black", "white"].contains(n)) else {
+                return;
+            };
+            a.set_state(&name.to_variant());
             for c in &canvases {
                 c.remove_css_class("bg-black");
                 c.remove_css_class("bg-white");
-                if let Some(name) = v.str().filter(|n| *n != "default") {
+                if name != "default" {
                     c.add_css_class(&format!("bg-{name}"));
                 }
             }
+            // ponytail: a failed save only forgets the choice.
+            let _ = settings::set_value(settings::BACKGROUND, name);
         });
+        if let Some(saved) = settings::value(settings::BACKGROUND) {
+            background.change_state(&saved.to_variant());
+        }
         window.add_action(&background);
         let about = gio::SimpleAction::new("about", None);
         let w = window.clone();

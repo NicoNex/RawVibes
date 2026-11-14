@@ -14,15 +14,25 @@ fn file(name: &str) -> PathBuf {
     glib::user_config_dir().join("rawvalley").join(name)
 }
 
+/// The canvas background: "default", "black" or "white".
+pub const BACKGROUND: &str = "background";
+
+pub fn value(key: &str) -> Option<String> {
+    Some(std::fs::read_to_string(file(key)).ok()?.trim().to_owned())
+}
+
+pub fn set_value(key: &str, value: &str) -> std::io::Result<()> {
+    let f = file(key);
+    std::fs::create_dir_all(f.parent().expect("config file has a parent"))?;
+    std::fs::write(f, value)
+}
+
 pub fn folder(key: &str) -> Option<PathBuf> {
-    let p = PathBuf::from(std::fs::read_to_string(file(key)).ok()?.trim());
-    p.is_dir().then_some(p)
+    Some(PathBuf::from(value(key)?)).filter(|p| p.is_dir())
 }
 
 pub fn set_folder(key: &str, dir: &Path) -> std::io::Result<()> {
-    let f = file(key);
-    std::fs::create_dir_all(f.parent().expect("config file has a parent"))?;
-    std::fs::write(f, dir.to_string_lossy().as_bytes())
+    set_value(key, &dir.to_string_lossy())
 }
 
 /// Where presets are saved (`rawvalley_core::preset` JSON files).

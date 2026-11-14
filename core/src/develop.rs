@@ -34,6 +34,10 @@ pub const WB_PRESETS: [(&str, f32, f32); 6] = [
 
 /// Kelvin range of the temperature slider and of the inversion.
 pub const KELVIN: [f32; 2] = [2000.0, 15000.0];
+/// Tint slider range (±).
+pub const TINT: f32 = 100.0;
+/// RAW exposure slider range (± EV).
+pub const EXPOSURE: f32 = 3.0;
 /// One tint unit as a Δuv off the Planckian locus.
 const TINT_UV: f32 = 1.0 / 3000.0;
 
@@ -98,7 +102,8 @@ impl Camera {
         let kelvin = 1e6 / ((a + b) / 2.0);
         let (p, n) = (locus_uv(kelvin, 0.0), locus_normal(kelvin));
         let along = (target[0] - p[0]) * n[0] + (target[1] - p[1]) * n[1];
-        [kelvin, along / TINT_UV]
+        // Within the sliders' range, so a picked or restored value shows as it is.
+        [kelvin.clamp(KELVIN[0], KELVIN[1]), (along / TINT_UV).clamp(-TINT, TINT)]
     }
 
     /// The Kelvin/tint of the as-shot white balance.
@@ -107,9 +112,10 @@ impl Camera {
     }
 
     /// Kelvin/tint that make `cam` (as-shot-balanced camera RGB) grey;
-    /// `None` when a channel is too dark or clipped to trust.
+    /// `None` when a channel is too dark or clipped to trust. Balanced
+    /// channels clip at their as-shot gain, not at 1.
     pub fn neutral_for(&self, cam: [f32; 3]) -> Option<[f32; 2]> {
-        if cam.iter().any(|&c| !(1e-4..0.98).contains(&c)) {
+        if (0..3).any(|c| cam[c] < 1e-4 || cam[c] >= 0.98 * self.as_shot[c]) {
             return None;
         }
         Some(self.kelvin_tint(cam.map(|c| cam[1] / c)))
@@ -277,8 +283,11 @@ mod tests {
     #[test]
     fn neutral_for_makes_it_grey() {
         let cam = camera();
-        let c = [0.31, 0.42, 0.27];
+        // A grey card under 4000 K / +10 light, as the as-shot-balanced sensor sees it.
+        let light = cam.gains(4000.0, 10.0);
+        let c = light.map(|g| 0.4 / g);
         let [k, t] = cam.neutral_for(c).unwrap();
+        assert!((k - 4000.0).abs() < 40.0 && (t - 10.0).abs() < 0.5, "{k} K, tint {t}");
         let g = cam.gains(k, t);
         let grey: [f32; 3] = std::array::from_fn(|i| g[i] * c[i]);
         assert!(grey.iter().all(|v| (v / grey[1] - 1.0).abs() < 1e-3), "{grey:?}");
@@ -287,8 +296,12 @@ mod tests {
     #[test]
     fn neutral_for_rejects_clipped_and_black() {
         let cam = camera();
-        assert_eq!(cam.neutral_for([0.99, 0.5, 0.5]), None);
+        let clip = cam.as_shot;
+        assert_eq!(cam.neutral_for([0.99 * clip[0], 0.5, 0.5]), None);
         assert_eq!(cam.neutral_for([0.0, 0.1, 0.1]), None);
+        // Balanced red above 1 but below its clip is fine.
+        assert!(clip[0] > 1.05, "fixture: {clip:?}");
+        assert!(cam.neutral_for([1.0, 0.5, 0.4]).is_some());
     }
 
     #[test]

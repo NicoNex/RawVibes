@@ -5,7 +5,7 @@ use std::path::Path;
 
 use rawler::imgop::chromatic_adaption::bradford_adaption_matrix;
 use rawler::imgop::develop::{Intermediate, ProcessingStep, RawDevelop};
-use rawler::imgop::matrix::{multiply, transform_1d};
+use rawler::imgop::matrix::{multiply, normalize, pseudo_inverse, transform_1d};
 use rawler::imgop::sensor::SensorType;
 use rawler::imgop::xyz::Illuminant;
 use rawler::rawimage::RawPhotometricInterpretation;
@@ -95,9 +95,9 @@ pub fn read_raw(path: &Path) -> Result<RawData, String> {
             let g = camera.as_shot;
             (px.data.iter().map(|p| std::array::from_fn(|c| p[c] * g[c])).collect(), px.width, px.height, camera)
         }
-        // shortcut: CYGM/RGBE sensors keep rawler's 4→3 calibration, no Kelvin WB; upgrade if one is reported.
+        // shortcut: CYGM/RGBE sensors are calibrated to Rec.2020 here, so Kelvin WB acts on Rec.2020; upgrade if one is reported.
         Intermediate::FourColor(px) => {
-            let cal = |p: &[f32; 4]| [p[0], 0.5 * (p[1] + p[3]), p[2]];
+            let cal = four_colour(&raw);
             (px.data.iter().map(cal).collect(), px.width, px.height, Camera::neutral())
         }
         Intermediate::Monochrome(_) => return Err("unsupported sensor layout".into()),
@@ -148,6 +148,28 @@ impl GpuRaw {
 
 /// Longest side of the smallest mip level.
 const MIP_MIN: u32 = 256;
+
+/// CYGM/RGBE camera values → linear Rec.2020: as-shot WB and the 4×3 colour
+/// matrix, as phase 1 calibrated them (to Rec.709 then).
+pub(crate) fn four_colour(raw: &rawler::RawImage) -> impl Fn(&[f32; 4]) -> [f32; 3] + Sync + use<> {
+    use Illuminant::*;
+    let wb: [f32; 4] =
+        std::array::from_fn(|c| if raw.wb_coeffs[0].is_nan() { 1.0 } else { raw.wb_coeffs[c] / raw.wb_coeffs[1] });
+    let xyz2cam = raw.color_matrix_find_first([D65, A, B, C, D50, D55, D75, Daylight, Flash]).and_then(|(illu, m)| {
+        let m = transform_1d::<4, 3>(m.get(..12)?)?;
+        Some(if illu == D65 { m } else { multiply(&m, &bradford_adaption_matrix(&illu, &D65)) })
+    });
+    let cam2rgb: Option<[[f32; 4]; 3]> =
+        xyz2cam.map(|m| pseudo_inverse(normalize(multiply(&m, &crate::profiles::rec2020_to_xyz()))));
+    move |p| {
+        let cam: [f32; 4] = std::array::from_fn(|c| p[c] * wb[c]);
+        match &cam2rgb {
+            Some(m) => m.map(|row| row.iter().zip(&cam).map(|(a, v)| a * v).sum()),
+            // No matrix: the two greens averaged, the rest as is.
+            None => [cam[0], 0.5 * (cam[1] + cam[3]), cam[2]],
+        }
+    }
+}
 
 /// Compute pipelines of `raw.wgsl`.
 pub struct Pipelines {
@@ -312,11 +334,23 @@ impl Gpu {
         }))
     }
 
+    /// Refuses a buffer this GPU cannot bind (wgpu would panic on it).
+    pub(crate) fn fits(&self, bytes: u64) -> Result<(), String> {
+        let limits = self.device.limits();
+        if bytes > limits.max_storage_buffer_binding_size || bytes > limits.max_buffer_size {
+            return Err(format!("photo too large for this GPU ({} MB buffer)", bytes / 1_000_000));
+        }
+        Ok(())
+    }
+
     /// Develops `raw` up to camera RGB and its mip chain: highlights
     /// rebuilt, RCD demosaic (Bayer), cropped to the visible area.
     pub fn load_raw(&self, raw: &RawData) -> Result<GpuRaw, String> {
         let [_, _, cw, ch] = raw.crop;
         let n = raw.width * raw.height;
+        // The largest buffers: level 0 (f16 RGBA), and the RGB upload or the CFA planes.
+        self.fits(cw as u64 * ch as u64 * 8)?;
+        self.fits(n as u64 * if matches!(raw.pixels, Pixels::Rgb(_)) { 12 } else { 4 })?;
         let level0 = self.buffer(cw as u64 * ch as u64 * 8, wgpu::BufferUsages::COPY_SRC);
         let p = &self.raw;
         let params = self.raw_params(raw, [0; 4]);
@@ -354,7 +388,16 @@ impl Gpu {
 
     /// `r` (oriented full-resolution coordinates) of `raw` developed to
     /// `w` × `h` as `profile`'s signal, ready for the grade shader.
-    pub fn develop(&self, raw: &GpuRaw, r: &Region, w: u32, h: u32, dev: &Develop, profile: Profile) -> GpuPhoto {
+    pub fn develop(
+        &self,
+        raw: &GpuRaw,
+        r: &Region,
+        w: u32,
+        h: u32,
+        dev: &Develop,
+        profile: Profile,
+    ) -> Result<GpuPhoto, String> {
+        self.fits(w as u64 * h as u64 * 16)?;
         // The finest level at least as coarse as one output pixel, as `Pyramid::resample` picks.
         let (sx, sy) = (r.size[0] / w as f32, r.size[1] / h as f32);
         let scale = sx.max(sy);
@@ -382,7 +425,7 @@ impl Gpu {
         let p = &self.raw;
         self.passes(&[(&p.develop, &[(10, level), (12, &params), (13, &src), (14, &table)], grid(w * h))]);
         let (out, staging) = self.output(n * 4);
-        GpuPhoto { src, out, staging, width: w, height: h }
+        Ok(GpuPhoto { src, out, staging, width: w, height: h })
     }
 
     /// The developed pixels back on the CPU.
@@ -467,10 +510,7 @@ impl Gpu {
     pub fn reconstruct(&self, raw: &RawData, mosaic: &[f32]) -> Result<wgpu::Buffer, String> {
         let n = raw.width * raw.height;
         let bytes = n as u64 * 4;
-        let limits = self.device.limits();
-        if bytes > limits.max_storage_buffer_binding_size || bytes > limits.max_buffer_size {
-            return Err(format!("photo too large for this GPU ({} MP)", n / 1_000_000));
-        }
+        self.fits(bytes)?;
         let (gx, gy) = grid(n);
         let params = self.raw_params(raw, [0; 4]);
         let cfa = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -739,7 +779,7 @@ mod tests {
         let raw = rgb_raw(&gpu, 5, 1, patches.to_vec(), 1, camera.clone());
         for profile in [Profile::Standard, Profile::VLog, Profile::SLog3, Profile::LogC4] {
             for dev in [Develop::default(), Develop { wb: Some([3200.0, 10.0]), exposure: 0.7 }] {
-                let out = gpu.read_photo(&gpu.develop(&raw, &whole(5, 1), 5, 1, &dev, profile));
+                let out = gpu.read_photo(&gpu.develop(&raw, &whole(5, 1), 5, 1, &dev, profile).unwrap());
                 for (c, got) in patches.iter().zip(&out.pixels) {
                     let want = crate::develop::develop_pixel(*c, &camera, &dev, profile);
                     // f16 storage of the camera RGB, then the OETF table.
@@ -762,7 +802,7 @@ mod tests {
             let raw = rgb_raw(&gpu, w, h, px.clone(), o, Camera::neutral());
             let (ow, oh) = if o >= 5 { (h, w) } else { (w, h) };
             let dev = Develop::default();
-            let got = gpu.read_photo(&gpu.develop(&raw, &whole(ow, oh), ow, oh, &dev, Profile::VLog));
+            let got = gpu.read_photo(&gpu.develop(&raw, &whole(ow, oh), ow, oh, &dev, Profile::VLog).unwrap());
             let mut img = image::DynamicImage::ImageRgba32F(image::Rgba32FImage::from_fn(w, h, |x, y| {
                 image::Rgba([px[(y * w + x) as usize][0], 0.1, 0.1, 1.0])
             }));
@@ -792,7 +832,7 @@ mod tests {
         let (ow, oh) = crate::photo::Decoded::fit_size(&r, 400);
         let dev = Develop::default();
         let t = std::time::Instant::now();
-        let ph = gpu.develop(&raw, &r, ow, oh, &dev, Profile::Standard);
+        let ph = gpu.develop(&raw, &r, ow, oh, &dev, Profile::Standard).unwrap();
         let a = gpu.read_photo(&ph);
         eprintln!("develop {ow}×{oh}: {:?}", t.elapsed());
         let b = cpu.encode_region(&r, ow, oh, Profile::Standard, &dev);
@@ -812,7 +852,7 @@ mod tests {
             let (w, h) = ((pw as f32 * k) as u32, (ph as f32 * k) as u32);
             let t = std::time::Instant::now();
             for _ in 0..10 {
-                gpu.read_photo(&gpu.develop(&raw, &r, w, h, &dev, Profile::Standard));
+                gpu.read_photo(&gpu.develop(&raw, &r, w, h, &dev, Profile::Standard).unwrap());
             }
             eprintln!("frame {w}×{h}: {:?}", t.elapsed() / 10);
         }
@@ -828,7 +868,8 @@ mod tests {
         for o in 1..=8u16 {
             let raw = rgb_raw(&gpu, w, h, px.clone(), o, Camera::neutral());
             let (ow, oh) = if o >= 5 { (h, w) } else { (w, h) };
-            let shown = gpu.read_photo(&gpu.develop(&raw, &whole(ow, oh), ow, oh, &Develop::default(), Profile::VLog));
+            let shown =
+                gpu.read_photo(&gpu.develop(&raw, &whole(ow, oh), ow, oh, &Develop::default(), Profile::VLog).unwrap());
             for (x, y) in [(0, 0), (ow - 1, 0), (1, oh - 1)] {
                 let s = gpu.sample(&raw, [x as f32 + 0.5, y as f32 + 0.5], 0);
                 let enc = crate::develop::develop_pixel(s, &Camera::neutral(), &Develop::default(), Profile::VLog);
@@ -836,6 +877,14 @@ mod tests {
                 assert!((got[0] - enc[0]).abs() < 2e-3, "orientation {o} at ({x}, {y})");
             }
         }
+    }
+
+    /// Buffers past the GPU's limits are refused with an error, not a wgpu panic.
+    #[test]
+    fn oversized_buffers_are_refused() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let max = gpu.device.limits().max_storage_buffer_binding_size;
+        assert!(gpu.fits(max).is_ok() && gpu.fits(max + 1).is_err());
     }
 
     #[test]

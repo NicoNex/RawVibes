@@ -15,7 +15,9 @@ mod settings;
 mod widgets;
 mod zoom_ui;
 
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 
@@ -80,7 +82,7 @@ enum Msg {
     /// The window is closing: write pending edits, then close.
     Close,
     /// Look LUTs named by a sidecar, read.
-    SidecarLooks(Vec<(LookRef, Result<Arc<Lut3d>, String>)>),
+    SidecarLooks(Option<PathBuf>, Vec<(LookRef, Result<Arc<Lut3d>, String>)>),
     /// A click on the canvas, in canvas device pixels.
     CanvasClick([f32; 2]),
     /// No development change for `DEVELOP_SETTLE` since tick `u64`: full quality.
@@ -219,6 +221,9 @@ enum CameraPart {
     /// Every section: white balance, exposure and the whole match.
     All,
 }
+
+/// Grade, looks (by file) and look blend.
+type SharedEdits = (Grade, Vec<LookRef>, Blend);
 
 /// A change in the Develop group.
 #[derive(Debug, Clone, Copy)]
@@ -437,12 +442,16 @@ struct App {
     /// The open photo's edits as last read from or written to its sidecar.
     saved: Option<Sidecar>,
     save_tick: u64,
+    /// The open photo's own grade and looks from its sidecar, not applied
+    /// (the filmstrip's shared ones were), and the shared ones at that time:
+    /// saved back unchanged until the shared grade or looks are edited.
+    kept: Option<(Sidecar, SharedEdits)>,
     /// Sidecar looks still loading: nothing is saved meanwhile.
     looks_loading: bool,
     /// A sidecar write failed this session (reported once).
     save_failed: bool,
     /// The RAW whose GPU load is in flight, by load generation (`Done::RawLoaded` carries no path).
-    raw_loading: Option<(u64, PathBuf)>,
+    raw_loading: Vec<(u64, PathBuf)>,
     encode_again: bool,
     encoded: Option<Region>,
     ui: Ui,
@@ -529,6 +538,17 @@ impl App {
 
     /// The open photo's edits, as its sidecar holds them.
     fn sidecar_state(&self) -> Sidecar {
+        let (mut grade, mut looks, mut look_blend) = self.shared_edits();
+        if let Some((own, at_load)) = &self.kept
+            && *at_load == (grade.clone(), looks.clone(), look_blend)
+        {
+            (grade, looks, look_blend) = (own.grade.clone(), own.looks.clone(), own.look_blend);
+        }
+        Sidecar { develop: self.develop, grade, crop: self.crop, ratio: self.ratio, looks, look_blend }
+    }
+
+    /// Grade, looks (by file) and look blend: what the filmstrip shares.
+    fn shared_edits(&self) -> SharedEdits {
         let looks = self
             .looks
             .iter()
@@ -537,14 +557,7 @@ impl App {
                 Some(LookRef { path, intensity: l.intensity, input: l.input, on: l.on })
             })
             .collect();
-        Sidecar {
-            develop: self.develop,
-            grade: self.grade.clone(),
-            crop: self.crop,
-            ratio: self.ratio,
-            looks,
-            look_blend: self.look_blend,
-        }
+        (self.grade.clone(), looks, self.look_blend)
     }
 
     /// Saves the sidecar a second after the last edit.
@@ -595,15 +608,17 @@ impl App {
             }));
             if !sc.looks.is_empty() {
                 self.looks_loading = true;
-                let (s, refs) = (sender.input_sender().clone(), sc.looks);
+                let (s, refs, path) = (sender.input_sender().clone(), sc.looks, self.path.clone());
                 std::thread::spawn(move || {
                     let loaded = refs.into_iter().map(|r| {
                         let lut = Lut3d::load(&r.path).map(Arc::new);
                         (r, lut)
                     });
-                    s.emit(Msg::SidecarLooks(loaded.collect()));
+                    s.emit(Msg::SidecarLooks(path, loaded.collect()));
                 });
             }
+        } else {
+            self.kept = Some((sc, self.shared_edits()));
         }
     }
 
@@ -948,9 +963,6 @@ impl App {
                 Some(&(_, k, t)) => dev.wb = Some([k, t]),
                 None => return, // Custom: whatever the sliders say
             },
-            // Slider echoes of the values shown (e.g. after As shot) change nothing.
-            DevelopEdit::Kelvin(v) if (v - k).abs() < 0.5 => return,
-            DevelopEdit::Tint(v) if (v - t).abs() < 0.05 => return,
             DevelopEdit::Kelvin(v) => dev.wb = Some([v, t]),
             DevelopEdit::Tint(v) => dev.wb = Some([k, v]),
             DevelopEdit::Exposure(v) => dev.exposure = v,
@@ -982,14 +994,16 @@ impl App {
         ui.root.set_visible(raw);
         let Some(cam) = self.camera() else { return };
         let [k, t] = self.develop.wb.unwrap_or_else(|| cam.as_shot_kelvin_tint());
-        ui.kelvin.adj.set_value(k as f64);
-        ui.tint.adj.set_value(t as f64);
-        ui.exposure.adj.set_value(self.develop.exposure as f64);
         let preset = match self.develop.wb {
             None => 0,
             Some(kt) => WB_PRESETS.iter().position(|&(_, k, t)| [k, t] == kt).map_or(WB_CUSTOM, |i| i as u32 + 1),
         };
+        ui.syncing.set(true);
+        ui.kelvin.adj.set_value(k as f64);
+        ui.tint.adj.set_value(t as f64);
+        ui.exposure.adj.set_value(self.develop.exposure as f64);
         ui.preset.set_selected(preset);
+        ui.syncing.set(false);
     }
 
     /// The point of the oriented full-resolution image under a canvas point.
@@ -1510,6 +1524,8 @@ struct Sidebar {
 
 /// The Develop group (RAWs only).
 struct DevelopUi {
+    /// Set while `sync_develop` moves the controls: their signals are not edits.
+    syncing: Rc<Cell<bool>>,
     root: gtk::Box,
     preset: gtk::DropDown,
     kelvin: Slider,
@@ -1542,8 +1558,18 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     let preset = gtk::DropDown::from_strings(&names);
     preset.set_hexpand(true);
     preset.update_property(&[gtk::accessible::Property::Label(&gettext("White balance preset"))]);
-    let snd = sender.clone();
-    preset.connect_selected_notify(move |d| snd.input(Msg::Develop(DevelopEdit::Preset(d.selected()))));
+    let syncing = Rc::new(Cell::new(false));
+    // Only the user's own moves become edits, never `sync_develop` setting the controls.
+    let edit = |f: fn(f64) -> DevelopEdit| {
+        let (snd, syncing) = (sender.clone(), syncing.clone());
+        move |v: f64| {
+            if !syncing.get() {
+                snd.input(Msg::Develop(f(v)));
+            }
+        }
+    };
+    let on_preset = edit(|v| DevelopEdit::Preset(v as u32));
+    preset.connect_selected_notify(move |d| on_preset(d.selected() as f64));
     let picker = gtk::ToggleButton::builder()
         .icon_name("color-select-symbolic")
         .tooltip_text(gettext("Pick a neutral grey on the photo (Escape cancels)"))
@@ -1558,11 +1584,9 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     wb.append(&row);
     let kelvin =
         Slider::new(&gettext("Temperature"), KELVIN[0] as f64, KELVIN[1] as f64, 5500.0, 0, Some("track-temp"));
-    let snd = sender.clone();
-    kelvin.connect(move |v| snd.input(Msg::Develop(DevelopEdit::Kelvin(v as f32))));
+    kelvin.connect(edit(|v| DevelopEdit::Kelvin(v as f32)));
     let tint = Slider::new(&gettext("Tint"), -100.0, 100.0, 0.0, 0, Some("track-tint"));
-    let snd = sender.clone();
-    tint.connect(move |v| snd.input(Msg::Develop(DevelopEdit::Tint(v as f32))));
+    tint.connect(edit(|v| DevelopEdit::Tint(v as f32)));
     wb.append(&kelvin.root);
     wb.append(&tint.root);
     let as_shot =
@@ -1571,8 +1595,7 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
 
     let exp = vbox(4);
     let exposure = Slider::new(&gettext("Exposure"), -3.0, 3.0, 0.0, 2, None);
-    let snd = sender.clone();
-    exposure.connect(move |v| snd.input(Msg::Develop(DevelopEdit::Exposure(v as f32))));
+    exposure.connect(edit(|v| DevelopEdit::Exposure(v as f32)));
     exp.append(&exposure.root);
     let cam_ev = camera_button(
         &gettext("As in camera: the exposure the camera asks for"),
@@ -1581,7 +1604,7 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     );
     root.append(&section_with(&gettext("Exposure"), &exp, &[cam_ev.upcast()], true));
     root.set_visible(false);
-    DevelopUi { root, preset, kelvin, tint, picker, exposure }
+    DevelopUi { syncing, root, preset, kelvin, tint, picker, exposure }
 }
 
 /// Curve editor with a channel selector and a reset button.
@@ -2687,10 +2710,11 @@ impl SimpleComponent for App {
             camera_job: None,
             match_parts: (true, true),
             saved: None,
+            kept: None,
             save_tick: 0,
             looks_loading: false,
             save_failed: false,
-            raw_loading: None,
+            raw_loading: Vec::new(),
             encode_again: false,
             encoded: None,
             ui: Ui {
@@ -2852,7 +2876,9 @@ impl SimpleComponent for App {
                 self.save_now();
                 self.ui.window.destroy();
             }
-            Msg::SidecarLooks(loaded) => {
+            // Another photo was opened meanwhile: these looks are not its own.
+            Msg::SidecarLooks(path, _) if path != self.path => {}
+            Msg::SidecarLooks(_, loaded) => {
                 let missing = loaded.iter().filter(|(_, l)| l.is_err()).count();
                 for (r, lut) in loaded {
                     if let Ok(lut) = lut {
@@ -2916,9 +2942,17 @@ impl SimpleComponent for App {
                 }
                 self.encode_photo(&sender);
             }
-            Msg::RawRead(generation, ..) if generation != self.load_gen => {}
+            // Superseded: not loaded on the GPU, but the strip still needs its copy
+            // (RollAddPaths left it to this load).
+            Msg::RawRead(generation, path, _) if generation != self.load_gen => {
+                let (s, profile) = (sender.input_sender().clone(), self.profile);
+                std::thread::spawn(move || {
+                    let small = Decoded::load_max(&path, Some(ROLL_PX)).map(|d| roll_copy(&d, profile));
+                    s.emit(Msg::RollLoaded(path, small));
+                });
+            }
             Msg::RawRead(generation, path, Ok(raw)) => {
-                self.raw_loading = Some((generation, path));
+                self.raw_loading.push((generation, path));
                 self.send(Job::LoadRaw(generation, raw));
             }
             Msg::RawRead(generation, path, Err(e)) => {
@@ -2928,6 +2962,8 @@ impl SimpleComponent for App {
             Msg::Loaded(generation, ..) if generation != self.load_gen => {}
             Msg::Loaded(_, path, Ok(decoded)) => {
                 self.save_now(); // the previous photo's last edits
+                self.kept = None;
+                self.ui.sidebar.develop.picker.set_active(false);
                 self.ui.window.set_title(Some(&format!("{} — RawValley", file_label(&path))));
                 self.zoom = None;
                 self.reset_crop();
@@ -3810,7 +3846,9 @@ impl App {
                 }
             }
             Done::RawLoaded(generation, r) => {
-                let Some((_, path)) = self.raw_loading.take_if(|l| l.0 == generation) else { return };
+                let Some(i) = self.raw_loading.iter().position(|l| l.0 == generation) else { return };
+                // The strip copy always; `Loaded` drops itself when a newer open superseded it.
+                let (_, path) = self.raw_loading.remove(i);
                 let small = r.as_ref().map(|d| roll_copy(d, self.profile)).map_err(String::clone);
                 self.input.emit(Msg::RollLoaded(path.clone(), small));
                 self.input.emit(Msg::Loaded(generation, path, r));

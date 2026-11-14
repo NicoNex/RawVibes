@@ -278,7 +278,8 @@ fn load_raw_small(path: &Path, max: u32) -> Result<Decoded, String> {
         }
         Intermediate::FourColor(px) => {
             camera = Camera::neutral();
-            let rgba = |p: &[f32; 4]| balanced([p[0], 0.5 * (p[1] + p[3]), p[2]]);
+            let cal = crate::raw::four_colour(&raw);
+            let rgba = |p: &[f32; 4]| balanced(cal(p));
             (box_downscale(&px.data, px.width as u32, px.height as u32, max, rgba), px.width, px.height)
         }
         Intermediate::Monochrome(_) => return Err("unsupported sensor layout".into()),

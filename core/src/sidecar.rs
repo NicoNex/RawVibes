@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::crop::{Crop, Ratio};
-use crate::develop::{Develop, KELVIN};
+use crate::develop::{Develop, EXPOSURE, KELVIN, TINT};
 use crate::grade::{Grade, Params};
 use crate::lab::Blend;
 use crate::preset::{Curves, grade_from};
@@ -113,13 +113,24 @@ impl Sidecar {
         if f.version > VERSION {
             return Err(format!("made by a newer RawValley (sidecar version {})", f.version));
         }
+        // Out-of-range development values are brought into the sliders' range
+        // (a whole sidecar is not worth losing over them); non-numbers are not.
         let d = f.develop;
-        let wb_ok = d.wb.is_none_or(|[k, t]| (KELVIN[0]..=KELVIN[1]).contains(&k) && (-150.0..=150.0).contains(&t));
-        if !wb_ok || !(-10.0..=10.0).contains(&d.exposure) {
+        if !d.exposure.is_finite() || d.wb.is_some_and(|wb| wb.iter().any(|v| !v.is_finite())) {
             return Err("invalid development values".into());
         }
+        let d = Develop {
+            wb: d.wb.map(|[k, t]| [k.clamp(KELVIN[0], KELVIN[1]), t.clamp(-TINT, TINT)]),
+            exposure: d.exposure.clamp(-EXPOSURE, EXPOSURE),
+        };
         let c = f.crop;
-        let crop_ok = c.rect.iter().all(|v| (0.0..=1.0).contains(v)) && (-90.0..=90.0).contains(&c.angle);
+        let [x, y, w, h] = c.rect;
+        let crop_ok = c.rect.iter().all(|v| (0.0..=1.0).contains(v))
+            && w >= 0.01
+            && h >= 0.01
+            && x + w <= 1.0 + 1e-4
+            && y + h <= 1.0 + 1e-4
+            && (-90.0..=90.0).contains(&c.angle);
         let ratio_ok = match f.ratio {
             Ratio::Fixed(a, b) => a > 0.0 && b > 0.0 && a.is_finite() && b.is_finite(),
             _ => true,
@@ -190,8 +201,23 @@ mod tests {
     fn nan_in_sidecar_is_rejected() {
         let bad = sample().to_json().replace("\"exposure\": 0.3", "\"exposure\": NaN");
         assert!(Sidecar::from_json(&bad).is_err());
+    }
+
+    /// Values the sliders cannot show are brought into range, not rejected.
+    #[test]
+    fn out_of_range_development_is_clamped() {
         let mut s = sample();
-        s.develop.exposure = 50.0;
-        assert!(Sidecar::from_json(&s.to_json()).is_err());
+        s.develop = Develop { wb: Some([30000.0, 300.0]), exposure: 50.0 };
+        let back = Sidecar::from_json(&s.to_json()).unwrap();
+        assert_eq!(back.develop, Develop { wb: Some([KELVIN[1], TINT]), exposure: EXPOSURE });
+    }
+
+    #[test]
+    fn degenerate_crops_are_rejected() {
+        for rect in [[0.5, 0.5, 0.0, 0.0], [0.9, 0.0, 0.5, 1.0]] {
+            let mut s = sample();
+            s.crop.rect = rect;
+            assert!(Sidecar::from_json(&s.to_json()).is_err(), "{rect:?}");
+        }
     }
 }

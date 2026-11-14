@@ -417,6 +417,9 @@ struct RollFrame {
 struct Worker {
     /// The RAW being edited, at full resolution.
     raw: Option<GpuRaw>,
+    /// A zoomed view is what renders; a fitted RAW developed meanwhile waits in `fit`.
+    viewing: bool,
+    fit: Option<GpuPhoto>,
     source: Option<Arc<Photo>>,
     photo: Option<GpuPhoto>,
     thumb: Option<GpuPhoto>,
@@ -472,10 +475,15 @@ impl Worker {
     fn handle(&mut self, gpu: &Gpu, job: Job, notify: &impl Fn(Done)) {
         match job {
             Job::SetPhoto(p) => {
-                // Same pixels (e.g. only the input profile changed): keep the upload.
+                // Same pixels (e.g. only the input profile changed): keep the upload,
+                // or bring back the fitted RAW that waited while zoomed.
                 if self.source.as_ref().is_some_and(|s| Arc::ptr_eq(s, &p)) {
+                    if std::mem::take(&mut self.viewing) {
+                        self.photo = Some(self.fit.take().unwrap_or_else(|| gpu.upload(&p)));
+                    }
                     return;
                 }
+                (self.viewing, self.fit) = (false, None);
                 self.thumb = Some(gpu.upload(&p.downscaled(THUMB_MAX)));
                 self.photo = Some(gpu.upload(&p));
                 self.source = Some(p);
@@ -494,17 +502,23 @@ impl Worker {
             }
             Job::DevelopRaw { generation, region, width, height, develop, profile, view } => {
                 let Some(raw) = &self.raw else { return };
-                let ph = gpu.develop(raw, &region, width, height, &develop, profile);
+                // shortcut: a develop too large for the GPU is skipped (the preview stays); only a huge HiDPI canvas gets there.
+                let Ok(ph) = gpu.develop(raw, &region, width, height, &develop, profile) else { return };
                 let photo = Arc::new(gpu.read_photo(&ph));
                 if view {
-                    // The next SetPhoto must upload again.
-                    self.source = None;
+                    self.viewing = true;
+                    self.photo = Some(ph);
                 } else {
                     self.thumb = Some(gpu.upload(&photo.downscaled(THUMB_MAX)));
                     // SetPhoto with these pixels is then a no-op: they are already on the GPU.
                     self.source = Some(photo.clone());
+                    // While zoomed the view keeps rendering; the fit waits for the zoom-out.
+                    if self.viewing {
+                        self.fit = Some(ph);
+                    } else {
+                        self.photo = Some(ph);
+                    }
                 }
-                self.photo = Some(ph);
                 notify(Done::Developed { generation, view, profile, photo });
             }
             Job::SampleRaw { at, radius } => {
@@ -513,6 +527,7 @@ impl Worker {
                 }
             }
             Job::SetView(p) => {
+                self.viewing = true;
                 self.photo = Some(gpu.upload(&p));
                 // The next SetPhoto must upload again, even with the same pixels.
                 self.source = None;

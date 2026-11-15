@@ -9,6 +9,7 @@ pub mod ca;
 pub mod chart;
 pub mod crop;
 pub mod develop;
+pub mod export;
 pub mod gpu;
 pub mod grade;
 pub mod lab;

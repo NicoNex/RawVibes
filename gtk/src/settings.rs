@@ -57,3 +57,9 @@ pub fn set_folder(key: &str, dir: &Path) -> std::io::Result<()> {
 pub fn presets_dir() -> PathBuf {
     file("presets")
 }
+
+/// Last photo export format (`PhotoFormat::tag`).
+pub const EXPORT_FORMAT: &str = "export-format";
+
+/// Last JPEG export quality, 1–100.
+pub const JPEG_QUALITY: &str = "jpeg-quality";

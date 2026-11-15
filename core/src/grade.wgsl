@@ -533,3 +533,15 @@ fn bake(@builtin(global_invocation_id) id: vec3<u32>) {
     let rgb = vec3<f32>(vec3(idx % n, (idx / n) % n, idx / (n * n))) / f32(n - 1u);
     dst_lut[idx] = vec4(grade(rgb), 1.0);
 }
+
+// Photo export: preview without overlay or split, as RGBA16 (two u32 per pixel).
+@compute @workgroup_size(256)
+fn export16(@builtin(global_invocation_id) id: vec3<u32>) {
+    let idx = id.x;
+    if idx >= p.width * p.height { return; }
+    var g = grade_unclamped(src[idx].rgb);
+    if p.lut_size > 0u { g = tetrahedral(clamp(g, vec3(0.0), vec3(1.0))); }
+    g = clamp(vignette(idx, g), vec3(0.0), vec3(1.0));
+    dst_px[2u * idx] = pack2x16unorm(g.rg);
+    dst_px[2u * idx + 1u] = pack2x16unorm(vec2(g.b, 1.0));
+}

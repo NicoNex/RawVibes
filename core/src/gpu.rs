@@ -2,11 +2,13 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 
 use wgpu::util::DeviceExt;
 
 use crate::develop::Develop;
+use crate::export::{self, PhotoFormat};
 use crate::grade::{CURVE_RES, CURVES, Grade, Params};
 use crate::lab::{self, Blend, Layer, Source, Stack};
 use crate::lut::{Format, Lut3d};
@@ -23,6 +25,7 @@ pub struct Gpu {
     preview: wgpu::ComputePipeline,
     apply: wgpu::ComputePipeline,
     bake: wgpu::ComputePipeline,
+    export16: wgpu::ComputePipeline,
     /// Persistent uniforms, rewritten per frame with `queue.write_buffer`.
     params: wgpu::Buffer,
     curves: wgpu::Buffer,
@@ -95,7 +98,8 @@ impl Gpu {
         }))
         .map_err(|e| e.to_string())?;
         let pipeline = shader(&device, "grade.wgsl", include_str!("grade.wgsl"));
-        let (preview, apply, bake) = (pipeline("preview"), pipeline("apply_lut"), pipeline("bake"));
+        let (preview, apply, bake, export16) =
+            (pipeline("preview"), pipeline("apply_lut"), pipeline("bake"), pipeline("export16"));
         drop(pipeline); // it borrows `device`, which moves into Self below
         let uniform = |size: usize| {
             device.create_buffer(&wgpu::BufferDescriptor {
@@ -109,6 +113,7 @@ impl Gpu {
             preview,
             apply,
             bake,
+            export16,
             params: uniform(std::mem::size_of::<Params>()),
             curves: uniform(CURVES * CURVE_RES * 4),
             no_lut: uniform(16),
@@ -222,6 +227,20 @@ impl Gpu {
         let bind = self
             .bind(&self.preview, &[(0, &self.params), (1, &self.curves), (2, &photo.src), (3, &photo.out), (5, lut)]);
         self.run(&self.preview, &bind, photo.width * photo.height, &photo.out, &photo.staging)
+    }
+
+    /// The graded photo for export: as [`Gpu::render`] without overlay or
+    /// split, as 16-bit RGB.
+    pub fn render16(&self, photo: &GpuPhoto, grade: &Grade, look: Option<&GpuLut>) -> Vec<u16> {
+        self.write_params(grade.params, photo.width, photo.height, look.map_or(0, |l| l.size), 0.0);
+        self.queue.write_buffer(&self.curves, 0, bytemuck::cast_slice(&grade.curve_samples()));
+        let lut = look.map_or(&self.no_lut, |l| &l.buf);
+        let (out, staging) = self.output(photo.width as u64 * photo.height as u64 * 8);
+        let bind =
+            self.bind(&self.export16, &[(0, &self.params), (1, &self.curves), (2, &photo.src), (3, &out), (5, lut)]);
+        let rgba = self.run(&self.export16, &bind, photo.width * photo.height, &out, &staging);
+        let rgba: &[u16] = bytemuck::cast_slice(&rgba);
+        rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect()
     }
 
     /// Photo seen through an external LUT (tetrahedral), as RGBA8.
@@ -354,6 +373,8 @@ pub enum Job {
         title: String,
         path: PathBuf,
     },
+    /// The open photo, developed and graded at full resolution, to a file.
+    ExportPhoto(PhotoExport),
     /// The grade followed by its look LUTs.
     Export {
         grade: Grade,
@@ -363,6 +384,24 @@ pub enum Job {
         title: String,
         path: PathBuf,
     },
+}
+
+/// What `Job::ExportPhoto` writes, and from what.
+pub struct PhotoExport {
+    /// The open photo: a RAW is the one loaded on the GPU.
+    pub decoded: Decoded,
+    /// The crop, in full-resolution pixels.
+    pub crop: Region,
+    pub develop: Develop,
+    pub profile: Profile,
+    /// The grade as previewed (input set to `profile`), and its look LUTs.
+    pub grade: Grade,
+    pub look: Stack,
+    pub format: PhotoFormat,
+    pub quality: u8,
+    pub path: PathBuf,
+    /// Set by the UI to stop between strips.
+    pub cancel: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -418,6 +457,9 @@ pub enum Done {
         rgba: Vec<u8>,
     },
     Exported(Result<PathBuf, String>),
+    /// Photo export: fraction done, then the file written (`None`: cancelled).
+    ExportProgress(f32),
+    PhotoExported(Result<Option<PathBuf>, String>),
     RollFrame {
         generation: u64,
         index: usize,
@@ -517,6 +559,13 @@ struct Ai {
 
 /// Longest side of the CPU copy of each developed RAW frame.
 const SMALL_COPY: u32 = 512;
+
+/// Linear working buffer per export strip (~1400 rows of a 6000 px photo):
+/// with the detail caches and the strip's own buffers it stays well under 1 GB.
+const EXPORT_ROWS_BYTES: u64 = 128 << 20;
+
+/// Lattice the look LUTs are composed on for export (the preview uses 33³).
+const EXPORT_LOOK: usize = 65;
 
 impl Worker {
     /// What renders: the zoomed view, else the whole photo (RAW or uploaded).
@@ -625,6 +674,61 @@ impl Worker {
             let _ = (gpu, notify);
             false
         }
+    }
+
+    /// `e`'s crop developed and graded at full resolution, in strips of at
+    /// most `strip_bytes` of linear working buffer; `None` once cancelled.
+    fn export_photo(
+        &mut self,
+        gpu: &Gpu,
+        e: &PhotoExport,
+        strip_bytes: u64,
+        notify: &impl Fn(Done),
+    ) -> Result<Option<(u32, u32, Vec<u16>)>, String> {
+        let cancelled = || e.cancel.load(Ordering::Relaxed);
+        let raw = e.decoded.is_raw();
+        // The AI result the preview shows, finished first if still running.
+        if raw && e.develop.detail.nr_ai {
+            #[cfg(feature = "ai")]
+            self.ai_begin(gpu, true, notify);
+            while self.ai_step(gpu, notify) {
+                if cancelled() {
+                    return Ok(None);
+                }
+            }
+        }
+        let (w, h) = Decoded::fit_size(&e.crop, u32::MAX);
+        let look = (!e.look.layers.is_empty())
+            .then(|| gpu.upload_lut(&lab::compose(&e.look, EXPORT_LOOK, &|g| self.bake_cached(gpu, g))));
+        let limits = gpu.device.limits();
+        let budget = strip_bytes.min(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size);
+        let rows = ((budget / (w as u64 * 16)) as u32).clamp(16, h.max(16));
+        let mut out = Vec::with_capacity(w as usize * h as usize * 3);
+        let mut slot = None;
+        for y0 in (0..h).step_by(rows as usize) {
+            if cancelled() {
+                return Ok(None);
+            }
+            let y1 = (y0 + rows).min(h);
+            let strip = export::strip(&e.crop, h, y0, y1);
+            if raw {
+                let gpu_raw = self.raw.as_ref().ok_or("the photo is not loaded")?;
+                gpu.develop_into(&mut slot, gpu_raw, &strip, w, y1 - y0, &e.develop, e.profile)?;
+            } else {
+                gpu.fits(w as u64 * (y1 - y0) as u64 * 16)?;
+                gpu.upload_into(
+                    &mut slot,
+                    &e.decoded.encode_region(&strip, w, y1 - y0, e.profile, &Develop::default()),
+                );
+            }
+            let mut grade = e.grade.clone();
+            grade.params.overlay = 0;
+            grade.params.vignette_view = strip.rect_in(&e.crop);
+            grade.params.vignette_aspect = e.crop.size[0] / e.crop.size[1];
+            out.extend(gpu.render16(slot.as_ref().expect("developed above"), &grade, look.as_ref()));
+            notify(Done::ExportProgress(y1 as f32 / h as f32));
+        }
+        Ok(Some((w, h, out)))
     }
 
     fn handle(&mut self, gpu: &Gpu, job: Job, notify: &impl Fn(Done)) {
@@ -781,6 +885,13 @@ impl Worker {
                 let size = format.fixed_size().unwrap_or(size);
                 let lut = lab::compose(&stack, size, &|g| self.bake_cached(gpu, g));
                 notify(Done::Exported(Lut3d { title, format, ..lut }.save(&path).map(|_| path)));
+            }
+            Job::ExportPhoto(e) => {
+                let r = self.export_photo(gpu, &e, EXPORT_ROWS_BYTES, notify).and_then(|done| match done {
+                    Some((w, h, rgb)) => export::save(&e.path, w, h, rgb, e.format, e.quality).map(|_| Some(e.path)),
+                    None => Ok(None),
+                });
+                notify(Done::PhotoExported(r));
             }
             Job::Export { grade, look, size, format, title, path } => {
                 let size = format.fixed_size().unwrap_or(size);
@@ -997,6 +1108,105 @@ mod tests {
 
     /// The RAW renders at the size it was developed at, from the GPU; the
     /// small CPU copy it hands back only brings it back (e.g. after the chart).
+    /// Exporting in many strips gives the same pixels as in one: detail
+    /// tools, rotation and the creative vignette see no seams.
+    #[test]
+    fn export_strips_match_one_pass() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (320, 240);
+        let pixels = (0..w * h)
+            .map(|i| {
+                let (x, y) = ((i % w) as f32, (i / w) as f32);
+                let t = ((x * 0.37).sin() * (y * 0.23).cos() * 0.5 + 0.5) * 0.4;
+                [0.05 + t, 0.1 + x / w as f32 * 0.3, 0.05 + y / h as f32 * 0.3]
+            })
+            .collect();
+        let data = Arc::new(RawData {
+            pixels: crate::raw::Pixels::Rgb(pixels),
+            width: w,
+            height: h,
+            pattern: [0; 36],
+            pattern_size: [1, 1],
+            crop: [0, 0, w, h],
+            orientation: 1,
+            camera: crate::develop::Camera::neutral(),
+        });
+        let notify = |_: Done| {};
+        let mut worker = Worker::default();
+        worker.handle(&gpu, Job::LoadRaw(1, PathBuf::new(), data), &notify);
+        let detail = crate::develop::Detail {
+            nr_luma: 30.0,
+            sharpen: 40.0,
+            local_contrast: 40.0,
+            dehaze: 30.0,
+            ..Default::default()
+        };
+        let mut grade = Grade::default();
+        grade.params.vignette = -60.0;
+        let e = PhotoExport {
+            decoded: Decoded::raw(
+                Photo { width: 4, height: 3, pixels: vec![[0.2; 4]; 12] },
+                crate::develop::Camera::neutral(),
+                (w, h),
+            ),
+            crop: Region { center: [160.0, 120.0], size: [240.0, 160.0], angle: 5.0 },
+            develop: Develop { detail, ..Develop::default() },
+            profile: Profile::Standard,
+            grade,
+            look: Stack { input: Profile::Standard, layers: Vec::new(), blend: Blend::Chain },
+            format: PhotoFormat::Tiff16,
+            quality: 90,
+            path: PathBuf::new(),
+            cancel: Arc::default(),
+        };
+        let (_, _, one) = worker.export_photo(&gpu, &e, u64::MAX, &notify).unwrap().unwrap();
+        // 37 rows per strip: 5 strips, the last one short.
+        let (ew, eh, many) = worker.export_photo(&gpu, &e, 240 * 16 * 37, &notify).unwrap().unwrap();
+        assert_eq!((ew, eh, one.len()), (240, 160, many.len()));
+        let worst = one.iter().zip(&many).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+        assert!(worst <= 64, "strip seams differ by {worst}/65535");
+        e.cancel.store(true, Ordering::Relaxed);
+        assert!(worker.export_photo(&gpu, &e, u64::MAX, &notify).unwrap().is_none());
+    }
+
+    /// Full export of a real RAW with AI on, timed:
+    /// `RAWVALLEY_RAW=x.RW2 RAWVALLEY_OUT=dir cargo test --release -p rawvalley-core export_sample -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn export_sample() {
+        let (Ok(raw), Ok(out)) = (std::env::var("RAWVALLEY_RAW"), std::env::var("RAWVALLEY_OUT")) else { return };
+        let gpu = Gpu::new().unwrap();
+        let path = PathBuf::from(raw);
+        let decoded = Decoded::load(&path).unwrap();
+        let size = [decoded.size().0 as f32, decoded.size().1 as f32];
+        let crop = Region { center: size.map(|v| v / 2.0), size, angle: 0.0 };
+        let mut worker = Worker::default();
+        let notify = |_: Done| {};
+        worker.handle(&gpu, Job::LoadRaw(1, path.clone(), Arc::new(crate::raw::read_raw(&path).unwrap())), &notify);
+        for format in PhotoFormat::ALL {
+            let detail =
+                crate::develop::Detail { nr_ai: true, nr_ai_strength: 100.0, sharpen: 30.0, ..Default::default() };
+            let e = PhotoExport {
+                decoded: decoded.clone(),
+                crop,
+                develop: Develop { detail, ..Develop::default() },
+                profile: Profile::Standard,
+                grade: Grade::default(),
+                look: Stack { input: Profile::Standard, layers: Vec::new(), blend: Blend::Chain },
+                format,
+                quality: 90,
+                path: PathBuf::from(&out).join(format!("export.{}", format.ext())),
+                cancel: Arc::default(),
+            };
+            let t = std::time::Instant::now();
+            let (w, h, rgb) = worker.export_photo(&gpu, &e, EXPORT_ROWS_BYTES, &notify).unwrap().unwrap();
+            let dev = t.elapsed();
+            export::save(&e.path, w, h, rgb, format, 90).unwrap();
+            let size = std::fs::metadata(&e.path).unwrap().len();
+            eprintln!("{format:?} {w}x{h}: develop {dev:.2?}, total {:.2?}, {} MB", t.elapsed(), size / 1_000_000);
+        }
+    }
+
     #[test]
     fn raw_renders_full_size_and_comes_back_after_the_chart() {
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };

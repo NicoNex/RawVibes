@@ -158,6 +158,8 @@ pub struct GpuRaw {
     pub camera: Camera,
     /// Noise of the full-resolution camera RGB, estimated at load.
     pub noise: NoiseModel,
+    /// Unique per load: what the slots' stage caches were made from.
+    pub(crate) id: u64,
     pub orientation: u16,
 }
 
@@ -170,6 +172,50 @@ impl GpuRaw {
     /// Full-resolution size as shown (after orientation).
     pub fn oriented_size(&self) -> (u32, u32) {
         crate::photo::oriented_size(self.size(), self.orientation)
+    }
+}
+
+/// What a cached stage result was made from: the photo, then every
+/// parameter upstream of it.
+type Key = (u64, Vec<f32>);
+
+#[derive(Clone, Copy)]
+enum Cache {
+    Nr,
+    Tone,
+}
+
+/// A slot's linear working buffers: the develop with a margin all round for
+/// the detail tools, scratch space, and the slow stages' last results.
+pub(crate) struct Work {
+    size: (u32, u32),
+    margin: u32,
+    lin: wgpu::Buffer,
+    scratch: Option<[wgpu::Buffer; 2]>,
+    after_nr: Option<(Key, wgpu::Buffer)>,
+    after_tone: Option<(Key, wgpu::Buffer)>,
+}
+
+impl Work {
+    fn scratch(&mut self, gpu: &Gpu) -> [&wgpu::Buffer; 2] {
+        let bytes = self.lin.size();
+        let [a, b] = self.scratch.get_or_insert_with(|| [0, 1].map(|_| gpu.buffer(bytes, wgpu::BufferUsages::empty())));
+        [&*a, &*b]
+    }
+
+    /// Keeps `lin` as the result of `stage`, made from `key`.
+    fn keep(&mut self, gpu: &Gpu, stage: Cache, key: Key) {
+        let cache = match stage {
+            Cache::Nr => &mut self.after_nr,
+            Cache::Tone => &mut self.after_tone,
+        };
+        let usage = wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
+        let buf = match cache.take() {
+            Some((_, b)) => b,
+            None => gpu.buffer(self.lin.size(), usage),
+        };
+        gpu.copy(&self.lin, &buf);
+        *cache = Some((key, buf));
     }
 }
 
@@ -234,6 +280,8 @@ pub struct Pipelines {
     lc_apply: wgpu::ComputePipeline,
     /// Dehaze airlight (one f32 as bits, atomic max), zeroed per run.
     air: wgpu::Buffer,
+    /// Noise reductions run (tests check the cache).
+    pub(crate) nr_runs: std::cell::Cell<u32>,
     /// The OETF table of the last profile developed into.
     oetf: std::cell::RefCell<Option<(Profile, wgpu::Buffer)>>,
     /// `DevelopParams`, rewritten per frame.
@@ -256,6 +304,7 @@ impl Pipelines {
             dh_apply: tone("dh_apply"),
             lc_prep: tone("lc_prep"),
             lc_apply: tone("lc_apply"),
+            nr_runs: Default::default(),
             air: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("airlight"),
                 size: 16,
@@ -331,7 +380,13 @@ struct DevelopParams {
     target: [[f32; 4]; 3],
     k: f32,
     lens: f32,
-    _pad: [f32; 2],
+    margin: u32,
+    lin_w: u32,
+}
+
+fn next_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// `NrParams` of `denoise.wgsl`.
@@ -506,8 +561,13 @@ impl Gpu {
             self.passes(&[(&p.mip, &[(0, &params), (10, src), (11, &dst)], grid(nw * nh))]);
             levels.push((dst, nw, nh));
         }
-        let mut gpu_raw =
-            GpuRaw { levels, camera: raw.camera.clone(), orientation: raw.orientation, noise: Default::default() };
+        let mut gpu_raw = GpuRaw {
+            levels,
+            camera: raw.camera.clone(),
+            orientation: raw.orientation,
+            noise: Default::default(),
+            id: next_id(),
+        };
         // From level 1 (half size: fast, and demosaic artefacts averaged out);
         // its variances are a quarter of full resolution's.
         let k = 1.min(gpu_raw.levels.len() - 1);
@@ -547,27 +607,32 @@ impl Gpu {
         dev: &Develop,
         profile: Profile,
     ) -> Result<(), String> {
-        self.fits(w as u64 * h as u64 * 16)?;
         // The finest level at least as coarse as one output pixel, as `Pyramid::resample` picks.
         let (sx, sy) = (r.size[0] / w as f32, r.size[1] / h as f32);
         let scale = sx.max(sy);
+        let s = 1.0 / scale;
+        let d = &dev.detail;
+        // The detail tools read around each pixel: develop that far past the edges.
+        let margin = (d.support() * s.min(1.0)).ceil() as u32;
+        let (lw, lh) = (w + 2 * margin, h + 2 * margin);
+        self.fits(lw as u64 * lh as u64 * 16)?;
         let (sin, cos) = r.angle.to_radians().sin_cos();
         let k = (scale.max(1.0).log2().floor() as usize).min(raw.levels.len() - 1);
-        let ((level, lw, lh), (fw, fh)) = (&raw.levels[k], raw.size());
+        let ((level, kw, kh), (fw, fh)) = (&raw.levels[k], raw.size());
         let target = if profile.is_log() { profile.from_rec2020() } else { rec2020_to_rec709() };
+        let gains = raw.camera.gains_for(dev);
+        let exposure = RAW_TO_SCENE * dev.exposure.exp2();
         let params = DevelopParams {
-            sizes: [w, h, *lw, *lh, fw, fh, raw.orientation as u32, profile.is_log() as u32],
+            sizes: [w, h, *kw, *kh, fw, fh, raw.orientation as u32, profile.is_log() as u32],
             region: [r.center[0], r.center[1], sx, sy],
             rotation: [sin, cos, 0.0, 0.0],
-            gains: {
-                let g = raw.camera.gains_for(dev);
-                [g[0], g[1], g[2], 0.0]
-            },
+            gains: [gains[0], gains[1], gains[2], 0.0],
             cam: rows(raw.camera.cam2rec2020),
             target: rows(target),
-            k: RAW_TO_SCENE * dev.exposure.exp2(),
-            lens: dev.detail.lens_vignette / 100.0,
-            _pad: [0.0; 2],
+            k: exposure,
+            lens: d.lens_vignette / 100.0,
+            margin,
+            lin_w: lw,
         };
         self.queue.write_buffer(&self.raw.develop_params, 0, bytemuck::bytes_of(&params));
         let mut oetf = self.raw.oetf.borrow_mut();
@@ -576,45 +641,78 @@ impl Gpu {
         }
         let table = &oetf.as_ref().expect("set above").1;
         let photo = self.photo_slot(slot, w, h);
-        let lin = photo.lin.get_or_init(|| self.buffer(w as u64 * h as u64 * 16, wgpu::BufferUsages::COPY_SRC));
-        let (p, g) = (&self.raw, grid(w * h));
-        self.passes(&[(&p.develop_linear, &[(10, level), (12, &p.develop_params), (15, lin)], g)]);
+        let mut work = photo.work.borrow_mut();
+        if work.as_ref().is_none_or(|x| x.size != (lw, lh)) {
+            let usage = wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
+            let lin = self.buffer(lw as u64 * lh as u64 * 16, usage);
+            *work = Some(Work { size: (lw, lh), margin, lin, scratch: None, after_nr: None, after_tone: None });
+        }
+        let work = work.as_mut().expect("set above");
+        work.margin = margin;
         // The sampled level averaged 4^k pixels: a quarter of the variance each;
         // exposure scales the signal, so the model of Y follows it.
-        let (var, e) = (0.25f32.powi(k as i32), RAW_TO_SCENE * dev.exposure.exp2());
-        let noise = NoiseModel { a: raw.noise.a * var * e, b: raw.noise.b * var * e * e };
-        self.stages(photo, w, h, 1.0 / scale, &dev.detail, noise);
-        self.passes(&[(&p.develop_encode, &[(12, &p.develop_params), (13, &photo.src), (14, table), (15, lin)], g)]);
+        let var = 0.25f32.powi(k as i32);
+        let noise = NoiseModel { a: raw.noise.a * var * exposure, b: raw.noise.b * var * exposure * exposure };
+
+        // Slow stages are cached with everything upstream of them.
+        let mut key = vec![r.center[0], r.center[1], r.size[0], r.size[1], r.angle, w as f32, h as f32];
+        key.extend([k as f32, gains[0], gains[1], gains[2], exposure, d.lens_vignette, margin as f32]);
+        key.extend([d.nr_luma, d.nr_chroma, d.nr_detail]);
+        let nr_key = (raw.id, key.clone());
+        key.extend([d.defringe, d.dehaze, d.local_contrast]);
+        let tone_key = (raw.id, key);
+        let nr_on = d.nr_luma > 0.0 || d.nr_chroma > 0.0;
+        let tone_on = d.defringe > 0.0 || d.dehaze != 0.0 || d.local_contrast > 0.0;
+        let hit = |c: &Option<(Key, wgpu::Buffer)>, key: &Key| c.as_ref().is_some_and(|c| c.0 == *key);
+        let (p, g) = (&self.raw, grid(lw * lh));
+        if tone_on && hit(&work.after_tone, &tone_key) {
+            self.copy(&work.after_tone.as_ref().expect("hit").1, &work.lin);
+        } else {
+            if nr_on && hit(&work.after_nr, &nr_key) {
+                self.copy(&work.after_nr.as_ref().expect("hit").1, &work.lin);
+            } else {
+                self.passes(&[(&p.develop_linear, &[(10, level), (12, &p.develop_params), (15, &work.lin)], g)]);
+                if nr_on {
+                    let lin = work.lin.clone();
+                    self.denoise(&lin, work.scratch(self), lw, lh, s, d, noise);
+                    work.keep(self, Cache::Nr, nr_key);
+                }
+            }
+            if tone_on {
+                let lin = work.lin.clone();
+                if d.defringe > 0.0 {
+                    self.detail_passes(&lin, work.scratch(self), lw, lh, s, d, noise, false);
+                }
+                if d.dehaze != 0.0 || d.local_contrast > 0.0 {
+                    self.tone(&lin, work.scratch(self), lw, lh, s, d);
+                }
+                work.keep(self, Cache::Tone, tone_key);
+            }
+        }
+        if d.sharpen > 0.0 {
+            let lin = work.lin.clone();
+            self.detail_passes(&lin, work.scratch(self), lw, lh, s, d, noise, true);
+        }
+        let encode = [(12, &p.develop_params), (13, &photo.src), (14, table), (15, &work.lin)];
+        self.passes(&[(&p.develop_encode, &encode, grid(w * h))]);
         Ok(())
     }
 
-    /// The detail tools on `lin` (`w` × `h` linear Rec.2020), in the spec's
-    /// order; only those whose amount is not zero run. `scale`: output
-    /// pixels per full-resolution pixel, by which radii shrink.
-    /// `noise`: the model of Y in `lin`.
-    fn stages(&self, photo: &GpuPhoto, w: u32, h: u32, scale: f32, detail: &Detail, noise: NoiseModel) {
-        let lin = photo.lin.get().expect("made by develop_into");
-        let scratch = || {
-            photo
-                .scratch
-                .get_or_init(|| [0, 1].map(|_| self.buffer(w as u64 * h as u64 * 16, wgpu::BufferUsages::empty())))
-        };
-        if detail.nr_luma > 0.0 || detail.nr_chroma > 0.0 {
-            let [sa, sb] = scratch();
-            self.denoise(lin, sa, sb, w, h, scale, detail, noise);
-        }
-        if detail.defringe > 0.0 {
-            let [sa, sb] = scratch();
-            self.detail_passes(lin, [sa, sb], w, h, scale, detail, noise, false);
-        }
-        if detail.dehaze != 0.0 || detail.local_contrast > 0.0 {
-            let [sa, sb] = scratch();
-            self.tone(lin, [sa, sb], w, h, scale, detail);
-        }
-        if detail.sharpen > 0.0 {
-            let [sa, sb] = scratch();
-            self.detail_passes(lin, [sa, sb], w, h, scale, detail, noise, true);
-        }
+    fn copy(&self, from: &wgpu::Buffer, to: &wgpu::Buffer) {
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        enc.copy_buffer_to_buffer(from, 0, to, 0, from.size());
+        self.queue.submit([enc.finish()]);
+    }
+
+    /// The linear result of a develop, without its margin (tests).
+    #[cfg(test)]
+    pub(crate) fn read_lin(&self, photo: &GpuPhoto) -> Vec<[f32; 4]> {
+        let work = photo.work.borrow();
+        let work = work.as_ref().expect("developed");
+        let all: Vec<[f32; 4]> = bytemuck::cast_slice(&self.read_f32(&work.lin)).to_vec();
+        let (m, lw) = (work.margin as usize, work.size.0 as usize);
+        let (w, h) = (photo.width as usize, photo.height as usize);
+        (0..h).flat_map(|y| all[(y + m) * lw + m..][..w].to_vec()).collect()
     }
 
     /// Dehaze and local contrast (`tone.wgsl`): guided filters of 30 and
@@ -709,14 +807,14 @@ impl Gpu {
     fn denoise(
         &self,
         lin: &wgpu::Buffer,
-        sa: &wgpu::Buffer,
-        sb: &wgpu::Buffer,
+        [sa, sb]: [&wgpu::Buffer; 2],
         w: u32,
         h: u32,
         scale: f32,
         detail: &Detail,
         noise: NoiseModel,
     ) {
+        self.raw.nr_runs.set(self.raw.nr_runs.get() + 1);
         let radius = |full: f32| (full * scale.min(1.0)).round().max(1.0) as i32;
         let params = |step: i32| {
             self.storage(bytemuck::bytes_of(&NrParams {
@@ -1195,7 +1293,7 @@ mod tests {
         raw.noise = NOISE;
         let dev = Develop { detail, ..Develop::default() };
         let photo = gpu.develop(&raw, &whole(w, h), w, h, &dev, Profile::Standard).unwrap();
-        bytemuck::cast_slice(&gpu.read_f32(photo.lin.get().unwrap())).to_vec()
+        gpu.read_lin(&photo)
     }
 
     fn luma(p: &[f32; 4]) -> f32 {
@@ -1341,7 +1439,7 @@ mod tests {
         raw.noise = crate::noise::NoiseModel { a: 1e-6, b: 1e-8 };
         let dev = Develop { detail, ..Develop::default() };
         let photo = gpu.develop(&raw, &whole(w, h), w, h, &dev, Profile::Standard).unwrap();
-        bytemuck::cast_slice(&gpu.read_f32(photo.lin.get().unwrap())).to_vec()
+        gpu.read_lin(&photo)
     }
 
     /// A step from 0.1 to 0.5 at x = 32, blurred by a Gaussian of σ 0.8 px
@@ -1494,6 +1592,72 @@ mod tests {
             (range(Detail::default()), range(Detail { local_contrast: 100.0, ..Detail::default() }));
         let slack = 0.05 * (hi - lo);
         assert!(a >= lo - slack && b <= hi + slack, "{a}..{b} for a {lo}..{hi} step");
+    }
+
+    fn all_tools() -> Detail {
+        Detail {
+            nr_luma: 60.0,
+            nr_chroma: 60.0,
+            sharpen: 60.0,
+            defringe: 50.0,
+            local_contrast: 50.0,
+            ..Detail::default()
+        }
+    }
+
+    /// Changing only sharpening re-runs sharpening, not noise reduction.
+    #[test]
+    fn cached_stage_is_reused() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (64, 48);
+        let raw = rgb_raw(&gpu, w, h, texture(w, h), 1, Camera::neutral());
+        let mut slot = None;
+        let mut dev = Develop { detail: all_tools(), ..Develop::default() };
+        gpu.develop_into(&mut slot, &raw, &whole(w, h), w, h, &dev, Profile::Standard).unwrap();
+        let runs = gpu.raw.nr_runs.get();
+        dev.detail.sharpen = 30.0;
+        gpu.develop_into(&mut slot, &raw, &whole(w, h), w, h, &dev, Profile::Standard).unwrap();
+        assert_eq!(gpu.raw.nr_runs.get(), runs, "noise reduction ran again");
+        // And the cached result is the same as a fresh one.
+        let fresh = gpu.read_photo(&gpu.develop(&raw, &whole(w, h), w, h, &dev, Profile::Standard).unwrap());
+        assert_eq!(gpu.read_photo(slot.as_ref().unwrap()).pixels, fresh.pixels);
+        dev.exposure = 0.5;
+        gpu.develop_into(&mut slot, &raw, &whole(w, h), w, h, &dev, Profile::Standard).unwrap();
+        assert_eq!(gpu.raw.nr_runs.get(), runs + 2, "an exposure change re-runs everything");
+    }
+
+    /// A 1:1 view of part of the photo is that part of the full develop: the
+    /// detail tools see past the view's edges (no seams when zoomed).
+    #[test]
+    fn view_matches_fit_crop() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (160, 120);
+        let mut n = crate::noise::tests::normals(5);
+        let px: Vec<[f32; 3]> = texture(w, h)
+            .into_iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let edge = if (i as u32 % w) < 70 { 0.6 } else { 1.0 };
+                p.map(|v| v * edge + 0.01 * n())
+            })
+            .collect();
+        let mut raw = rgb_raw(&gpu, w, h, px, 1, Camera::neutral());
+        raw.noise = NOISE;
+        let dev = Develop { detail: all_tools(), ..Develop::default() };
+        let full = gpu.read_photo(&gpu.develop(&raw, &whole(w, h), w, h, &dev, Profile::Standard).unwrap());
+        let (x0, y0, vw, vh) = (50u32, 30u32, 48u32, 40u32);
+        let view = Region {
+            center: [x0 as f32 + vw as f32 / 2.0, y0 as f32 + vh as f32 / 2.0],
+            size: [vw as f32, vh as f32],
+            angle: 0.0,
+        };
+        let part = gpu.read_photo(&gpu.develop(&raw, &view, vw, vh, &dev, Profile::Standard).unwrap());
+        for y in 0..vh {
+            for x in 0..vw {
+                let (a, b) = (part.pixels[(y * vw + x) as usize], full.pixels[((y + y0) * w + x + x0) as usize]);
+                assert!((0..3).all(|c| (a[c] - b[c]).abs() < 2e-3), "({x}, {y}): {a:?} vs {b:?}");
+            }
+        }
     }
 
     /// On a real file (RAWVALLEY_RAW): the estimated noise model, and what

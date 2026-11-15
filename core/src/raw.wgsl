@@ -481,6 +481,10 @@ struct DevelopParams {
     k: f32,
     // Lens vignetting compensation, −1…1.
     lens: f32,
+    // `lin` holds the output plus `margin` pixels all round (the detail
+    // tools' reach), rows of `lin_w`.
+    margin: u32,
+    lin_w: u32,
 }
 
 @group(0) @binding(12) var<storage, read> d: DevelopParams;
@@ -556,8 +560,9 @@ fn gamut_compress(c: vec3<f32>) -> vec3<f32> {
 fn develop_linear(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
                   @builtin(local_invocation_index) lid: u32) {
     let i = index(wg, n, lid);
-    if i >= d.out_w * d.out_h { return; }
-    let dd = (vec2<f32>(f32(i % d.out_w), f32(i / d.out_w)) + 0.5 - 0.5 * vec2<f32>(f32(d.out_w), f32(d.out_h))) * d.region.zw;
+    if i >= d.lin_w * (d.out_h + 2u * d.margin) { return; }
+    let o = vec2<f32>(f32(i % d.lin_w), f32(i / d.lin_w)) - f32(d.margin);
+    let dd = (o + 0.5 - 0.5 * vec2<f32>(f32(d.out_w), f32(d.out_h))) * d.region.zw;
     let r = vec2<f32>(d.rotation.y * dd.x - d.rotation.x * dd.y, d.rotation.x * dd.x + d.rotation.y * dd.y);
     let s = sensor(d.region.xy + r);
     let u = s * vec2<f32>(f32(d.lw) / f32(d.fw), f32(d.lh) / f32(d.fh)) - 0.5;
@@ -578,7 +583,7 @@ fn develop_encode(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups)
                   @builtin(local_invocation_index) lid: u32) {
     let i = index(wg, n, lid);
     if i >= d.out_w * d.out_h { return; }
-    let wide = lin[i].xyz;
+    let wide = lin[(i / d.out_w + d.margin) * d.lin_w + i % d.out_w + d.margin].xyz;
     var out: vec3<f32>;
     if d.log == 1u {
         let c = wide * d.to_out;

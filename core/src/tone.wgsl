@@ -2,8 +2,9 @@
 // Dehaze: dark channel prior (He et al. 2009) with the transmission refined
 // by a guided filter on Y (He et al. 2010); the airlight is the brightest
 // dark-channel value (a grey haze). Negative amounts blend towards it.
-// Local contrast: the same guided filter splits log Y into an edge-aware
-// base and its detail; the detail is boosted, edges are not (no halos).
+// Local contrast: the same guided filter splits log Y into a base and its
+// detail; the detail is boosted, weighted by (1 − ā)² so strong edges (ā near
+// 1 over the filter window, where halos would form) are left alone.
 
 struct ToneParams {
     w: u32,
@@ -14,7 +15,7 @@ struct ToneParams {
     eps: f32,
     // Dehaze: haze removed (0..0.95) or, negative, haze added (0..−0.5).
     omega: f32,
-    // Local contrast: detail gain − 1.
+    // Local contrast: detail gain (0..2).
     boost: f32,
     _pad: f32,
 }
@@ -160,6 +161,9 @@ fn lc_apply(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: ve
     let c = lin[i].xyz;
     let l = log_y(c);
     let base = sa[i].x * l + sa[i].y;
-    let gain = exp((l - base) * p.boost);
+    let flat = 1.0 - clamp(sa[i].x, 0.0, 1.0);
+    let x = clamp((l - base) * p.boost * flat * flat, -1.0, 1.0);
+    // exp(x − x²/2): E ≈ 1 for symmetric detail, so the linear mean holds.
+    let gain = exp(x - 0.5 * x * x);
     lin[i] = vec4<f32>(c * gain, lin[i].w);
 }

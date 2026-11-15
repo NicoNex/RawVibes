@@ -1007,8 +1007,14 @@ impl App {
         ui.kelvin.adj.set_value(k as f64);
         ui.tint.adj.set_value(t as f64);
         ui.exposure.adj.set_value(self.develop.exposure as f64);
+        let mut d = self.develop.detail;
         for (s, field) in &ui.detail {
-            s.adj.set_value(*field(&mut self.develop.detail.clone()) as f64);
+            let v: *const f32 = field(&mut d);
+            s.adj.set_value(unsafe { *v } as f64);
+            // NR detail only restores what luminance NR removed: idle without it.
+            if std::ptr::eq(v, &d.nr_detail) {
+                s.root.set_sensitive(d.nr_luma > 0.0);
+            }
         }
         ui.preset.set_selected(preset);
         ui.syncing.set(false);

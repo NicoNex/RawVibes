@@ -727,7 +727,7 @@ impl Gpu {
                 window: (7.0 * s).round().max(1.0) as i32,
                 eps,
                 omega: if detail.dehaze > 0.0 { 0.95 * detail.dehaze / 100.0 } else { 0.5 * detail.dehaze / 100.0 },
-                boost: detail.local_contrast / 100.0,
+                boost: detail.local_contrast / 50.0,
                 _pad: 0.0,
             }))
         };
@@ -750,7 +750,7 @@ impl Gpu {
             ]);
         }
         if detail.local_contrast > 0.0 {
-            let q = params(20.0, 0.01);
+            let q = params(20.0, 0.25);
             let (boxes, ab, own) = ([(0, &q), (2, sa), (3, sb)], [(0, &q), (2, sa)], [(0, &q), (1, lin), (2, sa)]);
             self.passes(&[
                 (&p.lc_prep, &own, g),

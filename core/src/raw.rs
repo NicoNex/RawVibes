@@ -572,7 +572,7 @@ impl Gpu {
     }
 
     /// Records into the open batch, or into an encoder submitted at once.
-    fn record(&self, f: impl FnOnce(&mut wgpu::CommandEncoder)) {
+    pub(crate) fn record(&self, f: impl FnOnce(&mut wgpu::CommandEncoder)) {
         let mut batch = self.raw.batch.borrow_mut();
         match batch.as_mut() {
             Some(enc) => f(enc),

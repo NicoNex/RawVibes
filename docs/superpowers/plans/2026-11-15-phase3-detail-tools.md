@@ -60,8 +60,8 @@ fluidity, Algorithms; UI).
 - `fn stages(&self, slot, scale: f32, detail: &Detail)` in `raw.rs`: runs only the stages whose amount is non-zero; `scale` = output pixels per full-resolution pixel.
 - Zoom margin: `pub fn support(detail: &Detail) -> f32` (full-resolution pixels), used by the worker to grow the view region and crop after encode.
 
-- [ ] **Step 1: Failing tests** `split_develop_matches_phase2` (every phase-2 develop test still passes through linear + encode with `Detail::default()`), `neutral_detail_is_identity` (bit-exact), `sidecar_v1_loads_with_neutral_detail`.
-- [ ] **Step 2:** FAIL; implement; PASS; `make check`; commit `Linear stage framework for detail tools`.
+- [x] **Step 1: Failing tests** `split_develop_matches_phase2` (every phase-2 develop test still passes through linear + encode with `Detail::default()`), `neutral_detail_is_identity` (bit-exact), `sidecar_v1_loads_with_neutral_detail`.
+- [x] **Step 2:** FAIL; implement; PASS; `make check`; commit `Linear stage framework for detail tools`.
 
 ### Task 2: Lens vignetting and creative vignette
 
@@ -69,8 +69,8 @@ fluidity, Algorithms; UI).
 
 **Interfaces:** lens: gain `1 + a·r²·(1 + r²)` with `r` the distance from the sensor centre normalised to the half-diagonal (a ∈ −1…1 from the slider ±100); creative: smoothstep falloff from `mid` with `roundness` (1 = circle, 0 = frame aspect) and `feather`, multiplied in display space after the looks.
 
-- [ ] **Step 1: Failing tests** `lens_vignette_zero_is_identity`, `lens_vignette_is_radially_symmetric`, `creative_vignette_not_in_baked_lut` (bake with vignette 50 equals bake with 0).
-- [ ] **Step 2:** FAIL; implement; PASS; UI: Develop · Lens vignetting (one slider), Finish · Vignette (amount, midpoint, roundness, feather); Italian strings; commit `Lens and creative vignetting`.
+- [x] **Step 1: Failing tests** `lens_vignette_zero_is_identity`, `lens_vignette_is_radially_symmetric`, `creative_vignette_not_in_baked_lut` (bake with vignette 50 equals bake with 0).
+- [x] **Step 2:** FAIL; implement; PASS; UI: Develop · Lens vignetting (one slider), Finish · Vignette (amount, midpoint, roundness, feather); Italian strings; commit `Lens and creative vignetting`.
 
 ### Task 3: Noise reduction (classic)
 
@@ -82,8 +82,8 @@ fluidity, Algorithms; UI).
 - Chrominance: opponent space (Y, Cb, Cr linear), edge-aware à-trous wavelets (5 levels, B3-spline, Y-guided weights), shrinkage by `nr_chroma`.
 - Downscaled previews: σ scaled by `sqrt(scale)` (box averaging already removed noise).
 
-- [ ] **Step 1: Failing tests** `nr_preserves_the_mean` (synthetic Poisson–Gaussian flat field: mean within 0.5%), `nr_reduces_noise` (std ≥ 3× lower at 100), `nr_keeps_edges` (step edge 10–90% rise width grows ≤ 1 px), `noise_model_recovers_synthetic_parameters` (a, b within 15%), `chroma_nr_leaves_luminance` (Y unchanged within 1e-3).
-- [ ] **Step 2:** FAIL; implement; PASS; sample test prints the S9 model and timing at 2048 px; UI: Develop · Noise reduction (Luminance, Chrominance, Detail); Italian strings; commit `Classic noise reduction`.
+- [x] **Step 1: Failing tests** `nr_preserves_the_mean` (synthetic Poisson–Gaussian flat field: mean within 0.5%), `nr_reduces_noise` (std ≥ 3× lower at 100), `nr_keeps_edges` (step edge 10–90% rise width grows ≤ 1 px), `noise_model_recovers_synthetic_parameters` (a, b within 15%), `chroma_nr_leaves_luminance` (Y unchanged within 1e-3).
+- [x] **Step 2:** FAIL; implement; PASS; sample test prints the S9 model and timing at 2048 px; UI: Develop · Noise reduction (Luminance, Chrominance, Detail); Italian strings; commit `Classic noise reduction`.
 
 ### Task 4: Capture sharpening and defringe
 
@@ -93,8 +93,8 @@ fluidity, Algorithms; UI).
 - Sharpening: Richardson–Lucy, Gaussian PSF of `sharpen_radius` (scaled), iterations `1 + sharpen/20`, on luminance only, blended by a detail mask (local contrast of Y above `noise σ · 4` → 1, below `σ · 2` → 0) so flat areas and noise are left alone.
 - Defringe: pixels within 3 px of an edge (Sobel on Y above threshold) whose hue lies in the purple (270–330°) or green (100–160°) bands are desaturated towards the 7×7 average chroma, by `defringe`.
 
-- [ ] **Step 1: Failing tests** `sharpening_raises_edge_acutance` (blurred step: 10–90% width shrinks ≥ 25% at 100), `sharpening_leaves_flat_noise` (flat noisy field std grows ≤ 5%), `sharpening_overshoot_is_bounded` (≤ 5%), `defringe_cleans_purple_edges_only` (purple fringe on an edge loses ≥ 70% chroma; a purple flat patch keeps ≥ 95%).
-- [ ] **Step 2:** FAIL; implement; PASS; UI: Develop · Detail (Sharpening, Radius, Defringe); Italian strings; commit `Capture sharpening and defringe`.
+- [x] **Step 1: Failing tests** `sharpening_raises_edge_acutance` (blurred step: 10–90% width shrinks ≥ 25% at 100), `sharpening_leaves_flat_noise` (flat noisy field std grows ≤ 5%), `sharpening_overshoot_is_bounded` (≤ 5%), `defringe_cleans_purple_edges_only` (purple fringe on an edge loses ≥ 70% chroma; a purple flat patch keeps ≥ 95%).
+- [x] **Step 2:** FAIL; implement; PASS; UI: Develop · Detail (Sharpening, Radius, Defringe); Italian strings; commit `Capture sharpening and defringe`.
 
 ### Task 5: Dehaze, local contrast, soft light
 
@@ -105,8 +105,8 @@ fluidity, Algorithms; UI).
 - Local contrast: local Laplacian approximation (Aubry et al. fast local Laplacian, 4 intensity samples, 6 pyramid levels) on log Y, detail boost `1 + local_contrast/100`, colour ratios kept.
 - Soft light: RawTherapee soft light of the image with itself on display-referred Y (`2ab + a²(1−2b)`), strength `soft_light/100`.
 
-- [ ] **Step 1: Failing tests** `dehaze_zero_is_identity`, `dehaze_raises_contrast_of_hazy_gradient` (synthetic haze: std up), `negative_dehaze_lowers_contrast`, `local_contrast_keeps_the_mean` (Y mean within 1%), `local_contrast_has_no_halo` (step edge overshoot ≤ 5%), `soft_light_zero_is_identity`, `soft_light_raises_midtone_contrast`.
-- [ ] **Step 2:** FAIL; implement; PASS; UI: Develop · Dehaze (−100…100), Local contrast, Soft light; Italian strings; commit `Dehaze, local contrast and soft light`.
+- [x] **Step 1: Failing tests** `dehaze_zero_is_identity`, `dehaze_raises_contrast_of_hazy_gradient` (synthetic haze: std up), `negative_dehaze_lowers_contrast`, `local_contrast_keeps_the_mean` (Y mean within 1%), `local_contrast_has_no_halo` (step edge overshoot ≤ 5%), `soft_light_zero_is_identity`, `soft_light_raises_midtone_contrast`.
+- [x] **Step 2:** FAIL; implement; PASS; UI: Develop · Dehaze (−100…100), Local contrast, Soft light; Italian strings; commit `Dehaze, local contrast and soft light`.
 
 ### Task 6: Caching, zoom margins, drafts
 
@@ -114,9 +114,16 @@ fluidity, Algorithms; UI).
 
 **Interfaces:** per slot (`raw_fit`, `view`), cache the linear buffer after noise reduction and after local contrast, keyed by (region, size, develop up to that stage); a WB or exposure change re-runs everything, a sharpening change only from sharpening on. Views grow by `support()` and crop it. Fast drafts halve NR search and skip local contrast's finest level.
 
-- [ ] **Step 1: Failing tests** `cached_stage_is_reused` (second develop with only `sharpen` changed runs no NR pass — counted by a debug counter), `view_matches_fit_crop` (a 1:1 view of a region equals the full-resolution develop cropped, within 2e-3, with detail tools on), `fit_and_zoom_agree_statistically` (sample RAW, NR 50: noise std of a flat patch within 25% between fit and 100%).
-- [ ] **Step 2:** FAIL; implement; PASS; sample test prints drag-frame time at 2048 px with all tools on (target ≤ 16 ms Balanced); commit `Detail stage caching and zoom margins`.
+- [x] **Step 1: Failing tests** `cached_stage_is_reused` (second develop with only `sharpen` changed runs no NR pass — counted by a debug counter), `view_matches_fit_crop` (a 1:1 view of a region equals the full-resolution develop cropped, within 2e-3, with detail tools on), `fit_and_zoom_agree_statistically` (sample RAW, NR 50: noise std of a flat patch within 25% between fit and 100%).
+- [x] **Step 2:** FAIL; implement; PASS; sample test prints drag-frame time at 2048 px with all tools on (target ≤ 16 ms Balanced); commit `Detail stage caching and zoom margins`.
 
 ### Phase close
 
-- [ ] `/code-review high` then `/simplify` on the phase diff, fix, `make check`, commit; merge after the author's OK (GUI check of every section).
+- [x] `/code-review high` then `/simplify` on the phase diff, fix, `make check`, commit; merge after the author's OK (GUI check of every section).
+
+### Closed 2026-11-15
+
+Deferred: local contrast shares the tone cache with defringe and dehaze, so a
+local-contrast drag re-runs both (≈ 7 ms vs 3.5 ms per 1536 px frame on an RTX
+4070 Ti SUPER). Its own cache costs one more full linear buffer (~100 MB at a
+100% view); decide later.

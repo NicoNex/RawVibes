@@ -503,8 +503,8 @@ struct Worker {
 #[cfg(feature = "ai")]
 #[derive(Default)]
 struct Ai {
-    /// The Bayer network, loaded on first use (or why it could not be).
-    net: Option<Result<crate::ai::UNet, String>>,
+    /// The Bayer and linear networks, each loaded on first use (or why it could not be).
+    nets: [Option<Result<crate::ai::UNet, String>>; 2],
     /// The loaded RAW's load generation and CPU data.
     generation: u64,
     data: Option<Arc<RawData>>,
@@ -566,9 +566,10 @@ impl Worker {
         if raw.ai.is_some() || ai.run.is_some() || ai.failed {
             return;
         }
-        let net = ai.net.get_or_insert_with(|| {
+        let variant = crate::ai::variant(data);
+        let net = ai.nets[variant as usize].get_or_insert_with(|| {
             let dir = crate::ai::models_dir().ok_or("AI models not installed")?;
-            Ok(crate::ai::UNet::new(gpu, &crate::ai::Weights::load(&dir, crate::ai::Variant::Bayer)?))
+            Ok(crate::ai::UNet::new(gpu, &crate::ai::Weights::load(&dir, variant)?))
         });
         let started = net.as_ref().map_err(Clone::clone).and_then(|_| gpu.ai_start(data, gpu.ai_tile_edge()?));
         match started {
@@ -588,9 +589,8 @@ impl Worker {
         #[cfg(feature = "ai")]
         {
             let ai = &mut self.ai;
-            let (Some(run), Some(Ok(net)), Some(raw), Some(data)) = (&mut ai.run, &ai.net, &mut self.raw, &ai.data) else {
-                return false;
-            };
+            let (Some(run), Some(raw), Some(data)) = (&mut ai.run, &mut self.raw, &ai.data) else { return false };
+            let Some(Ok(net)) = &ai.nets[run.variant as usize] else { return false };
             if let Err(e) = gpu.ai_step(run, net) {
                 (ai.run, ai.failed) = (None, true);
                 notify(Done::AiFailed(ai.generation, e));
@@ -637,7 +637,7 @@ impl Worker {
                     self.raw = Some(raw);
                     #[cfg(feature = "ai")]
                     {
-                        self.ai = Ai { net: self.ai.net.take(), generation, data: Some(data.clone()), ..Ai::default() };
+                        self.ai = Ai { nets: std::mem::take(&mut self.ai.nets), generation, data: Some(data.clone()), ..Ai::default() };
                     }
                     // The CPU copy only serves a CA reload: none kept when CA cannot apply.
                     let data = crate::ca::applies(&data).then_some(data);

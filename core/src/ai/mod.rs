@@ -5,6 +5,6 @@ mod tile;
 mod unet;
 mod weights;
 
-pub(crate) use tile::AiRun;
+pub(crate) use tile::{AiRun, variant};
 pub use unet::UNet;
 pub use weights::{Tensor, Variant, Weights, models_dir};

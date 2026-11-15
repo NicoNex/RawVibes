@@ -449,24 +449,29 @@ fn mip(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u3
 }
 
 // ------------------------------------------------------------------ AI denoise
-// One tile of the RawNIND UtNet2 Bayer net (ai/tile.rs): `ai_pack` cuts it
-// from the reconstructed mosaic in `out`, un-balanced and RGGB-packed with
-// mirror padding; `ai_gain` matches the net's mean to its input's;
-// `ai_unpack` writes the tile's core into mip level 0, balanced again.
+// One tile of a RawNIND UtNet2 net (ai/tile.rs). Bayer (`s` = 2): `ai_pack`
+// cuts it from the reconstructed mosaic in `out`, un-balanced and
+// RGGB-packed; linear (`s` = 1): from the un-balanced Rec.2020 pixels in
+// `out` (RGB interleaved). Mirror padding at the edges. `ai_gain` matches
+// the net's mean to its input's; `ai_unpack` writes the tile's core into
+// mip level 0 as balanced camera RGB.
 
 struct AiParams {
-    // First R photosite of the RGGB-aligned area, and its packed size.
+    // First R photosite of the RGGB-aligned area (Bayer), and the size in tile pixels.
     ox: u32,
     oy: u32,
     pw: u32,
     ph: u32,
-    // Packed position of the tile (may be negative) and its edge.
+    // Position of the tile in tile pixels (may be negative), its edge, and
+    // full-resolution pixels per tile pixel (2 Bayer, 1 linear).
     tx: i32,
     ty: i32,
     t: u32,
-    _pad: u32,
-    // The tile's core in packed pixels: x0, y0, x1, y1 (exclusive).
+    s: u32,
+    // The tile's core in tile pixels: x0, y0, x1, y1 (exclusive).
     core: vec4<u32>,
+    // The net's output → balanced camera RGB (rows).
+    to_cam: mat3x3<f32>,
 }
 
 @group(0) @binding(12) var<storage, read> ai: AiParams;
@@ -481,16 +486,24 @@ fn mirror(v: i32, n: u32) -> u32 {
     return u32(clamp(select(r, 2 * m - r, r > m), 0, m));
 }
 
+/// Input channels: R, G (row 0), G (row 1), B for Bayer; R, G, B linear.
+fn ai_channels() -> u32 {
+    return select(3u, 4u, ai.s == 2u);
+}
+
 @compute @workgroup_size(256)
 fn ai_pack(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
            @builtin(local_invocation_index) lid: u32) {
     let i = index(wg, n, lid);
     let tt = ai.t * ai.t;
-    if i >= 4u * tt { return; }
+    if i >= ai_channels() * tt { return; }
     let c = i / tt;
     let px = mirror(ai.tx + i32(i % ai.t), ai.pw);
     let py = mirror(ai.ty + i32((i % tt) / ai.t), ai.ph);
-    // Channels R, G (row 0), G (row 1), B.
+    if ai.s == 1u {
+        tensor[i] = out[(py * ai.pw + px) * 3u + c];
+        return;
+    }
     let x = ai.ox + 2u * px + select(0u, 1u, c == 1u || c == 3u);
     let y = ai.oy + 2u * py + select(0u, 1u, c >= 2u);
     tensor[i] = out[y * p.width + x] / p.clip[colour(x, y)];
@@ -502,10 +515,13 @@ var<workgroup> sums: array<vec2<f32>, 256>;
 @compute @workgroup_size(256)
 fn ai_gain(@builtin(local_invocation_index) lid: u32) {
     let tt = ai.t * ai.t;
-    let nout = 12u * tt;
+    let nin = ai_channels() * tt;
+    let nout = 3u * tt * ai.s * ai.s;
     var s = vec2<f32>(0.0);
-    // Each G plane at half weight: both means are then over R, G and B once.
-    for (var i = lid; i < 4u * tt; i += 256u) { s.x += tensor[i] * select(1.0, 0.5, i / tt == 1u || i / tt == 2u); }
+    // Bayer: each G plane at half weight, so both means are over R, G and B once.
+    for (var i = lid; i < nin; i += 256u) {
+        s.x += tensor[i] * select(1.0, 0.5, nin == 4u * tt && (i / tt == 1u || i / tt == 2u));
+    }
     for (var i = lid; i < nout; i += 256u) { s.y += net[i]; }
     sums[lid] = s;
     workgroupBarrier();
@@ -524,13 +540,16 @@ fn ai_unpack(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: v
              @builtin(local_invocation_index) lid: u32) {
     let i = index(wg, n, lid);
     if i >= p.crop.z * p.crop.w { return; }
-    // Full-resolution position in the aligned area (the odd edge row/column repeats).
-    let qx = u32(clamp(i32(p.crop.x + i % p.crop.z) - i32(ai.ox), 0, i32(2u * ai.pw) - 1));
-    let qy = u32(clamp(i32(p.crop.y + i / p.crop.z) - i32(ai.oy), 0, i32(2u * ai.ph) - 1));
-    if qx / 2u < ai.core.x || qx / 2u >= ai.core.z || qy / 2u < ai.core.y || qy / 2u >= ai.core.w { return; }
-    let e = 2u * ai.t;
-    let j = u32(i32(qy) - 2 * ai.ty) * e + u32(i32(qx) - 2 * ai.tx);
-    let rgb = vec3<f32>(net[j], net[e * e + j], net[2u * e * e + j]) * gain[0] * p.clip.xyz;
+    // Full-resolution position in the aligned area (Bayer: the odd edge row/column repeats).
+    let qx = u32(clamp(i32(p.crop.x + i % p.crop.z) - i32(ai.ox), 0, i32(ai.s * ai.pw) - 1));
+    let qy = u32(clamp(i32(p.crop.y + i / p.crop.z) - i32(ai.oy), 0, i32(ai.s * ai.ph) - 1));
+    let tx = qx / ai.s;
+    let ty = qy / ai.s;
+    if tx < ai.core.x || tx >= ai.core.z || ty < ai.core.y || ty >= ai.core.w { return; }
+    let e = ai.s * ai.t;
+    let s = i32(ai.s);
+    let j = u32(i32(qy) - s * ai.ty) * e + u32(i32(qx) - s * ai.tx);
+    let rgb = (vec3<f32>(net[j], net[e * e + j], net[2u * e * e + j]) * gain[0]) * ai.to_cam;
     // f16 tops out at 65504; min/max also drop a NaN.
     level[i] = pack(min(rgb, vec3<f32>(65504.0)));
 }

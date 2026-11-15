@@ -1,14 +1,18 @@
-//! A whole RAW through the Bayer UtNet2, tile by tile (passes `ai_*` of
-//! `raw.wgsl`): overlapping tiles, each core written back into the camera-RGB
-//! level 0 that `load_raw` would otherwise fill with RCD.
+//! A whole RAW through UtNet2, tile by tile (passes `ai_*` of `raw.wgsl`):
+//! overlapping tiles, each core written back into the camera-RGB level 0
+//! that `load_raw` would otherwise fill. Bayer sensors go through the Bayer
+//! net (its own demosaic, replacing RCD); others through the linear net, on
+//! their demosaiced pixels in linear Rec.2020 without white balance.
+
+use rayon::prelude::*;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::UNet;
+use super::{UNet, Variant};
 use crate::gpu::Gpu;
 use crate::raw::{Pixels, RawData, grid};
 
-/// Packed pixels each tile reads beyond its core on every side.
+/// Tile pixels (packed for Bayer) each tile reads beyond its core on every side.
 const OVERLAP: u32 = 32;
 
 /// `AiParams` of `raw.wgsl`.
@@ -22,8 +26,9 @@ struct AiParams {
     tx: i32,
     ty: i32,
     t: u32,
-    _pad: u32,
+    s: u32,
     core: [u32; 4],
+    to_cam: [[f32; 4]; 3],
 }
 
 /// The largest tile edge (packed pixels) whose biggest UtNet2 buffer, the
@@ -33,6 +38,11 @@ pub(crate) fn tile_edge(max_binding: u64) -> Result<u32, String> {
         .into_iter()
         .find(|&t| 64 * 4 * (t as u64).pow(2) <= max_binding)
         .ok_or_else(|| "GPU too small for AI denoise".to_string())
+}
+
+/// The net for `raw`'s sensor.
+pub(crate) fn variant(raw: &RawData) -> Variant {
+    if matches!(raw.pixels, Pixels::Bayer(_)) { Variant::Bayer } else { Variant::Linear }
 }
 
 /// First (x, y) of the RGGB-aligned area: R there, B one step down-right.
@@ -46,10 +56,12 @@ fn rggb_origin(raw: &RawData) -> Option<(u32, u32)> {
 /// A tiled denoise under way, one tile per [`Gpu::ai_step`]: the worker
 /// handles other jobs between tiles.
 pub(crate) struct AiRun {
+    pub(crate) variant: Variant,
     /// The result, complete once [`AiRun::done`].
     pub(crate) level0: wgpu::Buffer,
-    /// The reconstructed mosaic, the `RawParams`, one tile's input and its gain.
-    mosaic: wgpu::Buffer,
+    /// What the net reads (the reconstructed mosaic, or un-balanced
+    /// Rec.2020 pixels), the `RawParams`, one tile's input and its gain.
+    source: wgpu::Buffer,
     params: wgpu::Buffer,
     tensor: wgpu::Buffer,
     gain: wgpu::Buffer,
@@ -73,7 +85,7 @@ impl AiRun {
 }
 
 impl Gpu {
-    /// `raw` denoised by `net` (the Bayer variant) into a level 0 laid out
+    /// `raw` denoised by `net` (the [`variant`] for it) into a level 0 laid out
     /// as `load_raw`'s, or `None` when `cancel` was set. `progress` gets
     /// the fraction done after each tile.
     pub fn ai_denoise(
@@ -112,22 +124,44 @@ impl Gpu {
         }
     }
 
-    /// Uploads and reconstructs `raw`'s mosaic for a run with `t`-pixel tiles.
+    /// Uploads what the net reads of `raw` for a run with `t`-pixel tiles.
     pub(crate) fn ai_start(&self, raw: &RawData, t: u32) -> Result<AiRun, String> {
-        let Pixels::Bayer(mosaic) = &raw.pixels else { return Err("AI denoise needs a Bayer sensor".into()) };
-        let (ox, oy) = rggb_origin(raw).ok_or("AI denoise needs a Bayer sensor")?;
         let [_, _, cw, ch] = raw.crop;
         self.fits(cw as u64 * ch as u64 * 8)?;
-        let (mosaic, _) = self.reconstruct_keep(raw, mosaic)?;
-        let (pw, ph) = ((raw.width - ox) / 2, (raw.height - oy) / 2);
+        let g = raw.camera.as_shot;
+        let diag = |m: [[f32; 3]; 3]| std::array::from_fn(|r| [m[r][0] * g[r], m[r][1] * g[r], m[r][2] * g[r], 0.0]);
+        let (source, ox, oy, s, to_cam) = match &raw.pixels {
+            Pixels::Bayer(mosaic) => {
+                let (ox, oy) = rggb_origin(raw).ok_or("AI denoise needs an RGGB-type Bayer sensor")?;
+                let id = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+                (self.reconstruct_keep(raw, mosaic)?.0, ox, oy, 2, diag(id))
+            }
+            Pixels::Rgb(px) => {
+                self.fits(px.len() as u64 * 12)?;
+                // The linear net was trained on Rec.2020 without white balance.
+                let m = raw.camera.cam2rec2020;
+                let lin: Vec<[f32; 3]> = px
+                    .par_iter()
+                    .map(|p| {
+                        let c = [p[0] / g[0], p[1] / g[1], p[2] / g[2]];
+                        m.map(|r| r[0] * c[0] + r[1] * c[1] + r[2] * c[2])
+                    })
+                    .collect();
+                let back = rawler::imgop::matrix::pseudo_inverse(m);
+                (self.storage(bytemuck::cast_slice(&lin)), 0, 0, 1, diag(back))
+            }
+        };
+        let (pw, ph) = ((raw.width - ox) / s, (raw.height - oy) / s);
         let step = t - 2 * OVERLAP;
+        let channels = if s == 2 { 4 } else { 3 };
         Ok(AiRun {
+            variant: variant(raw),
             level0: self.buffer(cw as u64 * ch as u64 * 8, wgpu::BufferUsages::COPY_SRC),
-            mosaic,
+            source,
             params: self.raw_params(raw, [0; 4]),
-            tensor: self.buffer(4 * t as u64 * t as u64 * 4, wgpu::BufferUsages::empty()),
+            tensor: self.buffer(channels * t as u64 * t as u64 * 4, wgpu::BufferUsages::empty()),
             gain: self.buffer(4, wgpu::BufferUsages::empty()),
-            tile: AiParams { ox, oy, pw, ph, tx: 0, ty: 0, t, _pad: 0, core: [0; 4] },
+            tile: AiParams { ox, oy, pw, ph, tx: 0, ty: 0, t, s, core: [0; 4], to_cam },
             pixels: cw * ch,
             tiles: (pw.div_ceil(step), ph.div_ceil(step)),
             next: 0,
@@ -148,7 +182,8 @@ impl Gpu {
         };
         let ai = self.storage(bytemuck::bytes_of(&tile));
         let (p, r) = (&self.raw, &*run);
-        self.passes(&[(&p.ai_pack, &[(0, &r.params), (2, &r.mosaic), (12, &ai), (13, &r.tensor)], grid(4 * t * t))]);
+        let n = (r.tensor.size() / 4) as u32;
+        self.passes(&[(&p.ai_pack, &[(0, &r.params), (2, &r.source), (12, &ai), (13, &r.tensor)], grid(n))]);
         let out = net.run(self, &r.tensor, t, t);
         self.passes(&[
             (&p.ai_gain, &[(12, &ai), (13, &r.tensor), (14, &out), (15, &r.gain)], (1, 1)),
@@ -164,7 +199,7 @@ impl Gpu {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai::{Variant, Weights, models_dir};
+    use crate::ai::{Weights, models_dir};
     use crate::develop::Camera;
     use crate::raw::f16_to_f32;
 
@@ -187,6 +222,10 @@ mod tests {
 
     /// GPU and Bayer net, or why the test is skipped.
     fn setup() -> Option<(Gpu, UNet)> {
+        setup_for(Variant::Bayer)
+    }
+
+    fn setup_for(variant: Variant) -> Option<(Gpu, UNet)> {
         let Some(dir) = models_dir() else {
             eprintln!("no models, skipped");
             return None;
@@ -195,7 +234,7 @@ mod tests {
             eprintln!("no GPU, skipped");
             return None;
         };
-        let net = UNet::new(&gpu, &Weights::load(&dir, Variant::Bayer).unwrap());
+        let net = UNet::new(&gpu, &Weights::load(&dir, variant).unwrap());
         Some((gpu, net))
     }
 
@@ -290,6 +329,35 @@ mod tests {
     fn bayer_green(raw: &RawData) -> Vec<f32> {
         let Pixels::Bayer(m) = &raw.pixels else { unreachable!() };
         m.iter().enumerate().filter(|(i, _)| (i % 512 + i / 512) % 2 == 1).map(|(_, v)| *v).collect()
+    }
+
+    /// X-Trans and other demosaiced RAWs: the linear net, colour and mean kept.
+    #[test]
+    fn linear_variant_reduces_noise_on_rgb_raw() {
+        let Some((gpu, net)) = setup_for(Variant::Linear) else { return };
+        let (w, h) = (512u32, 384u32);
+        let grey = [0.25, 0.2, 0.15];
+        let px: Vec<[f32; 3]> = (0..w * h).map(|i| grey.map(|v| v + 0.03 * noise(i % w, i / w + 7 * (v * 100.0) as u32))).collect();
+        let mut camera = Camera::neutral();
+        camera.as_shot = [2.0, 1.0, 1.5];
+        let raw = RawData {
+            pixels: Pixels::Rgb(px.clone()),
+            width: w,
+            height: h,
+            pattern: [0; 36],
+            pattern_size: [1, 1],
+            crop: [0, 0, w, h],
+            orientation: 1,
+            camera,
+        };
+        assert_eq!(variant(&raw), Variant::Linear);
+        let out = run(&gpu, &net, &raw, 256);
+        for c in 0..3 {
+            let (m0, s0) = mean_std(&px.iter().map(|p| p[c]).collect::<Vec<_>>());
+            let (m1, s1) = mean_std(&out.iter().map(|p| p[c]).collect::<Vec<_>>());
+            assert!((m1 / m0 - 1.0).abs() < 0.01, "channel {c}: mean {m0} → {m1}");
+            assert!(s1 * 3.0 <= s0, "channel {c}: std {s0} → {s1}");
+        }
     }
 
     #[test]

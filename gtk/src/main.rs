@@ -174,6 +174,8 @@ enum Msg {
     PresetExportTo(PathBuf),
     /// Undo of a preset load: the grade before it.
     RestoreGrade(Box<Grade>),
+    /// Undo of Reset all: every edit of the photo before it.
+    RestoreEdits(Box<Sidecar>),
     /// Filmstrip: add photos, a photo decoded small (already encoded for
     /// `Profile`), re-encoded for a new profile, pick or drop one, grid view.
     RollAddPaths(Vec<PathBuf>),
@@ -205,6 +207,8 @@ enum Msg {
 /// that copy encoded for the profile it was last shown in.
 struct RollItem {
     path: PathBuf,
+    /// The photo's own grade (its sidecar's), for its filmstrip frame.
+    grade: Grade,
     small: Option<Decoded>,
     encoded: Option<(Profile, Arc<Photo>)>,
 }
@@ -214,16 +218,14 @@ struct RollItem {
 enum CameraPart {
     /// Tone: the lightness part of the match.
     Tone,
-    /// Colour: the a/b part of the match.
-    Colour,
     /// Reference match: the whole match.
     Match,
-    /// Every section: white balance, exposure and the whole match.
+    /// Every section: white balance, exposure and tones. Colours stay the
+    /// camera matrix's, as RawTherapee's auto-matched tone curve: a JPEG's
+    /// colours carry its Photo Style or in-camera LUT, which an a/b
+    /// transfer would spread over the whole photo.
     All,
 }
-
-/// Grade, looks (by file) and look blend.
-type SharedEdits = (Grade, Vec<LookRef>, Blend);
 
 /// A change in the Develop group.
 #[derive(Debug, Clone, Copy)]
@@ -404,7 +406,7 @@ struct App {
     roll_gen: u64,
     /// Grade the filmstrip was last rendered with (None: render on the next
     /// change), and the latest debounce tick.
-    roll_sent: Option<Grade>,
+    roll_sent: Option<Vec<Grade>>,
     roll_tick: u64,
     /// The match panel shows the reference file (false: matched by a preset, or no match).
     match_file: bool,
@@ -437,13 +439,11 @@ struct App {
     camera_job: Option<PathBuf>,
     /// Which parts (lightness, colour) the match in flight loads.
     match_parts: (bool, bool),
+    /// The grade before a section's "As in camera", for the Undo toast.
+    match_undo: Option<Grade>,
     /// The open photo's edits as last read from or written to its sidecar.
     saved: Option<Sidecar>,
     save_tick: u64,
-    /// The open photo's own grade and looks from its sidecar, not applied
-    /// (the filmstrip's shared ones were), and the shared ones at that time:
-    /// saved back unchanged until the shared grade or looks are edited.
-    kept: Option<(Sidecar, SharedEdits)>,
     /// Sidecar looks still loading: nothing is saved meanwhile.
     looks_loading: bool,
     /// A sidecar write failed this session (reported once).
@@ -497,7 +497,7 @@ impl App {
             _ => [img.width, img.height],
         };
         self.ui.info.set_label(&format!("{name} · {} · {w}×{h}", profile.name()));
-        self.ui.zoom.tools.set_visible(!self.show_chart && self.editing.is_none());
+        self.ui.zoom.tools.set_visible(!self.show_chart);
         self.zoom_label();
         if self.view_zoom().is_some() {
             // Zoomed: the GPU keeps the zoomed view until its replacement is ready (no flash of the fit).
@@ -534,17 +534,6 @@ impl App {
 
     /// The open photo's edits, as its sidecar holds them.
     fn sidecar_state(&self) -> Sidecar {
-        let (mut grade, mut looks, mut look_blend) = self.shared_edits();
-        if let Some((own, at_load)) = &self.kept
-            && *at_load == (grade.clone(), looks.clone(), look_blend)
-        {
-            (grade, looks, look_blend) = (own.grade.clone(), own.looks.clone(), own.look_blend);
-        }
-        Sidecar { develop: self.develop, grade, crop: self.crop, ratio: self.ratio, looks, look_blend }
-    }
-
-    /// Grade, looks (by file) and look blend: what the filmstrip shares.
-    fn shared_edits(&self) -> SharedEdits {
         let looks = self
             .looks
             .iter()
@@ -553,7 +542,8 @@ impl App {
                 Some(LookRef { path, intensity: l.intensity, input: l.input, on: l.on })
             })
             .collect();
-        (self.grade.clone(), looks, self.look_blend)
+        let (grade, look_blend) = (self.grade.clone(), self.look_blend);
+        Sidecar { develop: self.develop, grade, crop: self.crop, ratio: self.ratio, looks, look_blend }
     }
 
     /// Saves the sidecar a second after the last edit.
@@ -582,8 +572,7 @@ impl App {
         }
     }
 
-    /// The photo's sidecar into the editor: development and crop always; grade
-    /// and looks only when nothing is graded yet (the filmstrip shares them).
+    /// The photo's sidecar into the editor, onto a neutral grade without looks.
     fn restore_sidecar(&mut self, sc: Sidecar, sender: &ComponentSender<Self>) {
         self.develop = sc.develop;
         self.sync_develop();
@@ -595,7 +584,7 @@ impl App {
             })
             .unwrap_or(0);
         self.restore_crop(sc.crop, sc.ratio, row as u32);
-        if self.grade.is_neutral() && self.looks.is_empty() {
+        {
             self.apply_grade(sc.grade);
             self.ui.sidebar.look_blend_toggle.set_active_name(Some(if sc.look_blend == Blend::Mix {
                 "mix"
@@ -613,17 +602,34 @@ impl App {
                     s.emit(Msg::SidecarLooks(path, loaded.collect()));
                 });
             }
-        } else {
-            self.kept = Some((sc, self.shared_edits()));
         }
     }
 
-    /// The filmstrip through the current grade (and look LUTs, applied by the
-    /// worker). Overlay and split do not touch it, so only grade changes
+    /// Each filmstrip frame's grade: the open photo's as edited, the others'
+    /// from their sidecars, in the current input profile.
+    fn roll_grades(&self) -> Vec<Grade> {
+        let current = self.graded();
+        let mut grades: Vec<Grade> = self
+            .roll
+            .iter()
+            .map(|it| {
+                let mut g = it.grade.clone();
+                (g.params.input, g.params.gamut) = (current.params.input, current.params.gamut);
+                g
+            })
+            .collect();
+        if let Some(g) = self.active.and_then(|i| grades.get_mut(i)) {
+            *g = current;
+        }
+        grades
+    }
+
+    /// The filmstrip through each frame's grade (the open photo's look LUTs,
+    /// applied by the worker, on its frame only). Overlay and split do not touch it, so only grade changes
     /// count, and only once a drag settles: the main preview never waits.
     fn render_roll(&mut self) {
         // The open LUT browser's thumbnails also follow the settled grade.
-        let roll_current = self.roll.is_empty() || self.roll_sent.as_ref() == Some(&self.graded());
+        let roll_current = self.roll.is_empty() || self.roll_sent.as_ref() == Some(&self.roll_grades());
         if roll_current && !self.browsing {
             return;
         }
@@ -984,7 +990,7 @@ impl App {
         let raw = self.camera().is_some();
         self.ui.camera_btn.set_sensitive(raw);
         self.ui.sidebar.matching.camera.set_visible(raw);
-        self.ui.sidebar.camera_btns.iter().for_each(|b| b.set_sensitive(raw));
+        self.ui.sidebar.camera_btn.set_sensitive(raw);
         let ui = &self.ui.sidebar.develop;
         ui.root.set_visible(raw);
         let Some(cam) = self.camera() else { return };
@@ -1003,7 +1009,7 @@ impl App {
 
     /// The point of the oriented full-resolution image under a canvas point.
     fn image_point(&self, p: [f32; 2]) -> Option<[f32; 2]> {
-        let crop = self.crop_region()?;
+        let crop = self.shown_region()?;
         let (r, scale) = match self.view_zoom() {
             Some(z) => (z.view(&crop, self.canvas).0, z.scale),
             None => (crop, Zoom::fit_scale(&crop, self.canvas)),
@@ -1014,24 +1020,31 @@ impl App {
     /// Loads parts of `m` into the grade and shows the match panel as set.
     fn apply_match(&mut self, m: &Match, (lightness, colour): (bool, bool)) {
         matching::apply(&mut self.grade, m, lightness, colour);
+        // The match lives in the collapsed Reference match section: undo it from here.
+        if let Some(before) = self.match_undo.take() {
+            self.undo_toast(&gettext("Camera tones applied"), move || Msg::RestoreGrade(Box::new(before.clone())));
+        }
         let ui = &self.ui.sidebar.matching;
         ui.amount.adj.set_value(100.0);
         ui.stack.set_visible_child_name("set");
         self.render();
     }
 
-    /// "As in camera": WB and exposure from the metadata (`All`), tones and
-    /// colours from a match to the camera JPEG, computed once per file.
+    /// "As in camera": WB and exposure from the metadata (`All`), tones (and
+    /// for `Match` colours) from a match to the camera JPEG, computed once per file.
     fn as_in_camera(&mut self, part: CameraPart, sender: &ComponentSender<Self>) {
         let (Some(path), true) = (self.path.clone(), self.camera().is_some()) else { return };
         if matches!(part, CameraPart::All) {
             self.edit_develop(DevelopEdit::AsShot, sender);
             self.edit_develop(DevelopEdit::CameraExposure, sender);
+            // A colour match left from before would survive a tones-only load.
+            self.grade.params.match_ab = Params::default().match_ab;
         }
+        // Not for `All`, which also runs on every RAW opened as in camera.
+        self.match_undo = matches!(part, CameraPart::Tone).then(|| self.grade.clone());
         let parts = match part {
-            CameraPart::Tone => (true, false),
-            CameraPart::Colour => (false, true),
-            CameraPart::Match | CameraPart::All => (true, true),
+            CameraPart::Tone | CameraPart::All => (true, false),
+            CameraPart::Match => (true, true),
         };
         if let Some((_, m)) = self.camera_match.clone().filter(|c| c.0 == path) {
             return self.apply_match(&m, parts);
@@ -1387,6 +1400,9 @@ scale.track-temp trough { background-image: linear-gradient(to right, #4f86e8, #
 scale.track-tint trough { background-image: linear-gradient(to right, #4cbf5a, #e8e8e8, #d85bd0); }
 scale.track-temp trough highlight, scale.track-tint trough highlight { background: none; }
 .scope { background-color: rgba(0,0,0,0.55); border-radius: 8px; }
+.scope-grip { padding: 3px 0; }
+.scope-grip > box { min-height: 4px; min-width: 36px; border-radius: 2px; background-color: alpha(currentColor, 0.2); }
+.scope-grip:hover > box { background-color: alpha(currentColor, 0.45); }
 .band { min-width: 22px; min-height: 22px; padding: 0; border-radius: 99px; }
 .band:checked { box-shadow: 0 0 0 2px var(--accent-color); }
 .bypassed { opacity: 0.45; }
@@ -1494,6 +1510,8 @@ struct MatchUi {
 }
 
 struct Sidebar {
+    /// The pinned scopes (when pinned) over `scroll`.
+    pane: gtk::Box,
     scroll: gtk::ScrolledWindow,
     sliders: Vec<(Slider, Field)>,
     wheels: Vec<(ColorWheel, Slider)>,
@@ -1513,8 +1531,8 @@ struct Sidebar {
     browse: gtk::Revealer,
     browse_btn: gtk::ToggleButton,
     develop: DevelopUi,
-    /// The Tone and Colour "As in camera" buttons (RAWs only).
-    camera_btns: [gtk::Button; 2],
+    /// The Tone "As in camera" button (RAWs only).
+    camera_btn: gtk::Button,
 }
 
 /// The Develop group (RAWs only).
@@ -1746,6 +1764,10 @@ fn build_match(sender: &ComponentSender<App>) -> MatchUi {
     MatchUi { stack, pic, name, amount, camera }
 }
 
+/// Height range of the scopes, in logical pixels.
+const SCOPES_MIN: i32 = 50;
+const SCOPES_MAX: i32 = 320;
+
 fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     let panel = vbox(12);
     panel.set_margin_top(12);
@@ -1754,8 +1776,9 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     panel.set_margin_end(12);
 
     // Scopes
+    let height = settings::value(settings::SCOPES_HEIGHT).and_then(|v| v.parse().ok()).unwrap_or(100);
     let scope_pics: [gtk::Picture; 3] = std::array::from_fn(|_| {
-        gtk::Picture::builder().content_fit(gtk::ContentFit::Fill).height_request(140).css_classes(["scope"]).build()
+        gtk::Picture::builder().content_fit(gtk::ContentFit::Fill).css_classes(["scope"]).build()
     });
     scope_pics[2].set_content_fit(gtk::ContentFit::Contain);
     let skin = widgets::skin_line();
@@ -1794,8 +1817,51 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     scope_head.append(&skin_btn);
     let scopes_box = vbox(8);
     scopes_box.append(&scope_head);
-    scopes_box.append(&scope_stack);
-    panel.append(&section(&gettext("Scopes"), &scopes_box));
+    // A picture asks for its natural height and will not shrink below it: the
+    // scopes overlay a box of the chosen height, which alone sets the size.
+    let sizer = gtk::Box::builder().height_request(height).build();
+    let frame = gtk::Overlay::builder().child(&sizer).build();
+    frame.add_overlay(&scope_stack);
+    scopes_box.append(&frame);
+    // Drag the grip under the scopes to resize them.
+    let grip = gtk::Box::builder().css_classes(["scope-grip"]).tooltip_text(gettext("Drag to resize")).build();
+    grip.append(&gtk::Box::builder().hexpand(true).halign(gtk::Align::Center).build());
+    grip.set_cursor_from_name(Some("ns-resize"));
+    // Tracked against the frame, which stays put: the grip moves with the
+    // height, so its own drag offsets would feed back and flicker.
+    let resize = gtk::GestureDrag::new();
+    let grab = std::rc::Rc::new(std::cell::Cell::new(0.0));
+    let in_frame = {
+        let (g, f) = (grip.clone(), frame.clone());
+        move |x: f64, y: f64| g.compute_point(&f, &gtk::graphene::Point::new(x as f32, y as f32)).map(|p| p.y())
+    };
+    let (sz, gr, at) = (sizer.clone(), grab.clone(), in_frame.clone());
+    resize.connect_drag_begin(move |_, x, y| {
+        if let Some(fy) = at(x, y) {
+            gr.set(fy - sz.height_request() as f32)
+        }
+    });
+    let sz = sizer.clone();
+    resize.connect_drag_update(move |g, dx, dy| {
+        let Some((x, y)) = g.start_point() else { return };
+        if let Some(fy) = in_frame(x + dx, y + dy) {
+            sz.set_height_request(((fy - grab.get()) as i32).clamp(SCOPES_MIN, SCOPES_MAX));
+        }
+    });
+    resize.connect_drag_end(move |_, _, _| {
+        let _ = settings::set_value(settings::SCOPES_HEIGHT, &sizer.height_request().to_string());
+    });
+    grip.add_controller(resize);
+    scopes_box.append(&grip);
+    let pin = gtk::ToggleButton::builder()
+        .icon_name("view-pin-symbolic")
+        .tooltip_text(gettext("Keep scopes in view while scrolling"))
+        .valign(gtk::Align::Center)
+        .css_classes(["flat", "circular"])
+        .build();
+    pin.update_property(&[gtk::accessible::Property::Label(&gettext("Pin scopes"))]);
+    let scopes = section_with(&gettext("Scopes"), &scopes_box, &[pin.clone().upcast()], true);
+    panel.append(&scopes);
     let develop = build_develop(sender);
     panel.append(&develop.root);
     panel.append(&group_heading(&gettext("Grade · in LUT")));
@@ -1859,16 +1925,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     add(&color, &gettext("Vibrance"), -100.0, 100.0, 0, None, |p| &mut p.vibrance);
     add(&color, &gettext("Shadow saturation"), -100.0, 100.0, 0, None, |p| &mut p.sat_shadows);
     add(&color, &gettext("Highlight saturation"), -100.0, 100.0, 0, None, |p| &mut p.sat_highlights);
-    let color_cam =
-        camera_button(&gettext("As in camera: the camera's colours"), || Msg::AsInCamera(CameraPart::Colour), sender);
-    panel.append(&bypassable_with(
-        &gettext("Color"),
-        &color,
-        Some(Stage::Color),
-        true,
-        &[color_cam.clone().upcast()],
-        sender,
-    ));
+    panel.append(&bypassable(&gettext("Color"), &color, Some(Stage::Color), true, sender));
 
     let film = vbox(4);
     add(&film, &gettext("Subtractive saturation"), -100.0, 100.0, 0, Some("track-film-sat"), |p| &mut p.film_sat);
@@ -2028,7 +2085,29 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         .vexpand(true)
         .css_classes(["sidebar-pane"])
         .build();
+    let pane = vbox(0);
+    pane.add_css_class("sidebar-pane");
+    pane.append(&scroll);
+    // Pinned: the scopes card leaves the scrolled panel for the top of the pane.
+    let (p, sc) = (pane.clone(), panel.clone());
+    pin.connect_toggled(move |b| {
+        let on = b.is_active();
+        let m = if on { 12 } else { 0 };
+        scopes.set_margin_top(m);
+        scopes.set_margin_start(m);
+        scopes.set_margin_end(m);
+        scopes.set_margin_bottom(m / 2);
+        scopes.unparent();
+        if on {
+            p.prepend(&scopes)
+        } else {
+            sc.prepend(&scopes)
+        }
+        let _ = settings::set_value(settings::SCOPES_PINNED, if on { "1" } else { "0" });
+    });
+    pin.set_active(settings::value(settings::SCOPES_PINNED).as_deref() != Some("0"));
     Sidebar {
+        pane,
         scroll,
         sliders,
         wheels,
@@ -2045,7 +2124,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         browse,
         browse_btn,
         develop,
-        camera_btns: [tone_cam, color_cam],
+        camera_btn: tone_cam,
         look_blend_toggle,
     }
 }
@@ -2196,7 +2275,7 @@ impl SimpleComponent for App {
             .max_sidebar_width(420.0)
             .sidebar_width_fraction(0.28)
             .content(&grade_stack)
-            .sidebar(&sidebar.scroll)
+            .sidebar(&sidebar.pane)
             .build();
 
         // ---------------- LUT browser
@@ -2352,12 +2431,20 @@ impl SimpleComponent for App {
         header.pack_start(&presets.button);
         let camera_btn = gtk::Button::builder()
             .icon_name("camera-photo-symbolic")
-            .tooltip_text(gettext("As in camera: white balance, exposure, tones and colours from the camera"))
+            .tooltip_text(gettext("As in camera: white balance, exposure and tones from the camera"))
             .sensitive(false)
             .build();
         let snd = sender.clone();
         camera_btn.connect_clicked(move |_| snd.input(Msg::AsInCamera(CameraPart::All)));
         header.pack_start(&camera_btn);
+        let clear_btn = gtk::Button::builder()
+            .icon_name("edit-clear-all-symbolic")
+            .tooltip_text(gettext("Reset all: clear every edit of this photo"))
+            .build();
+        clear_btn.update_property(&[gtk::accessible::Property::Label(&gettext("Reset all"))]);
+        let snd = sender.clone();
+        clear_btn.connect_clicked(move |_| snd.input(Msg::ResetAll));
+        header.pack_start(&clear_btn);
 
         let menu = gio::Menu::new();
         let bg_menu = gio::Menu::new();
@@ -2703,8 +2790,8 @@ impl SimpleComponent for App {
             camera_match: None,
             camera_job: None,
             match_parts: (true, true),
+            match_undo: None,
             saved: None,
-            kept: None,
             save_tick: 0,
             looks_loading: false,
             save_failed: false,
@@ -2774,7 +2861,9 @@ impl SimpleComponent for App {
                         Some(i) => show = show.or(Some(i)),
                         None if self.roll.len() < MAX_ROLL => {
                             show = show.or(Some(self.roll.len()));
-                            self.roll.push(RollItem { path: p.clone(), small: None, encoded: None });
+                            // shortcut: sidecars read on the main thread, small JSON; move to the loader if it shows.
+                            let grade = Sidecar::load(&p).ok().flatten().map(|sc| sc.grade).unwrap_or_default();
+                            self.roll.push(RollItem { path: p.clone(), grade, small: None, encoded: None });
                             fresh.push(p);
                         }
                         None => {
@@ -2820,10 +2909,10 @@ impl SimpleComponent for App {
                 self.upload_roll(false);
             }
             Msg::RollTick(tick) if tick == self.roll_tick => {
-                let grade = self.graded();
-                if !self.roll.is_empty() && self.roll_sent.as_ref() != Some(&grade) {
-                    self.send(Job::RenderRoll(grade.clone()));
-                    self.roll_sent = Some(grade);
+                let grades = self.roll_grades();
+                if !self.roll.is_empty() && self.roll_sent.as_ref() != Some(&grades) {
+                    self.send(Job::RenderRoll(grades.clone(), self.active));
+                    self.roll_sent = Some(grades);
                 }
                 self.refresh_gallery();
             }
@@ -2952,7 +3041,15 @@ impl SimpleComponent for App {
             Msg::Loaded(generation, ..) if generation != self.load_gen => {}
             Msg::Loaded(_, path, Ok(decoded)) => {
                 self.save_now(); // the previous photo's last edits
-                self.kept = None;
+                // Each photo has its own grade and looks: the previous one keeps its frame's.
+                let previous = self.path.as_ref().and_then(|p| self.roll.iter_mut().find(|it| it.path == *p));
+                if let Some(it) = previous {
+                    it.grade = self.grade.clone();
+                }
+                self.apply_grade(Grade::default());
+                self.looks.clear();
+                self.ui.sidebar.look_blend_toggle.set_active_name(Some("chain"));
+                self.layers_changed(Layers::Look, true, &sender);
                 self.ui.sidebar.develop.picker.set_active(false);
                 self.ui.window.set_title(Some(&format!("{} — RawValley", file_label(&path))));
                 self.zoom = None;
@@ -3026,14 +3123,31 @@ impl SimpleComponent for App {
                 self.render();
             }
             Msg::ResetAll => {
-                let before = self.grade.clone();
+                let before = self.sidecar_state();
                 if self.develop != Develop::default() {
                     self.develop = Develop::default();
                     self.sync_develop();
                     self.develop_changed(&sender);
                 }
                 self.apply_grade(Grade::default());
-                self.undo_toast(&gettext("Grade reset"), move || Msg::RestoreGrade(Box::new(before.clone())));
+                self.reset_crop();
+                self.crop_changed(&sender);
+                self.looks.clear();
+                self.ui.sidebar.look_blend_toggle.set_active_name(Some("chain"));
+                self.layers_changed(Layers::Look, true, &sender);
+                self.undo_toast(&gettext("All edits cleared"), move || Msg::RestoreEdits(Box::new(before.clone())));
+            }
+            Msg::RestoreEdits(sc) => {
+                let develop = self.develop;
+                // Only onto a cleared photo, so its grade and looks come back too.
+                self.apply_grade(Grade::default());
+                self.looks.clear();
+                self.restore_sidecar(*sc, &sender);
+                if self.develop != develop {
+                    self.develop_changed(&sender);
+                }
+                self.crop_changed(&sender);
+                self.layers_changed(Layers::Look, true, &sender);
             }
             Msg::RestoreGrade(grade) => self.apply_grade(*grade),
             Msg::MixerMono(on) => {
@@ -3612,14 +3726,15 @@ impl SimpleComponent for App {
                 self.set_zoom(None);
                 self.editing = Some((self.crop, self.ratio, self.ui.crop.ratio.selected()));
                 self.ui.crop.overlay.set_visible(true);
-                self.ui.zoom.tools.set_visible(false);
                 self.crop_changed(&sender);
             }
             Msg::CropEdit(false) => {
+                // A zoom while editing is into the whole frame, not the crop.
+                self.set_zoom(None);
                 self.editing = None;
                 self.ui.crop.overlay.set_visible(false);
                 self.ui.crop.edit.set_active(false);
-                self.ui.zoom.tools.set_visible(true);
+                self.ui.crop.level.set_active(false);
                 self.crop_changed(&sender);
             }
             Msg::CropCancel => {
@@ -3739,7 +3854,7 @@ impl App {
 
     /// Re-renders the zoomed view (if any) at full resolution, off the main thread.
     fn request_view(&mut self) {
-        let (Some(z), Some(d), Some(crop)) = (self.view_zoom(), self.decoded.clone(), self.crop_region()) else {
+        let (Some(z), Some(d), Some(crop)) = (self.view_zoom(), self.decoded.clone(), self.shown_region()) else {
             return;
         };
         let (r, w, h) = z.view(&crop, self.canvas);
@@ -3758,6 +3873,8 @@ impl App {
 
     fn set_zoom(&mut self, zoom: Option<Zoom>) {
         let was = std::mem::replace(&mut self.zoom, zoom);
+        self.ui.crop.shown.borrow_mut().zoomed = zoom.is_some();
+        self.ui.crop.overlay.queue_draw();
         if zoom.is_some() {
             self.request_view();
         } else if was.is_some() {
@@ -3773,7 +3890,7 @@ impl App {
     }
 
     fn zoom_label(&self) {
-        let scale = match (self.zoom, self.crop_region()) {
+        let scale = match (self.zoom, self.shown_region()) {
             (Some(z), _) => z.scale,
             (None, Some(r)) => Zoom::fit_scale(&r, self.canvas),
             (None, None) => 1.0,
@@ -3782,8 +3899,8 @@ impl App {
     }
 
     fn on_zoom(&mut self, cmd: ZoomCmd) {
-        let zoomable = !self.show_chart && self.editing.is_none() && matches!(self.page, Page::Grade);
-        let Some(crop) = self.crop_region().filter(|_| zoomable) else {
+        let zoomable = !self.show_chart && matches!(self.page, Page::Grade);
+        let Some(crop) = self.shown_region().filter(|_| zoomable) else {
             return;
         };
         let canvas = self.canvas;

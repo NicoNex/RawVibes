@@ -26,6 +26,8 @@ pub struct Shown {
     pub frame: [f32; 2],
     /// Pixel aspect resizing keeps (None: free).
     pub aspect: Option<f32>,
+    /// Zoomed in (only the level line is drawn; the crop is edited fitted).
+    pub zoomed: bool,
 }
 
 pub struct CropUi {
@@ -35,6 +37,8 @@ pub struct CropUi {
     pub ratio: gtk::DropDown,
     pub swap: gtk::Button,
     pub angle: Slider,
+    /// Straighten along a line dragged over the photo.
+    pub level: gtk::ToggleButton,
     pub shown: Rc<RefCell<Shown>>,
 }
 
@@ -89,6 +93,22 @@ impl CropUi {
         let angle = Slider::new(&gettext("Straighten"), -45.0, 45.0, 0.0, 1, None);
         let s = sender.clone();
         angle.connect(move |v| s.input(Msg::CropAngle(v as f32)));
+        let level = gtk::ToggleButton::builder()
+            .icon_name("object-rotate-right-symbolic")
+            .tooltip_text(gettext("Straighten along a line: drag over a horizon or an edge"))
+            .valign(gtk::Align::Center)
+            .css_classes(["flat", "circular"])
+            .build();
+        level.update_property(&[gtk::accessible::Property::Label(&gettext("Straighten along a line"))]);
+        let e = edit.clone();
+        level.connect_toggled(move |b| {
+            if b.is_active() {
+                e.set_active(true);
+            }
+        });
+        if let Some(head) = angle.root.first_child().and_downcast::<gtk::Box>() {
+            head.insert_child_after(&level, head.first_child().as_ref());
+        }
 
         let reset = gtk::Button::builder().label(gettext("Reset")).css_classes(["flat"]).build();
         let s = sender.clone();
@@ -104,10 +124,21 @@ impl CropUi {
         let section = section(&gettext("Crop"), &body);
 
         let overlay = gtk::DrawingArea::builder().visible(false).build();
-        let sh = shown.clone();
+        // The line being dragged with the level tool, in overlay pixels.
+        let line: Rc<Cell<Option<[f64; 4]>>> = Rc::new(Cell::new(None));
+        let o = overlay.clone();
+        level.connect_toggled(move |b| o.set_cursor_from_name(b.is_active().then_some("crosshair")));
+        let (sh, ln) = (shown.clone(), line.clone());
         overlay.set_draw_func(move |_, cr, w, h| {
+            if let Some([x0, y0, x1, y1]) = ln.get() {
+                cr.set_source_rgba(1.0, 0.85, 0.2, 0.95);
+                cr.set_line_width(2.0);
+                cr.move_to(x0, y0);
+                cr.line_to(x1, y1);
+                let _ = cr.stroke();
+            }
             let sh = sh.borrow();
-            if sh.frame[0] <= 0.0 {
+            if sh.frame[0] <= 0.0 || sh.zoomed {
                 return;
             }
             let (ox, oy, sx, sy) = placement(w as f64, h as f64, sh.frame);
@@ -144,16 +175,34 @@ impl CropUi {
 
         let drag = gtk::GestureDrag::new();
         let grab: Rc<Cell<Option<Grab>>> = Rc::new(Cell::new(None));
-        let (g, sh, o) = (grab.clone(), shown.clone(), overlay.clone());
-        drag.connect_drag_begin(move |_, x, y| {
-            let sh = sh.borrow();
-            let (ox, oy, sx, sy) = placement(o.width() as f64, o.height() as f64, sh.frame);
-            let p = [((x - ox) / sx) as f32, ((y - oy) / sy) as f32];
-            let tol = [(GRAB / sx) as f32, (GRAB / sy) as f32];
-            g.set(crop::hit(&sh.crop, p, tol).map(|h| (h, sh.crop, sx, sy)));
+        let (g, sh, o, lv, ln) = (grab.clone(), shown.clone(), overlay.clone(), level.clone(), line.clone());
+        drag.connect_drag_begin(move |d, x, y| {
+            g.set(None);
+            if lv.is_active() {
+                ln.set(Some([x, y, x, y]));
+            } else {
+                let sh = sh.borrow();
+                if sh.zoomed {
+                    return; // the drag pans the view
+                }
+                let (ox, oy, sx, sy) = placement(o.width() as f64, o.height() as f64, sh.frame);
+                let p = [((x - ox) / sx) as f32, ((y - oy) / sy) as f32];
+                let tol = [(GRAB / sx) as f32, (GRAB / sy) as f32];
+                g.set(crop::hit(&sh.crop, p, tol).map(|h| (h, sh.crop, sx, sy)));
+                if g.get().is_none() {
+                    return;
+                }
+            }
+            // Ours: the canvas must not pan under a line or a handle.
+            d.set_state(gtk::EventSequenceState::Claimed);
         });
         let (sh, s) = (shown.clone(), sender.clone());
+        let (ln, o) = (line.clone(), overlay.clone());
         drag.connect_drag_update(move |_, dx, dy| {
+            if let Some([x0, y0, ..]) = ln.get() {
+                ln.set(Some([x0, y0, x0 + dx, y0 + dy]));
+                return o.queue_draw();
+            }
             let Some((handle, start, sx, sy)) = grab.get() else { return };
             let c = {
                 let sh = sh.borrow();
@@ -162,8 +211,41 @@ impl CropUi {
             };
             s.input(Msg::CropRect(c.rect));
         });
+        let (lv, adj, o) = (level.clone(), angle.adj.clone(), overlay.clone());
+        drag.connect_drag_end(move |_, dx, dy| {
+            let Some(_) = line.take() else { return };
+            lv.set_active(false);
+            o.queue_draw();
+            if dx.hypot(dy) >= 10.0 {
+                adj.set_value(adj.value() + level_turn(dx, dy));
+            }
+        });
         overlay.add_controller(drag);
 
-        Self { section, overlay, edit, ratio, swap, angle, shown }
+        Self { section, overlay, edit, ratio, swap, angle, level, shown }
+    }
+}
+
+/// Degrees to add to the straighten angle so a line drawn on the shown frame
+/// (screen y down) becomes level, or plumb when it is nearer vertical.
+fn level_turn(dx: f64, dy: f64) -> f64 {
+    let t = dy.atan2(dx).to_degrees();
+    t - (t / 90.0).round() * 90.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::level_turn;
+
+    #[test]
+    fn level_turn_picks_the_nearest_axis() {
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        assert!(near(level_turn(100.0, 0.0), 0.0));
+        assert!(near(level_turn(-100.0, 0.0), 0.0));
+        assert!(near(level_turn(100.0, 100.0 * 5f64.to_radians().tan()), 5.0));
+        // Drawn right to left: same line, same turn.
+        assert!(near(level_turn(-100.0, -100.0 * 5f64.to_radians().tan()), 5.0));
+        // Nearly vertical, leaning 5° off: turned to plumb.
+        assert!(near(level_turn(100.0 * 5f64.to_radians().tan(), 100.0), -5.0));
     }
 }

@@ -324,7 +324,8 @@ pub enum Job {
     /// UI drop frames of an older strip.
     SetRoll(u64, Vec<Arc<Photo>>),
     /// Every filmstrip photo through the grade and the look LUTs.
-    RenderRoll(Grade),
+    /// Each frame's grade; the look LUT only on the frame of the open photo.
+    RenderRoll(Vec<Grade>, Option<usize>),
     /// Colour transfer from `source` (decoded by `input`, otherwise ungraded)
     /// to a display-referred reference; `generation` lets the UI drop
     /// results it no longer wants. A small copy of the photo is plenty.
@@ -442,7 +443,8 @@ pub enum Done {
 struct RollFrame {
     photo: Arc<Photo>,
     gpu: GpuPhoto,
-    last: Option<Grade>,
+    /// With the look LUT or not.
+    last: Option<(Grade, bool)>,
 }
 
 #[derive(Default)]
@@ -609,14 +611,17 @@ impl Worker {
                     .collect();
                 self.roll = (generation, roll);
             }
-            Job::RenderRoll(grade) => {
+            Job::RenderRoll(grades, active) => {
                 let generation = self.roll.0;
-                for (index, f) in self.roll.1.iter_mut().enumerate() {
-                    if f.last.as_ref() != Some(&grade) {
-                        let (ph, look) = (&f.gpu, self.look.as_ref());
-                        let rgba = gpu.render(ph, &grade, look, 0.0);
+                for ((index, f), grade) in self.roll.1.iter_mut().enumerate().zip(grades) {
+                    // shortcut: other photos' looks are not loaded, so their frames show the grade only.
+                    let look = self.look.as_ref().filter(|_| active == Some(index));
+                    let key = (grade, look.is_some());
+                    if f.last.as_ref() != Some(&key) {
+                        let ph = &f.gpu;
+                        let rgba = gpu.render(ph, &key.0, look, 0.0);
                         notify(Done::RollFrame { generation, index, width: ph.width, height: ph.height, rgba });
-                        f.last = Some(grade.clone());
+                        f.last = Some(key);
                     }
                 }
             }

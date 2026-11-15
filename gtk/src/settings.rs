@@ -23,6 +23,12 @@ pub const PREVIEW_QUALITY: &str = "preview-quality";
 /// The canvas background: "default", "black" or "white".
 pub const BACKGROUND: &str = "background";
 
+/// "0": the scopes scroll with the sidebar instead of staying pinned on top.
+pub const SCOPES_PINNED: &str = "scopes-pinned";
+
+/// Height of the scopes in logical pixels.
+pub const SCOPES_HEIGHT: &str = "scopes-height";
+
 /// The stored value; until RawValley stores its own, VibingLUT's (same keys).
 pub fn value(key: &str) -> Option<String> {
     let vibinglut = glib::user_config_dir().join("vibinglut").join(key);

@@ -242,6 +242,12 @@ pub struct Pipelines {
     rcd_pack: wgpu::ComputePipeline,
     rgb_pack: wgpu::ComputePipeline,
     mip: wgpu::ComputePipeline,
+    #[cfg(feature = "ai")]
+    pub(crate) ai_pack: wgpu::ComputePipeline,
+    #[cfg(feature = "ai")]
+    pub(crate) ai_gain: wgpu::ComputePipeline,
+    #[cfg(feature = "ai")]
+    pub(crate) ai_unpack: wgpu::ComputePipeline,
     develop_linear: wgpu::ComputePipeline,
     develop_encode: wgpu::ComputePipeline,
     nr_gat: wgpu::ComputePipeline,
@@ -287,7 +293,7 @@ pub struct Pipelines {
     /// `DevelopParams`, rewritten per frame.
     develop_params: wgpu::Buffer,
     /// Open while a develop records: its passes and copies go out in one submission.
-    batch: std::cell::RefCell<Option<wgpu::CommandEncoder>>,
+    pub(crate) batch: std::cell::RefCell<Option<wgpu::CommandEncoder>>,
     /// What the airlight in `air` was measured from (photo, gains, exposure, lens).
     air_key: std::cell::RefCell<Option<(u64, [f32; 5])>>,
 }
@@ -369,6 +375,12 @@ impl Pipelines {
             rcd_pack: pipeline("rcd_pack"),
             rgb_pack: pipeline("rgb_pack"),
             mip: pipeline("mip"),
+            #[cfg(feature = "ai")]
+            ai_pack: pipeline("ai_pack"),
+            #[cfg(feature = "ai")]
+            ai_gain: pipeline("ai_gain"),
+            #[cfg(feature = "ai")]
+            ai_unpack: pipeline("ai_unpack"),
             develop_linear: pipeline("develop_linear"),
             develop_encode: pipeline("develop_encode"),
             oetf: Default::default(),
@@ -401,7 +413,7 @@ struct Params {
 }
 
 /// A compute pass: pipeline, bindings, workgroup grid.
-type Pass<'a> = (&'a wgpu::ComputePipeline, &'a [(u32, &'a wgpu::Buffer)], (u32, u32));
+pub(crate) type Pass<'a> = (&'a wgpu::ComputePipeline, &'a [(u32, &'a wgpu::Buffer)], (u32, u32));
 
 /// `DevelopParams` of `raw.wgsl`.
 #[repr(C)]
@@ -562,7 +574,7 @@ fn oetf_table(profile: Profile) -> Vec<f32> {
 }
 
 /// Workgroups covering `n` items on a 2-D grid (≤ 65535 per dimension).
-fn grid(n: u32) -> (u32, u32) {
+pub(crate) fn grid(n: u32) -> (u32, u32) {
     let groups = n.div_ceil(WORKGROUP).max(1);
     let x = groups.min(65535);
     (x, groups.div_ceil(x))
@@ -579,7 +591,7 @@ impl Gpu {
     }
 
     /// Runs `passes` (pipeline, bindings, grid) in order: in the open batch, or one submission.
-    fn passes(&self, passes: &[Pass]) {
+    pub(crate) fn passes(&self, passes: &[Pass]) {
         let binds: Vec<_> = passes.iter().map(|(p, b, _)| self.bind(p, b)).collect();
         self.record(|enc| {
             let mut pass = enc.begin_compute_pass(&Default::default());
@@ -609,7 +621,7 @@ impl Gpu {
         bytemuck::cast_slice(&self.read_range(buf, 0, buf.size())).to_vec()
     }
 
-    fn raw_params(&self, raw: &RawData, size: [u32; 4]) -> wgpu::Buffer {
+    pub(crate) fn raw_params(&self, raw: &RawData, size: [u32; 4]) -> wgpu::Buffer {
         let g = raw.camera.as_shot;
         let (gx, gy) = grid(raw.width * raw.height);
         self.storage(bytemuck::bytes_of(&Params {
@@ -1199,7 +1211,7 @@ impl Gpu {
 
     /// [`Gpu::reconstruct`], also handing back the uploaded mosaic's buffer
     /// (free once it ran) for the next passes to reuse.
-    fn reconstruct_keep(&self, raw: &RawData, mosaic: &[f32]) -> Result<(wgpu::Buffer, wgpu::Buffer), String> {
+    pub(crate) fn reconstruct_keep(&self, raw: &RawData, mosaic: &[f32]) -> Result<(wgpu::Buffer, wgpu::Buffer), String> {
         let n = raw.width * raw.height;
         let bytes = n as u64 * 4;
         self.fits(bytes)?;

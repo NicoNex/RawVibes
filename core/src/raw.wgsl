@@ -448,6 +448,93 @@ fn mip(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u3
     next[i] = pack(0.25 * s);
 }
 
+// ------------------------------------------------------------------ AI denoise
+// One tile of the RawNIND UtNet2 Bayer net (ai/tile.rs): `ai_pack` cuts it
+// from the reconstructed mosaic in `out`, un-balanced and RGGB-packed with
+// mirror padding; `ai_gain` matches the net's mean to its input's;
+// `ai_unpack` writes the tile's core into mip level 0, balanced again.
+
+struct AiParams {
+    // First R photosite of the RGGB-aligned area, and its packed size.
+    ox: u32,
+    oy: u32,
+    pw: u32,
+    ph: u32,
+    // Packed position of the tile (may be negative) and its edge.
+    tx: i32,
+    ty: i32,
+    t: u32,
+    _pad: u32,
+    // The tile's core in packed pixels: x0, y0, x1, y1 (exclusive).
+    core: vec4<u32>,
+}
+
+@group(0) @binding(12) var<storage, read> ai: AiParams;
+@group(0) @binding(13) var<storage, read_write> tensor: array<f32>;
+@group(0) @binding(14) var<storage, read_write> net: array<f32>;
+@group(0) @binding(15) var<storage, read_write> gain: array<f32>;
+
+/// Mirror `v` into 0..n (no edge repeat), clamped for tiles larger than the photo.
+fn mirror(v: i32, n: u32) -> u32 {
+    let m = i32(n) - 1;
+    let r = abs(v);
+    return u32(clamp(select(r, 2 * m - r, r > m), 0, m));
+}
+
+@compute @workgroup_size(256)
+fn ai_pack(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
+           @builtin(local_invocation_index) lid: u32) {
+    let i = index(wg, n, lid);
+    let tt = ai.t * ai.t;
+    if i >= 4u * tt { return; }
+    let c = i / tt;
+    let px = mirror(ai.tx + i32(i % ai.t), ai.pw);
+    let py = mirror(ai.ty + i32((i % tt) / ai.t), ai.ph);
+    // Channels R, G (row 0), G (row 1), B.
+    let x = ai.ox + 2u * px + select(0u, 1u, c == 1u || c == 3u);
+    let y = ai.oy + 2u * py + select(0u, 1u, c >= 2u);
+    tensor[i] = out[y * p.width + x] / p.clip[colour(x, y)];
+}
+
+var<workgroup> sums: array<vec2<f32>, 256>;
+
+/// gain[0] = mean(input) / mean(output), or 1 when the output's mean is ~0.
+@compute @workgroup_size(256)
+fn ai_gain(@builtin(local_invocation_index) lid: u32) {
+    let tt = ai.t * ai.t;
+    let nout = 12u * tt;
+    var s = vec2<f32>(0.0);
+    // Each G plane at half weight: both means are then over R, G and B once.
+    for (var i = lid; i < 4u * tt; i += 256u) { s.x += tensor[i] * select(1.0, 0.5, i / tt == 1u || i / tt == 2u); }
+    for (var i = lid; i < nout; i += 256u) { s.y += net[i]; }
+    sums[lid] = s;
+    workgroupBarrier();
+    for (var k = 128u; k > 0u; k >>= 1u) {
+        if lid < k { sums[lid] += sums[lid + k]; }
+        workgroupBarrier();
+    }
+    if lid == 0u {
+        let m = sums[0] / vec2<f32>(f32(3u * tt), f32(nout));
+        gain[0] = select(1.0, m.x / m.y, abs(m.y) > 1e-6 * abs(m.x));
+    }
+}
+
+@compute @workgroup_size(256)
+fn ai_unpack(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
+             @builtin(local_invocation_index) lid: u32) {
+    let i = index(wg, n, lid);
+    if i >= p.crop.z * p.crop.w { return; }
+    // Full-resolution position in the aligned area (the odd edge row/column repeats).
+    let qx = u32(clamp(i32(p.crop.x + i % p.crop.z) - i32(ai.ox), 0, i32(2u * ai.pw) - 1));
+    let qy = u32(clamp(i32(p.crop.y + i / p.crop.z) - i32(ai.oy), 0, i32(2u * ai.ph) - 1));
+    if qx / 2u < ai.core.x || qx / 2u >= ai.core.z || qy / 2u < ai.core.y || qy / 2u >= ai.core.w { return; }
+    let e = 2u * ai.t;
+    let j = u32(i32(qy) - 2 * ai.ty) * e + u32(i32(qx) - 2 * ai.tx);
+    let rgb = vec3<f32>(net[j], net[e * e + j], net[2u * e * e + j]) * gain[0] * p.clip.xyz;
+    // f16 tops out at 65504; min/max also drop a NaN.
+    level[i] = pack(min(rgb, vec3<f32>(65504.0)));
+}
+
 // ------------------------------------------------------------------ develop
 // A region of the camera-RGB mip chain → the profile's signal at output size,
 // in two passes around the detail stages (detail.rs): `develop_linear`

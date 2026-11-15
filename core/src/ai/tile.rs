@@ -435,3 +435,248 @@ mod tests {
         eprintln!("AI denoise {}×{}: {:.2?}", raw.width, raw.height, start.elapsed());
     }
 }
+
+/// Measurements, not checks: `cargo test --release ai_vs_classic -- --ignored --nocapture`.
+#[cfg(test)]
+mod quality {
+    use super::*;
+    use crate::ai::{Weights, models_dir};
+    use crate::develop::{Camera, Detail, Develop};
+    use crate::profiles::Profile;
+    use crate::view::Region;
+
+    const W: u32 = 768;
+    const H: u32 = 512;
+
+    /// Ground truth, balanced camera RGB: flat patches (top), a chirp
+    /// texture (middle), colour edges (bottom).
+    fn scene(x: u32, y: u32) -> [f32; 3] {
+        let (xf, yf) = (x as f32, y as f32);
+        match y * 3 / H {
+            0 => [[0.03f32; 3], [0.12; 3], [0.45; 3]][(x * 3 / W) as usize],
+            1 => {
+                let t = 0.5 + 0.5 * (xf * xf / W as f32 * 0.25).sin() * (yf * 0.15).cos();
+                [0.1 + 0.25 * t; 3]
+            }
+            _ => {
+                let i = (x / 48 + y / 48) % 4;
+                [[0.3, 0.1, 0.05], [0.05, 0.2, 0.1], [0.08, 0.1, 0.35], [0.25, 0.25, 0.25]][i as usize]
+            }
+        }
+    }
+
+    /// Linear Rec.2020 of `raw` developed 1:1 with `dev`.
+    fn develop(gpu: &Gpu, raw: &crate::raw::GpuRaw, dev: &Develop) -> Vec<[f32; 4]> {
+        let r = Region { center: [W as f32 / 2.0, H as f32 / 2.0], size: [W as f32, H as f32], angle: 0.0 };
+        let p = gpu.develop(raw, &r, W, H, dev, Profile::Standard).unwrap();
+        gpu.read_lin(&p)
+    }
+
+    /// PSNR (peak 1 after exposure) of `a` against `b` over rows `ys`, 16 px in from the sides.
+    fn psnr(a: &[[f32; 4]], b: &[[f32; 4]], ys: std::ops::Range<u32>) -> f32 {
+        let (mut se, mut n, mut peak) = (0f64, 0f64, 0f32);
+        for y in ys.start + 16..ys.end - 16 {
+            for x in 16..W - 16 {
+                let i = (y * W + x) as usize;
+                for c in 0..3 {
+                    se += ((a[i][c] - b[i][c]) as f64).powi(2);
+                    peak = peak.max(b[i][c]);
+                }
+                n += 3.0;
+            }
+        }
+        10.0 * ((peak as f64).powi(2) / (se / n)).log10() as f32
+    }
+
+    #[test]
+    #[ignore]
+    fn ai_vs_classic() {
+        let (Some(dir), Ok(gpu)) = (models_dir(), Gpu::new()) else { return };
+        let net = UNet::new(&gpu, &Weights::load(&dir, Variant::Bayer).unwrap());
+        let gains = [2.0f32, 1.0, 1.5];
+        let colour = |x: u32, y: u32| [[0, 1], [1, 2]][y as usize % 2][x as usize % 2];
+        let mosaic = |noise: Option<(f32, f32)>| {
+            let mut n = crate::noise::tests::normals(7);
+            let mut camera = Camera::neutral();
+            camera.as_shot = gains;
+            let px = (0..W * H)
+                .map(|i| {
+                    let (x, y) = (i % W, i / W);
+                    let v = scene(x, y)[colour(x, y)] / gains[colour(x, y)];
+                    noise.map_or(v, |(a, b)| v + (a * v + b).sqrt() * n())
+                })
+                .collect();
+            let mut pattern = [0; 36];
+            pattern[..4].copy_from_slice(&[0, 1, 1, 2]);
+            RawData {
+                pixels: Pixels::Bayer(px),
+                width: W,
+                height: H,
+                pattern,
+                pattern_size: [2, 2],
+                crop: [0, 0, W, H],
+                orientation: 1,
+                camera,
+            }
+        };
+        let truth = develop(&gpu, &gpu.load_raw(&mosaic(None)).unwrap(), &Develop::default());
+        let bands = [("flat", 0..H / 3), ("texture", H / 3..2 * H / 3), ("colour", 2 * H / 3..H)];
+        for (name, noise) in [("low", (2e-4, 2e-6)), ("mid", (1e-3, 1e-5)), ("high", (4e-3, 5e-5))] {
+            let data = mosaic(Some(noise));
+            let mut raw = gpu.load_raw(&data).unwrap();
+            let level0 = gpu.ai_denoise(&data, &net, &AtomicBool::new(false), &|_| {}).unwrap().unwrap();
+            // H1: darktable's way, the net's value at each site's own colour, then RCD.
+            let words: Vec<u32> = bytemuck::cast_slice(&gpu.read_f32(&level0)).to_vec();
+            let ai_rgb: Vec<[f32; 3]> = words.chunks_exact(2).map(crate::raw::unpack).collect();
+            let remosaic = RawData {
+                pixels: Pixels::Bayer(
+                    (0..W * H)
+                        .map(|i| ai_rgb[i as usize][colour(i % W, i / W)] / gains[colour(i % W, i / W)])
+                        .collect(),
+                ),
+                camera: data.camera.clone(),
+                ..data
+            };
+            let mut via_rcd = gpu.load_raw(&remosaic).unwrap();
+            raw.ai = Some(gpu.mips(&data, level0));
+            via_rcd.ai = None;
+            let mut rows = vec![];
+            let detail = |luma: f32, chroma: f32, ai: Option<f32>| Develop {
+                detail: Detail {
+                    nr_luma: luma,
+                    nr_chroma: chroma,
+                    nr_ai: ai.is_some(),
+                    nr_ai_strength: ai.unwrap_or(100.0),
+                    ..Detail::default()
+                },
+                ..Develop::default()
+            };
+            let mut img = image::RgbImage::new(5 * W / 2, H / 3);
+            let mut save = |j: u32, v: &[[f32; 4]]| {
+                // The colour band's left half, linear → sRGB-ish gamma.
+                for y in 0..H / 3 {
+                    for x in 0..W / 2 {
+                        let px = v[((y + 2 * H / 3) * W + x) as usize];
+                        let rgb = [0, 1, 2].map(|c| (px[c].clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8);
+                        img.put_pixel(j * W / 2 + x, y, image::Rgb(rgb));
+                    }
+                }
+            };
+            save(0, &truth);
+            save(1, &develop(&gpu, &raw, &detail(0.0, 0.0, None)));
+            save(2, &develop(&gpu, &raw, &detail(50.0, 50.0, None)));
+            save(3, &develop(&gpu, &raw, &detail(0.0, 0.0, Some(100.0))));
+            let remosaiced = develop(&gpu, &via_rcd, &detail(0.0, 0.0, None));
+            save(4, &remosaiced);
+            // Colour band: mean of each colour's square centres (bias across the whole patch).
+            let ai_out = develop(&gpu, &raw, &detail(0.0, 0.0, Some(100.0)));
+            for (k, name) in ["orange", "green", "blue", "grey"].iter().enumerate() {
+                let mean = |v: &[[f32; 4]]| {
+                    let (mut m, mut n) = ([0f32; 3], 0f32);
+                    for y in 2 * H / 3 + 8..H - 8 {
+                        for x in 8..W - 8 {
+                            let (cx, cy) = (x % 48, y % 48);
+                            if (x / 48 + y / 48) % 4 == k as u32 && (12..36).contains(&cx) && (12..36).contains(&cy) {
+                                (0..3).for_each(|c| m[c] += v[(y * W + x) as usize][c]);
+                                n += 1.0;
+                            }
+                        }
+                    }
+                    m.map(|v| v / n)
+                };
+                let (t, a) = (mean(&truth), mean(&ai_out));
+                eprintln!("    {name:<6} truth {t:.4?}  AI/truth {:.3?}", [0, 1, 2].map(|c| a[c] / t[c]));
+            }
+            let p: Vec<String> =
+                bands.iter().map(|(_, ys)| format!("{:5.1}", psnr(&remosaiced, &truth, ys.clone()))).collect();
+            eprintln!("  {:<20} {}", "AI remosaic + RCD", p.join("  "));
+            if let Ok(out) = std::env::var("RAWVALLEY_OUT") {
+                img.save(format!("{out}/synthetic_{name}.png")).unwrap();
+            }
+            for (label, dev) in [
+                ("none", detail(0.0, 0.0, None)),
+                ("classic 25/25", detail(25.0, 25.0, None)),
+                ("classic 50/50", detail(50.0, 50.0, None)),
+                ("classic 80/50", detail(80.0, 50.0, None)),
+                ("AI 100", detail(0.0, 0.0, Some(100.0))),
+                ("AI 100 +chroma 25", detail(0.0, 25.0, Some(100.0))),
+                ("AI 60", detail(0.0, 0.0, Some(60.0))),
+            ] {
+                let out = develop(&gpu, &raw, &dev);
+                let p: Vec<String> =
+                    bands.iter().map(|(_, ys)| format!("{:5.1}", psnr(&out, &truth, ys.clone()))).collect();
+                rows.push(format!("  {label:<20} {}", p.join("  ")));
+            }
+            eprintln!("noise {name}: PSNR dB  flat  texture  colour\n{}", rows.join("\n"));
+            // Mean per channel over each flat patch's centre: bias, not noise.
+            let ai = develop(&gpu, &raw, &detail(0.0, 0.0, Some(100.0)));
+            let none = develop(&gpu, &raw, &detail(0.0, 0.0, None));
+            for k in 0..3u32 {
+                let mean = |v: &[[f32; 4]]| {
+                    let mut m = [0f32; 3];
+                    let (x0, n) = (k * W / 3 + 40, ((W / 3 - 80) * (H / 3 - 80)) as f32);
+                    for y in 40..H / 3 - 40 {
+                        for x in x0..x0 + W / 3 - 80 {
+                            (0..3).for_each(|c| m[c] += v[(y * W + x) as usize][c] / n);
+                        }
+                    }
+                    m
+                };
+                let std = |v: &[[f32; 4]]| {
+                    let m = mean(v);
+                    let (x0, mut sum, mut n) = (k * W / 3 + 40, 0f32, 0f32);
+                    for y in 40..H / 3 - 40 {
+                        for x in x0..x0 + W / 3 - 80 {
+                            sum += (v[(y * W + x) as usize][1] - m[1]).powi(2);
+                            n += 1.0;
+                        }
+                    }
+                    (sum / n).sqrt() / m[1]
+                };
+                let classic = develop(&gpu, &raw, &detail(50.0, 50.0, None));
+                eprintln!(
+                    "  patch {k}: G std/mean  none {:.4}  classic50 {:.4}  AI {:.4}",
+                    std(&none),
+                    std(&classic),
+                    std(&ai)
+                );
+            }
+        }
+    }
+
+    /// `RAWVALLEY_RAW=<file> RAWVALLEY_OUT=<dir>`: 1:1 crops none | classic 50/50 | AI, side by side.
+    #[test]
+    #[ignore]
+    fn ai_crops() {
+        let (Ok(path), Ok(out), Some(dir), Ok(gpu)) =
+            (std::env::var("RAWVALLEY_RAW"), std::env::var("RAWVALLEY_OUT"), models_dir(), Gpu::new())
+        else {
+            return;
+        };
+        let data = crate::raw::read_raw(std::path::Path::new(&path)).unwrap();
+        let net = UNet::new(&gpu, &Weights::load(&dir, Variant::Bayer).unwrap());
+        let mut raw = gpu.load_raw(&data).unwrap();
+        let level0 = gpu.ai_denoise(&data, &net, &AtomicBool::new(false), &|_| {}).unwrap().unwrap();
+        raw.ai = Some(gpu.mips(&data, level0));
+        let (fw, fh) = raw.oriented_size();
+        let c = 384u32;
+        let dev = |luma: f32, chroma: f32, ai: bool| Develop {
+            exposure: 0.5,
+            detail: Detail { nr_luma: luma, nr_chroma: chroma, nr_ai: ai, ..Detail::default() },
+            ..Develop::default()
+        };
+        let devs = [dev(0.0, 0.0, false), dev(50.0, 50.0, false), dev(0.0, 0.0, true)];
+        for (k, centre) in [(0, [fw / 2, fh / 2]), (1, [fw / 4, 3 * fh / 4]), (2, [3 * fw / 4, fh / 4])].iter() {
+            let r = Region { center: centre.map(|v| v as f32), size: [c as f32; 2], angle: 0.0 };
+            let mut img = image::RgbImage::new(3 * c, c);
+            for (j, d) in devs.iter().enumerate() {
+                let p = gpu.read_photo(&gpu.develop(&raw, &r, c, c, d, Profile::Standard).unwrap());
+                for (i, px) in p.pixels.iter().enumerate() {
+                    let rgb = image::Rgb([0, 1, 2].map(|ch| (px[ch].clamp(0.0, 1.0) * 255.0 + 0.5) as u8));
+                    img.put_pixel(j as u32 * c + i as u32 % c, i as u32 / c, rgb);
+                }
+            }
+            img.save(format!("{out}/crop{k}.png")).unwrap();
+        }
+    }
+}

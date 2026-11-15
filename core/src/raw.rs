@@ -155,6 +155,8 @@ pub(crate) fn camera(raw: &rawler::RawImage) -> Camera {
 /// area, f16, level 0 at full resolution and each next one half the size.
 pub struct GpuRaw {
     pub(crate) levels: Vec<(wgpu::Buffer, u32, u32)>,
+    /// The same chain denoised by the AI (`Detail::nr_ai`), once it ran.
+    pub(crate) ai: Option<Vec<(wgpu::Buffer, u32, u32)>>,
     pub camera: Camera,
     /// Noise of the full-resolution camera RGB, estimated at load.
     pub noise: NoiseModel,
@@ -167,6 +169,11 @@ impl GpuRaw {
     /// Full-resolution size, before orientation.
     pub fn size(&self) -> (u32, u32) {
         (self.levels[0].1, self.levels[0].2)
+    }
+
+    /// Level `k` of the AI chain, or of the classic one before the AI ran.
+    fn ai_level(&self, k: usize) -> &wgpu::Buffer {
+        &self.ai.as_ref().unwrap_or(&self.levels)[k].0
     }
 
     /// Full-resolution size as shown (after orientation).
@@ -429,6 +436,9 @@ struct DevelopParams {
     lens: f32,
     margin: u32,
     lin_w: u32,
+    /// Weight of the AI chain over the classic one.
+    ai: f32,
+    _pad: [u32; 3],
 }
 
 /// `DevelopParams` of `r` at `w` × `h` with `margin`, and the mip level it samples:
@@ -460,6 +470,8 @@ fn develop_params(
         lens: dev.detail.lens_vignette / 100.0,
         margin,
         lin_w: w + 2 * margin,
+        ai: if dev.detail.nr_ai && raw.ai.is_some() { dev.detail.nr_ai_strength / 100.0 } else { 0.0 },
+        _pad: [0; 3],
     };
     (params, k)
 }
@@ -680,16 +692,9 @@ impl Gpu {
                 self.passes(&[(&p.rgb_pack, &[(0, &params), (1, &rgb), (10, &level0)], grid(n))]);
             }
         }
-        let mut levels = vec![(level0, cw, ch)];
-        while let Some(&(ref src, w, h)) = levels.last().filter(|l| l.1.max(l.2) > MIP_MIN) {
-            let (nw, nh) = (w.div_ceil(2), h.div_ceil(2));
-            let dst = self.buffer(nw as u64 * nh as u64 * 8, wgpu::BufferUsages::COPY_SRC);
-            let params = self.raw_params(raw, [w, h, nw, nh]);
-            self.passes(&[(&p.mip, &[(0, &params), (10, src), (11, &dst)], grid(nw * nh))]);
-            levels.push((dst, nw, nh));
-        }
         let mut gpu_raw = GpuRaw {
-            levels,
+            levels: self.mips(raw, level0),
+            ai: None,
             camera: raw.camera.clone(),
             orientation: raw.orientation,
             noise: Default::default(),
@@ -703,6 +708,19 @@ impl Gpu {
         let up = 4f32.powi(k as i32);
         gpu_raw.noise = NoiseModel { a: m.a * up, b: m.b * up };
         Ok(gpu_raw)
+    }
+
+    /// The mip chain from `level0` (the visible area of `raw`).
+    pub(crate) fn mips(&self, raw: &RawData, level0: wgpu::Buffer) -> Vec<(wgpu::Buffer, u32, u32)> {
+        let mut levels = vec![(level0, raw.crop[2], raw.crop[3])];
+        while let Some(&(ref src, w, h)) = levels.last().filter(|l| l.1.max(l.2) > MIP_MIN) {
+            let (nw, nh) = (w.div_ceil(2), h.div_ceil(2));
+            let dst = self.buffer(nw as u64 * nh as u64 * 8, wgpu::BufferUsages::COPY_SRC);
+            let params = self.raw_params(raw, [w, h, nw, nh]);
+            self.passes(&[(&self.raw.mip, &[(0, &params), (10, src), (11, &dst)], grid(nw * nh))]);
+            levels.push((dst, nw, nh));
+        }
+        levels
     }
 
     /// `r` (oriented full-resolution coordinates) of `raw` developed to
@@ -738,7 +756,9 @@ impl Gpu {
         let scale = sx.max(sy);
         // Output pixels per full-resolution pixel; past 100% the tools keep full-resolution radii.
         let s = (1.0 / scale).min(1.0);
-        let d = &dev.detail;
+        // The AI, once it ran, replaces the classic luminance NR (whose slider it hides).
+        let ai = dev.detail.nr_ai && raw.ai.is_some();
+        let d = &Detail { nr_luma: if ai { 0.0 } else { dev.detail.nr_luma }, ..dev.detail };
         // The detail tools read around each pixel: develop that far past the edges.
         let margin = (d.support() * s).ceil() as u32;
         let (lw, lh) = (w + 2 * margin, h + 2 * margin);
@@ -769,7 +789,7 @@ impl Gpu {
 
         // Slow stages are cached with everything upstream of them.
         let mut key = vec![r.center[0], r.center[1], r.size[0], r.size[1], r.angle, w as f32, h as f32];
-        key.extend([k as f32, gains[0], gains[1], gains[2], exposure, d.lens_vignette, margin as f32]);
+        key.extend([k as f32, gains[0], gains[1], gains[2], exposure, d.lens_vignette, margin as f32, params.ai]);
         key.extend([d.nr_luma, d.nr_chroma, d.nr_detail]);
         let nr_key = (raw.id, key.clone());
         key.extend([d.defringe, d.dehaze, d.local_contrast]);
@@ -791,7 +811,8 @@ impl Gpu {
             if let Some(b) = hit(&work.after_nr, &nr_key) {
                 self.copy(&b, &work.lin);
             } else {
-                self.passes(&[(&p.develop_linear, &[(10, level), (12, &p.develop_params), (15, &work.lin)], g)]);
+                let linear = [(10, level), (11, raw.ai_level(k)), (12, &p.develop_params), (15, &work.lin)];
+                self.passes(&[(&p.develop_linear, &linear, g)]);
                 if nr_on {
                     let lin = work.lin.clone();
                     self.denoise(&lin, work.scratch(self), lw, lh, s, d, noise);
@@ -905,7 +926,7 @@ impl Gpu {
         let (p, g) = (&self.raw, grid(w * h));
         self.queue.write_buffer(&p.air, 0, &[0; 16]);
         self.passes(&[
-            (&p.develop_linear, &[(10, &raw.levels[k].0), (12, &params), (15, &lin)], g),
+            (&p.develop_linear, &[(10, &raw.levels[k].0), (11, raw.ai_level(k)), (12, &params), (15, &lin)], g),
             (&p.dh_min_h, &[(0, &q), (1, &lin), (3, &sb)], g),
             (&p.dh_min_v, &[(0, &q), (2, &sa), (3, &sb), (4, &p.air)], g),
         ]);
@@ -1515,6 +1536,44 @@ mod tests {
             let run = |dev: &Develop| gpu.read_photo(&gpu.develop(&raw, &whole(w, h), w, h, dev, profile).unwrap());
             assert_eq!(run(&plain).pixels, run(&idle).pixels, "{profile:?}");
         }
+    }
+
+    /// A RAW whose AI chain is another photo's: what the AI blend picks shows.
+    fn with_ai_chain(gpu: &Gpu, w: u32, h: u32) -> GpuRaw {
+        let px = |v: f32| (0..w * h).map(|i| [(i % w) as f32 / w as f32, v, 0.3]).collect();
+        let mut raw = rgb_raw(gpu, w, h, px(0.2), 1, Camera::neutral());
+        raw.ai = Some(rgb_raw(gpu, w, h, px(0.6), 1, Camera::neutral()).levels);
+        raw
+    }
+
+    fn ai(on: bool, strength: f32) -> Develop {
+        Develop { detail: Detail { nr_ai: on, nr_ai_strength: strength, nr_luma: 40.0, ..Detail::default() }, ..Develop::default() }
+    }
+
+    /// AI off develops as if it never ran; classic luminance NR applies.
+    #[test]
+    fn ai_off_is_bit_exact() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (64, 32);
+        let mut raw = with_ai_chain(&gpu, w, h);
+        let run = |raw: &GpuRaw, dev: &Develop| {
+            gpu.read_photo(&gpu.develop(raw, &whole(w, h), w, h, dev, Profile::Standard).unwrap()).pixels
+        };
+        let with = run(&raw, &ai(false, 100.0));
+        raw.ai = None;
+        assert_eq!(with, run(&raw, &ai(false, 100.0)));
+    }
+
+    /// Strength 0 is the classic demosaic (without luminance NR); 100 the AI chain.
+    #[test]
+    fn ai_strength_zero_equals_rcd() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (64, 32);
+        let raw = with_ai_chain(&gpu, w, h);
+        let run = |dev: &Develop| gpu.read_photo(&gpu.develop(&raw, &whole(w, h), w, h, dev, Profile::Standard).unwrap()).pixels;
+        let classic = Develop::default();
+        assert_eq!(run(&ai(true, 0.0)), run(&classic));
+        assert_ne!(run(&ai(true, 100.0)), run(&classic));
     }
 
     fn flat_lens(gpu: &Gpu, amount: f32) -> Vec<[f32; 4]> {

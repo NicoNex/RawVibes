@@ -43,6 +43,35 @@ fn rggb_origin(raw: &RawData) -> Option<(u32, u32)> {
         .flatten()
 }
 
+/// A tiled denoise under way, one tile per [`Gpu::ai_step`]: the worker
+/// handles other jobs between tiles.
+pub(crate) struct AiRun {
+    /// The result, complete once [`AiRun::done`].
+    pub(crate) level0: wgpu::Buffer,
+    /// The reconstructed mosaic, the `RawParams`, one tile's input and its gain.
+    mosaic: wgpu::Buffer,
+    params: wgpu::Buffer,
+    tensor: wgpu::Buffer,
+    gain: wgpu::Buffer,
+    /// Alignment and tile edge; the position is set per tile.
+    tile: AiParams,
+    pixels: u32,
+    /// Tiles across, down, and the next one.
+    tiles: (u32, u32),
+    next: u32,
+}
+
+impl AiRun {
+    /// Fraction of the tiles done.
+    pub(crate) fn progress(&self) -> f32 {
+        self.next as f32 / (self.tiles.0 * self.tiles.1) as f32
+    }
+
+    pub(crate) fn done(&self) -> bool {
+        self.next == self.tiles.0 * self.tiles.1
+    }
+}
+
 impl Gpu {
     /// `raw` denoised by `net` (the Bayer variant) into a level 0 laid out
     /// as `load_raw`'s, or `None` when `cancel` was set. `progress` gets
@@ -54,9 +83,12 @@ impl Gpu {
         cancel: &AtomicBool,
         progress: &dyn Fn(f32),
     ) -> Result<Option<wgpu::Buffer>, String> {
+        self.ai_denoise_tiled(raw, net, self.ai_tile_edge()?, cancel, progress)
+    }
+
+    pub(crate) fn ai_tile_edge(&self) -> Result<u32, String> {
         let l = self.device.limits();
-        let edge = tile_edge(l.max_storage_buffer_binding_size.min(l.max_buffer_size))?;
-        self.ai_denoise_tiled(raw, net, edge, cancel, progress)
+        tile_edge(l.max_storage_buffer_binding_size.min(l.max_buffer_size))
     }
 
     pub(crate) fn ai_denoise_tiled(
@@ -67,47 +99,65 @@ impl Gpu {
         cancel: &AtomicBool,
         progress: &dyn Fn(f32),
     ) -> Result<Option<wgpu::Buffer>, String> {
-        let Pixels::Bayer(mosaic) = &raw.pixels else { return Err("AI denoise needs a Bayer sensor".into()) };
-        let (ox, oy) = rggb_origin(raw).ok_or("AI denoise needs a Bayer sensor")?;
-        debug_assert!(self.raw.batch.borrow().is_none(), "AI denoise waits per tile: no batch may be open");
-        let [_, _, cw, ch] = raw.crop;
-        self.fits(cw as u64 * ch as u64 * 8)?;
-        let (mosaic, _) = self.reconstruct_keep(raw, mosaic)?;
-        let level0 = self.buffer(cw as u64 * ch as u64 * 8, wgpu::BufferUsages::COPY_SRC);
-        let (pw, ph) = ((raw.width - ox) / 2, (raw.height - oy) / 2);
-        let step = t - 2 * OVERLAP;
-        let (nx, ny) = (pw.div_ceil(step), ph.div_ceil(step));
-        let params = self.raw_params(raw, [0; 4]);
-        let tensor = self.buffer(4 * t as u64 * t as u64 * 4, wgpu::BufferUsages::empty());
-        let gain = self.buffer(4, wgpu::BufferUsages::empty());
-        let p = &self.raw;
-        for i in 0..nx * ny {
+        let mut run = self.ai_start(raw, t)?;
+        loop {
             if cancel.load(Ordering::Relaxed) {
                 return Ok(None);
             }
-            let (cx, cy) = (i % nx * step, i / nx * step);
-            let ai = self.storage(bytemuck::bytes_of(&AiParams {
-                ox,
-                oy,
-                pw,
-                ph,
-                tx: cx as i32 - OVERLAP as i32,
-                ty: cy as i32 - OVERLAP as i32,
-                t,
-                _pad: 0,
-                core: [cx, cy, (cx + step).min(pw), (cy + step).min(ph)],
-            }));
-            self.passes(&[(&p.ai_pack, &[(0, &params), (2, &mosaic), (12, &ai), (13, &tensor)], grid(4 * t * t))]);
-            let out = net.run(self, &tensor, t, t);
-            self.passes(&[
-                (&p.ai_gain, &[(12, &ai), (13, &tensor), (14, &out), (15, &gain)], (1, 1)),
-                (&p.ai_unpack, &[(0, &params), (10, &level0), (12, &ai), (14, &out), (15, &gain)], grid(cw * ch)),
-            ]);
-            // Also frees this tile's activations before the next allocates its own.
-            self.device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| format!("GPU lost: {e}"))?;
-            progress((i + 1) as f32 / (nx * ny) as f32);
+            self.ai_step(&mut run, net)?;
+            progress(run.progress());
+            if run.done() {
+                return Ok(Some(run.level0));
+            }
         }
-        Ok(Some(level0))
+    }
+
+    /// Uploads and reconstructs `raw`'s mosaic for a run with `t`-pixel tiles.
+    pub(crate) fn ai_start(&self, raw: &RawData, t: u32) -> Result<AiRun, String> {
+        let Pixels::Bayer(mosaic) = &raw.pixels else { return Err("AI denoise needs a Bayer sensor".into()) };
+        let (ox, oy) = rggb_origin(raw).ok_or("AI denoise needs a Bayer sensor")?;
+        let [_, _, cw, ch] = raw.crop;
+        self.fits(cw as u64 * ch as u64 * 8)?;
+        let (mosaic, _) = self.reconstruct_keep(raw, mosaic)?;
+        let (pw, ph) = ((raw.width - ox) / 2, (raw.height - oy) / 2);
+        let step = t - 2 * OVERLAP;
+        Ok(AiRun {
+            level0: self.buffer(cw as u64 * ch as u64 * 8, wgpu::BufferUsages::COPY_SRC),
+            mosaic,
+            params: self.raw_params(raw, [0; 4]),
+            tensor: self.buffer(4 * t as u64 * t as u64 * 4, wgpu::BufferUsages::empty()),
+            gain: self.buffer(4, wgpu::BufferUsages::empty()),
+            tile: AiParams { ox, oy, pw, ph, tx: 0, ty: 0, t, _pad: 0, core: [0; 4] },
+            pixels: cw * ch,
+            tiles: (pw.div_ceil(step), ph.div_ceil(step)),
+            next: 0,
+        })
+    }
+
+    /// Runs the next tile of `run` and waits for it.
+    pub(crate) fn ai_step(&self, run: &mut AiRun, net: &UNet) -> Result<(), String> {
+        debug_assert!(self.raw.batch.borrow().is_none(), "AI denoise waits per tile: no batch may be open");
+        let AiParams { pw, ph, t, .. } = run.tile;
+        let step = t - 2 * OVERLAP;
+        let (cx, cy) = (run.next % run.tiles.0 * step, run.next / run.tiles.0 * step);
+        let tile = AiParams {
+            tx: cx as i32 - OVERLAP as i32,
+            ty: cy as i32 - OVERLAP as i32,
+            core: [cx, cy, (cx + step).min(pw), (cy + step).min(ph)],
+            ..run.tile
+        };
+        let ai = self.storage(bytemuck::bytes_of(&tile));
+        let (p, r) = (&self.raw, &*run);
+        self.passes(&[(&p.ai_pack, &[(0, &r.params), (2, &r.mosaic), (12, &ai), (13, &r.tensor)], grid(4 * t * t))]);
+        let out = net.run(self, &r.tensor, t, t);
+        self.passes(&[
+            (&p.ai_gain, &[(12, &ai), (13, &r.tensor), (14, &out), (15, &r.gain)], (1, 1)),
+            (&p.ai_unpack, &[(0, &r.params), (10, &r.level0), (12, &ai), (14, &out), (15, &r.gain)], grid(r.pixels)),
+        ]);
+        // Also frees this tile's activations before the next allocates its own.
+        self.device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| format!("GPU lost: {e}"))?;
+        run.next += 1;
+        Ok(())
     }
 }
 

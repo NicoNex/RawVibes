@@ -567,6 +567,8 @@ struct DevelopParams {
     // tools' reach), rows of `lin_w`.
     margin: u32,
     lin_w: u32,
+    // Weight of the AI-denoised chain (in `next`) over the classic one.
+    ai: f32,
 }
 
 @group(0) @binding(12) var<storage, read> d: DevelopParams;
@@ -583,7 +585,9 @@ const OETF_N: u32 = 4096u;
 fn texel(x: i32, y: i32) -> vec3<f32> {
     let xx = u32(clamp(x, 0, i32(d.lw) - 1));
     let yy = u32(clamp(y, 0, i32(d.lh) - 1));
-    return unpack(level[yy * d.lw + xx]);
+    let i = yy * d.lw + xx;
+    if d.ai > 0.0 { return mix(unpack(level[i]), unpack(next[i]), d.ai); }
+    return unpack(level[i]);
 }
 
 /// Sensor (unoriented level-0) position of a point of the oriented image.

@@ -48,6 +48,10 @@ pub struct Detail {
     /// Automatic lateral chromatic-aberration correction on the Bayer
     /// mosaic, before demosaic (`ca::corrected`); a no-op on other sensors.
     pub ca_correct: bool,
+    /// AI noise reduction (RawNIND UtNet2) instead of the classic luminance
+    /// NR, blended over the classic demosaic by `nr_ai_strength` (0–100).
+    pub nr_ai: bool,
+    pub nr_ai_strength: f32,
 }
 
 impl Detail {
@@ -74,7 +78,7 @@ impl Detail {
         let d = self;
         let all = [d.nr_luma, d.nr_chroma, d.nr_detail, d.sharpen, d.sharpen_radius];
         let all = [all.as_slice(), &[d.defringe, d.usm, d.usm_radius, d.usm_threshold]].concat();
-        let all = [all.as_slice(), &[d.dehaze, d.local_contrast, d.lens_vignette]].concat();
+        let all = [all.as_slice(), &[d.dehaze, d.local_contrast, d.lens_vignette, d.nr_ai_strength]].concat();
         if all.iter().any(|v| !v.is_finite()) {
             return None;
         }
@@ -94,6 +98,8 @@ impl Detail {
             local_contrast: amount(d.local_contrast),
             lens_vignette: signed(d.lens_vignette),
             ca_correct: d.ca_correct,
+            nr_ai: d.nr_ai,
+            nr_ai_strength: amount(d.nr_ai_strength),
         })
     }
 }
@@ -114,6 +120,8 @@ impl Default for Detail {
             local_contrast: 0.0,
             lens_vignette: 0.0,
             ca_correct: false,
+            nr_ai: false,
+            nr_ai_strength: 100.0,
         }
     }
 }

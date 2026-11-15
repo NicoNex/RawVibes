@@ -88,6 +88,8 @@ enum Msg {
     CanvasClick([f32; 2]),
     /// No development change for `DEVELOP_SETTLE` since tick `u64`: full quality.
     DevelopSettled(u64),
+    /// The AI denoised the open RAW: develop again to show it.
+    AiReady,
     Quality(u32),
     /// A RAW read on the CPU, ready for the GPU (load generation, file).
     RawRead(u64, PathBuf, Result<Arc<RawData>, String>),
@@ -244,6 +246,8 @@ enum DevelopEdit {
     Detail(DetailField, f32),
     /// The chromatic-aberration switch.
     CaCorrect(bool),
+    /// Noise reduction method: AI (true) or classic.
+    NrAi(bool),
     Pick(bool),
     Picked([f32; 2]),
 }
@@ -1016,6 +1020,7 @@ impl App {
             DevelopEdit::CameraExposure => dev.exposure = cam.baseline_ev,
             DevelopEdit::Detail(field, v) => *field(&mut dev.detail) = v,
             DevelopEdit::CaCorrect(on) => dev.detail.ca_correct = on,
+            DevelopEdit::NrAi(on) => dev.detail.nr_ai = on,
             DevelopEdit::Picked(kt) => {
                 dev.wb = Some(kt);
                 self.ui.sidebar.develop.picker.set_active(false);
@@ -1054,6 +1059,14 @@ impl App {
             s.adj.set_value(*field(&mut d) as f64);
         }
         ui.nr_detail.root.set_sensitive(d.nr_luma > 0.0);
+        ui.nr_mode.set_active_name(Some(if d.nr_ai { "ai" } else { "classic" }));
+        ui.nr_strength.root.set_visible(d.nr_ai);
+        ui.nr_luma.root.set_visible(!d.nr_ai);
+        ui.nr_detail.root.set_visible(!d.nr_ai);
+        if !d.nr_ai {
+            ui.ai_busy.set_visible(false);
+            ui.ai_msg.set_visible(false);
+        }
         ui.ca.set_active(d.ca_correct);
         ui.preset.set_selected(preset);
         ui.syncing.set(false);
@@ -1585,6 +1598,14 @@ struct DevelopUi {
     detail: Vec<(Slider, DetailField)>,
     /// Idle without luminance NR: it only restores what that removed.
     nr_detail: Slider,
+    /// Classic | AI; the AI hides luminance and detail and shows its strength.
+    nr_mode: adw::ToggleGroup,
+    nr_luma: Slider,
+    nr_strength: Slider,
+    /// While the AI runs: its progress and a stop button; why it cannot run.
+    ai_busy: gtk::Box,
+    ai_bar: gtk::ProgressBar,
+    ai_msg: gtk::Label,
     ca: adw::SwitchRow,
 }
 
@@ -1674,8 +1695,36 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
         s
     };
     let nr = vbox(4);
-    detail_slider(&nr, &gettext("Luminance"), (0.0, 100.0), |d| &mut d.nr_luma);
+    let nr_mode = toggles(&[("classic", &gettext("Classic")), ("ai", &gettext("AI"))]);
+    nr_mode.upcast_ref::<gtk::Widget>().update_property(&[gtk::accessible::Property::Label(&gettext("Noise reduction method"))]);
+    let (snd, sync) = (sender.clone(), syncing.clone());
+    nr_mode.connect_active_name_notify(move |g| {
+        if !sync.get() {
+            snd.input(Msg::Develop(DevelopEdit::NrAi(g.active_name().as_deref() == Some("ai"))));
+        }
+    });
+    nr.append(&nr_mode);
+    let ai_bar = gtk::ProgressBar::builder().hexpand(true).valign(gtk::Align::Center).build();
+    ai_bar.update_property(&[gtk::accessible::Property::Label(&gettext("AI noise reduction progress"))]);
+    let stop = gtk::Button::builder()
+        .icon_name("process-stop-symbolic")
+        .tooltip_text(gettext("Stop and use classic noise reduction"))
+        .css_classes(["flat", "circular"])
+        .build();
+    let snd = sender.clone();
+    stop.connect_clicked(move |_| snd.input(Msg::Develop(DevelopEdit::NrAi(false))));
+    let ai_busy = gtk::Box::builder().spacing(6).visible(false).build();
+    ai_busy.append(&gtk::Label::builder().label(gettext("Denoising…")).css_classes(["caption"]).build());
+    ai_busy.append(&ai_bar);
+    ai_busy.append(&stop);
+    nr.append(&ai_busy);
+    let ai_msg =
+        gtk::Label::builder().wrap(true).xalign(0.0).visible(false).css_classes(["caption", "warning"]).build();
+    nr.append(&ai_msg);
+    let nr_strength = detail_slider(&nr, &gettext("Strength"), (0.0, 100.0), |d| &mut d.nr_ai_strength);
+    let nr_luma = detail_slider(&nr, &gettext("Luminance"), (0.0, 100.0), |d| &mut d.nr_luma);
     let nr_detail = detail_slider(&nr, &gettext("Detail"), (0.0, 100.0), |d| &mut d.nr_detail);
+    // AI leaves some colour noise: chrominance stays in both methods.
     detail_slider(&nr, &gettext("Chrominance"), (0.0, 100.0), |d| &mut d.nr_chroma);
     root.append(&section(&gettext("Noise reduction"), &nr));
     let haze = vbox(4);
@@ -1708,7 +1757,24 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     lens.append(&list);
     root.append(&section(&gettext("Lens"), &lens));
     root.set_visible(false);
-    DevelopUi { syncing, root, preset, kelvin, tint, picker, exposure, detail, nr_detail, ca }
+    DevelopUi {
+        syncing,
+        root,
+        preset,
+        kelvin,
+        tint,
+        picker,
+        exposure,
+        detail,
+        nr_detail,
+        nr_mode,
+        nr_luma,
+        nr_strength,
+        ai_busy,
+        ai_bar,
+        ai_msg,
+        ca,
+    }
 }
 
 /// Curve editor with a channel selector and a reset button.
@@ -3125,6 +3191,10 @@ impl SimpleComponent for App {
                 self.request_view();
             }
             Msg::DevelopSettled(_) => {}
+            Msg::AiReady => {
+                self.encode_photo(&sender);
+                self.request_view();
+            }
             Msg::Refine(on) => {
                 self.refine = on;
                 if let Err(e) = settings::set_value(settings::REFINE_IDLE, if on { "1" } else { "0" }) {
@@ -4103,6 +4173,23 @@ impl App {
                     self.render();
                 }
             }
+            Done::AiProgress(g, f) if g == self.load_gen && self.develop.detail.nr_ai => {
+                let ui = &self.ui.sidebar.develop;
+                ui.ai_bar.set_fraction(f as f64);
+                ui.ai_busy.set_visible(true);
+                ui.ai_msg.set_visible(false);
+            }
+            Done::AiReady(g) if g == self.load_gen => {
+                self.ui.sidebar.develop.ai_busy.set_visible(false);
+                self.input.emit(Msg::AiReady);
+            }
+            Done::AiFailed(g, e) if g == self.load_gen => {
+                let ui = &self.ui.sidebar.develop;
+                ui.ai_busy.set_visible(false);
+                ui.ai_msg.set_label(&gettext!("AI noise reduction unavailable: {}", e));
+                ui.ai_msg.set_visible(self.develop.detail.nr_ai);
+            }
+            Done::AiProgress(..) | Done::AiReady(_) | Done::AiFailed(..) => {}
             Done::Sampled(c) => match self.camera().and_then(|cam| cam.neutral_for(c)) {
                 Some(kt) => self.input.emit(Msg::Develop(DevelopEdit::Picked(kt))),
                 None => self.toast(&gettext("Pick a grey area that is not too dark or too bright")),

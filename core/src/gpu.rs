@@ -442,6 +442,11 @@ pub enum Done {
     },
     /// What `Job::SampleRaw` read: as-shot-balanced camera RGB.
     Sampled([f32; 3]),
+    /// AI noise reduction of the RAW of this load generation: fraction done,
+    /// then ready (develop again to see it), or why it cannot run.
+    AiProgress(u64, f32),
+    AiReady(u64),
+    AiFailed(u64, String),
 }
 
 /// A filmstrip photo on the GPU and the grade its frame was last rendered with.
@@ -490,6 +495,22 @@ struct Worker {
     roll: (u64, Vec<RollFrame>),
     /// Last grade baked for the Lab, reused until the grade changes.
     grade_lut: std::cell::RefCell<Option<(Grade, Arc<Lut3d>)>>,
+    #[cfg(feature = "ai")]
+    ai: Ai,
+}
+
+/// AI noise reduction of the loaded RAW, run a tile per worker turn.
+#[cfg(feature = "ai")]
+#[derive(Default)]
+struct Ai {
+    /// The Bayer network, loaded on first use (or why it could not be).
+    net: Option<Result<crate::ai::UNet, String>>,
+    /// The loaded RAW's load generation and CPU data.
+    generation: u64,
+    data: Option<Arc<RawData>>,
+    run: Option<crate::ai::AiRun>,
+    /// Why this RAW cannot be denoised: not retried until another loads.
+    failed: bool,
 }
 
 /// Longest side of the CPU copy of each developed RAW frame.
@@ -533,6 +554,64 @@ impl Worker {
         lut
     }
 
+    /// Starts denoising the loaded RAW when `on` and it was not yet; stops when not `on`.
+    #[cfg(feature = "ai")]
+    fn ai_begin(&mut self, gpu: &Gpu, on: bool, notify: &impl Fn(Done)) {
+        let ai = &mut self.ai;
+        if !on {
+            ai.run = None;
+            return;
+        }
+        let (Some(raw), Some(data)) = (&self.raw, &ai.data) else { return };
+        if raw.ai.is_some() || ai.run.is_some() || ai.failed {
+            return;
+        }
+        let net = ai.net.get_or_insert_with(|| {
+            let dir = crate::ai::models_dir().ok_or("AI models not installed")?;
+            Ok(crate::ai::UNet::new(gpu, &crate::ai::Weights::load(&dir, crate::ai::Variant::Bayer)?))
+        });
+        let started = net.as_ref().map_err(Clone::clone).and_then(|_| gpu.ai_start(data, gpu.ai_tile_edge()?));
+        match started {
+            Ok(run) => {
+                ai.run = Some(run);
+                notify(Done::AiProgress(ai.generation, 0.0));
+            }
+            Err(e) => {
+                ai.failed = true;
+                notify(Done::AiFailed(ai.generation, e));
+            }
+        }
+    }
+
+    /// Runs the next AI tile; false once no run is left.
+    fn ai_step(&mut self, gpu: &Gpu, notify: &impl Fn(Done)) -> bool {
+        #[cfg(feature = "ai")]
+        {
+            let ai = &mut self.ai;
+            let (Some(run), Some(Ok(net)), Some(raw), Some(data)) = (&mut ai.run, &ai.net, &mut self.raw, &ai.data) else {
+                return false;
+            };
+            if let Err(e) = gpu.ai_step(run, net) {
+                (ai.run, ai.failed) = (None, true);
+                notify(Done::AiFailed(ai.generation, e));
+                return false;
+            }
+            notify(Done::AiProgress(ai.generation, run.progress()));
+            if !run.done() {
+                return true;
+            }
+            let level0 = ai.run.take().expect("stepped above").level0;
+            raw.ai = Some(gpu.mips(data, level0));
+            notify(Done::AiReady(ai.generation));
+            false
+        }
+        #[cfg(not(feature = "ai"))]
+        {
+            let _ = (gpu, notify);
+            false
+        }
+    }
+
     fn handle(&mut self, gpu: &Gpu, job: Job, notify: &impl Fn(Done)) {
         match job {
             Job::SetPhoto(p) => {
@@ -556,6 +635,10 @@ impl Worker {
                     let small = gpu.small(&raw, RAW_SMALL);
                     let decoded = Decoded::raw(small, raw.camera.clone(), size);
                     self.raw = Some(raw);
+                    #[cfg(feature = "ai")]
+                    {
+                        self.ai = Ai { net: self.ai.net.take(), generation, data: Some(data.clone()), ..Ai::default() };
+                    }
                     // The CPU copy only serves a CA reload: none kept when CA cannot apply.
                     let data = crate::ca::applies(&data).then_some(data);
                     (self.raw_data, self.raw_ca, self.ca_data) = (data, false, None);
@@ -574,10 +657,18 @@ impl Worker {
                         true => self.ca_data.get_or_insert_with(|| crate::ca::corrected(&data).map(Arc::new)).clone(),
                         false => None,
                     };
-                    if let Ok(raw) = gpu.load_raw(&src.unwrap_or(data)) {
+                    let data = src.unwrap_or(data);
+                    if let Ok(raw) = gpu.load_raw(&data) {
                         self.raw = Some(raw);
+                        // The AI result was made from the other mosaic: denoise this one.
+                        #[cfg(feature = "ai")]
+                        {
+                            (self.ai.data, self.ai.run, self.ai.failed) = (Some(data), None, false);
+                        }
                     }
                 }
+                #[cfg(feature = "ai")]
+                self.ai_begin(gpu, develop.detail.nr_ai, notify);
                 let Some(raw) = &self.raw else { return };
                 // shortcut: a develop too large for the GPU is skipped (the preview stays); only a huge HiDPI canvas gets there.
                 let slot = if view { &mut self.view } else { &mut self.raw_fit };
@@ -699,10 +790,10 @@ pub fn spawn(notify: impl Fn(Done) + Send + 'static) -> mpsc::Sender<Job> {
                 Err(e) => return notify(Done::Failed(e)),
             };
             let mut worker = Worker::default();
-            let mut thumbs_left = false;
+            let (mut thumbs_left, mut ai_left) = (false, false);
             loop {
-                // Block for work only when no thumbnail pass is pending.
-                let first = if thumbs_left {
+                // Block for work only when no thumbnail pass or AI run is pending.
+                let first = if thumbs_left || ai_left {
                     rx.try_recv().ok()
                 } else {
                     match rx.recv() {
@@ -720,6 +811,7 @@ pub fn spawn(notify: impl Fn(Done) + Send + 'static) -> mpsc::Sender<Job> {
                 let ok = catch_unwind(AssertUnwindSafe(|| {
                     batch.into_iter().for_each(|job| worker.handle(&gpu, job, &notify));
                     thumbs_left = worker.gallery_step(&gpu, &notify);
+                    ai_left = worker.ai_step(&gpu, &notify);
                 }));
                 if ok.is_err() {
                     return notify(Done::Failed("GPU error, restart the application".into()));
@@ -788,6 +880,57 @@ mod tests {
         let on = develop_with(true);
         assert_ne!(off, on, "CA correction changed nothing");
         assert_eq!(off, develop_with(false));
+    }
+
+    /// Opening another RAW mid-run drops the AI run: no result reaches the
+    /// new photo; asked again, the new photo gets its own.
+    #[cfg(feature = "ai")]
+    #[test]
+    fn stale_ai_result_is_dropped() {
+        if crate::ai::models_dir().is_none() {
+            return eprintln!("no models, skipped");
+        }
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let photo = |v: f32| {
+            let mut pattern = [0; 36];
+            pattern[..4].copy_from_slice(&[0, 1, 1, 2]);
+            let (w, h) = (2400, 1800);
+            Arc::new(RawData {
+                pixels: crate::raw::Pixels::Bayer(vec![v; w * h]),
+                width: w as u32,
+                height: h as u32,
+                pattern,
+                pattern_size: [2, 2],
+                crop: [0, 0, w as u32, h as u32],
+                orientation: 1,
+                camera: crate::develop::Camera::neutral(),
+            })
+        };
+        let done = std::cell::RefCell::new(Vec::new());
+        let notify = |d: Done| done.borrow_mut().push(d);
+        let mut worker = Worker::default();
+        let mut develop = Develop::default();
+        develop.detail.nr_ai = true;
+        let job = |generation| Job::DevelopRaw {
+            generation,
+            region: Region { center: [1200.0, 900.0], size: [2400.0, 1800.0], angle: 0.0 },
+            width: 300,
+            height: 225,
+            develop,
+            profile: Profile::Standard,
+            view: false,
+        };
+        worker.handle(&gpu, Job::LoadRaw(1, PathBuf::new(), photo(0.2)), &notify);
+        worker.handle(&gpu, job(1), &notify);
+        assert!(worker.ai_step(&gpu, &notify), "one tile of several");
+        worker.handle(&gpu, Job::LoadRaw(2, PathBuf::new(), photo(0.5)), &notify);
+        assert!(!worker.ai_step(&gpu, &notify), "the old run is gone");
+        assert!(worker.raw.as_ref().unwrap().ai.is_none());
+        worker.handle(&gpu, job(2), &notify);
+        while worker.ai_step(&gpu, &notify) {}
+        assert!(worker.raw.as_ref().unwrap().ai.is_some());
+        let ready: Vec<u64> = done.borrow().iter().filter_map(|d| if let Done::AiReady(g) = d { Some(*g) } else { None }).collect();
+        assert_eq!(ready, [2]);
     }
 
     /// The RAW renders at the size it was developed at, from the GPU; the

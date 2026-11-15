@@ -242,6 +242,8 @@ enum DevelopEdit {
     CameraExposure,
     /// A detail tool's slider.
     Detail(DetailField, f32),
+    /// The chromatic-aberration switch.
+    CaCorrect(bool),
     Pick(bool),
     Picked([f32; 2]),
 }
@@ -1013,6 +1015,7 @@ impl App {
             DevelopEdit::Exposure(v) => dev.exposure = v,
             DevelopEdit::CameraExposure => dev.exposure = cam.baseline_ev,
             DevelopEdit::Detail(field, v) => *field(&mut dev.detail) = v,
+            DevelopEdit::CaCorrect(on) => dev.detail.ca_correct = on,
             DevelopEdit::Picked(kt) => {
                 dev.wb = Some(kt);
                 self.ui.sidebar.develop.picker.set_active(false);
@@ -1051,6 +1054,7 @@ impl App {
             s.adj.set_value(*field(&mut d) as f64);
         }
         ui.nr_detail.root.set_sensitive(d.nr_luma > 0.0);
+        ui.ca.set_active(d.ca_correct);
         ui.preset.set_selected(preset);
         ui.syncing.set(false);
     }
@@ -1581,6 +1585,7 @@ struct DevelopUi {
     detail: Vec<(Slider, DetailField)>,
     /// Idle without luminance NR: it only restores what that removed.
     nr_detail: Slider,
+    ca: adw::SwitchRow,
 }
 
 /// Index of "Custom" in the white-balance preset dropdown (after As shot and the presets).
@@ -1688,9 +1693,22 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     root.append(&section(&gettext("Detail"), &sharp));
     let lens = vbox(4);
     detail_slider(&lens, &gettext("Lens vignetting"), (-100.0, 100.0), |d| &mut d.lens_vignette);
+    let ca = adw::SwitchRow::builder()
+        .title(gettext("Chromatic aberration"))
+        .subtitle(gettext("Removes red/cyan fringes"))
+        .build();
+    let (snd, sync) = (sender.clone(), syncing.clone());
+    ca.connect_active_notify(move |r| {
+        if !sync.get() {
+            snd.input(Msg::Develop(DevelopEdit::CaCorrect(r.is_active())));
+        }
+    });
+    let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
+    list.append(&ca);
+    lens.append(&list);
     root.append(&section(&gettext("Lens"), &lens));
     root.set_visible(false);
-    DevelopUi { syncing, root, preset, kelvin, tint, picker, exposure, detail, nr_detail }
+    DevelopUi { syncing, root, preset, kelvin, tint, picker, exposure, detail, nr_detail, ca }
 }
 
 /// Curve editor with a channel selector and a reset button.

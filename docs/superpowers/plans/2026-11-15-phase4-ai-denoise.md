@@ -1,6 +1,6 @@
 # Phase 4 — AI denoise Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** RawNIND UtNet2 denoising on the GPU in our own WGSL, as an alternative to classic noise reduction, bundled with the app.
 
@@ -40,8 +40,8 @@
 - Produces: converter writes `models/rawnind/{bayer,linear}.bin` (little-endian f32, layers in graph order) and `{bayer,linear}.json`: `{"layers":[{"op":"conv"|"convT"|"pool"|"concat"|"shuffle","name":..,"in":c,"out":c,"k":3|2|1,"offset":floats,"skip":layer_index?}],"input_channels":4|3,"output_channels":3,"scale":2|1}`; plus `{bayer,linear}_ref.bin`: a 64×64 (packed) deterministic input and the ONNX reference output (`onnx.reference.ReferenceEvaluator`).
 - Produces: `pub struct Weights { pub graph: Vec<Layer>, pub data: Vec<f32> }`, `pub fn Weights::load(dir: &Path, variant: Variant) -> Result<Weights, String>`, `pub enum Variant { Bayer, Linear }`, `pub fn models_dir() -> Option<PathBuf>` (env `RAWVALLEY_MODELS`, then `<exe>/../share/rawvalley/models`, then the repo `models/` in debug builds).
 
-- [ ] **Step 1: Failing tests** `weights_load_both_variants` (skips with "no models, skipped" when `models_dir()` is None): 19 convs, 4 pools, 4 convT, 4 concats, parameter count within 1% of 7.76 M, every `offset + size` ≤ `data.len()`, channel counts chain.
-- [ ] **Step 2:** write converter + loader; `make models` then PASS; commit `AI models: fetch, convert, load`.
+- [x] **Step 1: Failing tests** `weights_load_both_variants` (skips with "no models, skipped" when `models_dir()` is None): 19 convs, 4 pools, 4 convT, 4 concats, parameter count within 1% of 7.76 M, every `offset + size` ≤ `data.len()`, channel counts chain.
+- [x] **Step 2:** write converter + loader; `make models` then PASS; commit `AI models: fetch, convert, load`.
 
 ### Task 2: UtNet2 on the GPU
 
@@ -51,8 +51,8 @@
 - Consumes: `Weights`.
 - Produces: `pub struct UNet` (weights uploaded once, pipelines), `UNet::new(gpu: &Gpu, w: Weights) -> UNet`, `UNet::run(&self, gpu: &Gpu, input: &wgpu::Buffer, w: u32, h: u32) -> wgpu::Buffer` (planar CHW f32; `w`, `h` multiples of 16; output `3 × (w·scale) × (h·scale)`). Kernels: `conv3x3_lrelu` (fused LeakyReLU 0.2, bias), `conv1x1`, `convT2x2`, `maxpool2`, `shuffle2` (CRD); concat = channel offsets into one buffer, no copy.
 
-- [ ] **Step 1: Failing test** `unet_matches_onnx_reference`: both variants, the `_ref.bin` input → max |Δ| ≤ 1e-4 · max|ref| and no NaN.
-- [ ] **Step 2:** first a direct, correct version (one invocation per output pixel × 8 output channels, input tile in workgroup memory per 8-input-channel chunk); PASS; commit `UtNet2 on the GPU`.
+- [x] **Step 1: Failing test** `unet_matches_onnx_reference`: both variants, the `_ref.bin` input → max |Δ| ≤ 1e-4 · max|ref| and no NaN.
+- [x] **Step 2:** first a direct, correct version (one invocation per output pixel × 8 output channels, input tile in workgroup memory per 8-input-channel chunk); PASS; commit `UtNet2 on the GPU`.
 
 ### Task 3: Tiled denoise of a RAW
 

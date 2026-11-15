@@ -14,7 +14,7 @@ pub enum Variant {
 }
 
 impl Variant {
-    fn stem(self) -> &'static str {
+    pub(crate) fn stem(self) -> &'static str {
         match self {
             Variant::Bayer => "bayer",
             Variant::Linear => "linear",
@@ -64,16 +64,23 @@ impl Weights {
         let paired = tensors.chunks(2).all(|p| {
             p.len() == 2 && p[1].name == p[0].name.replace(".weight", ".bias") && p[0].name.ends_with(".weight")
         });
-        let expected = (1..=4)
-            .flat_map(|l| [format!("convs{l}.0"), format!("convs{l}.2"), format!("up{l}"), format!("tconvs{l}.0")]);
         let names: Vec<&str> = tensors.iter().map(|t| t.name.trim_end_matches(".weight")).collect();
-        if !paired
-            || !expected.chain(["bottom.0".into(), "output_module.0".into()]).all(|n| names.contains(&n.as_str()))
-        {
+        if !paired || !layer_names().all(|n| names.contains(&n.as_str())) {
             return Err(format!("{stem}: not the RawNIND UtNet2 tensor layout"));
         }
         Ok(Self { variant, tensors, data })
     }
+}
+
+/// Every layer `UNet` looks up by name.
+fn layer_names() -> impl Iterator<Item = String> {
+    let per_level = (1..=4).flat_map(|l| {
+        [0, 2]
+            .into_iter()
+            .flat_map(move |i| [format!("convs{l}.{i}"), format!("tconvs{l}.{i}")])
+            .chain([format!("up{l}")])
+    });
+    per_level.chain(["bottom.0", "bottom.2", "output_module.0"].map(String::from))
 }
 
 /// Where the models are: `RAWVALLEY_MODELS`, then the install's

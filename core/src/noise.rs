@@ -46,7 +46,7 @@ fn block(g: impl Fn(usize, usize) -> f32 + Copy, x0: usize, y0: usize) -> Block 
     Block { mean: sum / (BLOCK * BLOCK) as f32, noise: sigma * sigma, texture }
 }
 
-fn median(v: &mut [f32]) -> f32 {
+pub(crate) fn median(v: &mut [f32]) -> f32 {
     let mid = v.len() / 2;
     *v.select_nth_unstable_by(mid, f32::total_cmp).1
 }

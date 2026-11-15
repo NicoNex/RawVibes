@@ -556,7 +556,9 @@ impl Worker {
                     let small = gpu.small(&raw, RAW_SMALL);
                     let decoded = Decoded::raw(small, raw.camera.clone(), size);
                     self.raw = Some(raw);
-                    (self.raw_data, self.raw_ca, self.ca_data) = (Some(data), false, None);
+                    // The CPU copy only serves a CA reload: none kept when CA cannot apply.
+                    let data = crate::ca::applies(&data).then_some(data);
+                    (self.raw_data, self.raw_ca, self.ca_data) = (data, false, None);
                     decoded
                 });
                 notify(Done::RawLoaded(generation, path, loaded));

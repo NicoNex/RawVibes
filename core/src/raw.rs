@@ -942,8 +942,8 @@ impl Gpu {
     }
 
     /// `DetailParams` of `detail.wgsl`.
-    fn detail_params(&self, w: u32, h: u32, s: f32, sigma: f32, noise: NoiseModel, defringe: f32) -> wgpu::Buffer {
-        self.storage(bytemuck::bytes_of(&DetailParams {
+    fn detail_params(w: u32, h: u32, s: f32, sigma: f32, noise: NoiseModel, defringe: f32) -> DetailParams {
+        DetailParams {
             size: [w, h],
             sigma,
             radius: (3.0 * sigma).ceil() as i32,
@@ -955,12 +955,13 @@ impl Gpu {
             usm: 0.0,
             usm_threshold: 0.0,
             _pad2: 0.0,
-        }))
+        }
     }
 
     /// Defringe (`detail.wgsl`).
     fn defringe(&self, lin: &wgpu::Buffer, [sa, _]: [&wgpu::Buffer; 2], w: u32, h: u32, s: f32, amount: f32) {
-        let params = self.detail_params(w, h, s, 1.0, NoiseModel::default(), amount);
+        let params =
+            self.storage(bytemuck::bytes_of(&Self::detail_params(w, h, s, 1.0, NoiseModel::default(), amount)));
         let (p, g, own) = (&self.raw, grid(w * h), [(0, &params), (1, lin), (2, sa)]);
         self.passes(&[(&p.df_init, &own, g), (&p.df_apply, &own, g)]);
     }
@@ -977,7 +978,8 @@ impl Gpu {
         detail: &Detail,
         noise: NoiseModel,
     ) {
-        let params = self.detail_params(w, h, s, (detail.sharpen_radius * s).max(0.3), noise, 0.0);
+        let sigma = (detail.sharpen_radius * s).max(0.3);
+        let params = self.storage(bytemuck::bytes_of(&Self::detail_params(w, h, s, sigma, noise, 0.0)));
         let (p, g) = (&self.raw, grid(w * h));
         let (own, both) = ([(0, &params), (1, lin), (2, sa)], [(0, &params), (2, sa), (3, sb)]);
         let mut passes: Vec<Pass> = vec![(&p.sh_init, &own, g)];
@@ -1001,18 +1003,10 @@ impl Gpu {
     ) {
         let sigma = (detail.usm_radius * s).max(0.3);
         let params = self.storage(bytemuck::bytes_of(&DetailParams {
-            size: [w, h],
-            sigma,
-            radius: (3.0 * sigma).ceil() as i32,
-            reach: 0,
-            _pad: 0,
-            a: 0.0,
-            b: 0.0,
-            defringe: 0.0,
             usm: 2.0 * detail.usm / 100.0,
             // 0..100 → up to 0.02 of L (about 5% of a mid-grey's lightness).
             usm_threshold: detail.usm_threshold / 100.0 * 0.02,
-            _pad2: 0.0,
+            ..Self::detail_params(w, h, s, sigma, NoiseModel::default(), 0.0)
         }));
         let (p, g) = (&self.raw, grid(w * h));
         let (own, both) = ([(0, &params), (1, lin), (2, sa)], [(0, &params), (2, sa), (3, sb)]);

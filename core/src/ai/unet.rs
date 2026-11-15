@@ -77,10 +77,6 @@ impl UNet {
         }
     }
 
-    pub fn variant(&self) -> Variant {
-        self.variant
-    }
-
     /// A dispatch of `pipeline` from `src` (channels from `src_c0`) into
     /// `dst` (from `dst_c0`), with `name`'s weights when it has any.
     #[allow(clippy::too_many_arguments)]
@@ -104,7 +100,8 @@ impl UNet {
     /// Runs the network on `input` (planar, 4 channels for Bayer, 3 for
     /// linear, `w` × `h`, both multiples of 16). The output is 3 planar
     /// channels at `w` × `h` (linear) or `2w` × `2h` (Bayer).
-    // shortcut: allocates every intermediate per call; keep them per tile size once tiling runs it per tile.
+    // shortcut: allocates every intermediate, params buffer and bind group per call;
+    // keep them per tile size once tiling runs it per tile.
     pub fn run(&self, gpu: &Gpu, input: &wgpu::Buffer, w: u32, h: u32) -> wgpu::Buffer {
         debug_assert!(w.is_multiple_of(16) && h.is_multiple_of(16), "UtNet2 needs multiples of 16, got {w}×{h}");
         let bayer = self.variant == Variant::Bayer;
@@ -186,7 +183,7 @@ mod tests {
         let Some(dir) = models_dir() else { return eprintln!("no models, skipped") };
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
         for (variant, cin, scale) in [(Variant::Bayer, 4usize, 2usize), (Variant::Linear, 3, 1)] {
-            let stem = if variant == Variant::Bayer { "bayer" } else { "linear" };
+            let stem = variant.stem();
             // Written only by `convert_rawnind.py --ref` (needs onnxruntime).
             let Ok(bytes) = std::fs::read(dir.join(format!("{stem}_ref.bin"))) else {
                 return eprintln!("no reference tile, skipped");

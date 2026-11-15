@@ -1622,6 +1622,11 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
         bx.append(&s.root);
         detail.push((s, field));
     };
+    let nr = vbox(4);
+    detail_slider(&nr, &gettext("Luminance"), (0.0, 100.0), 0.0, |d| &mut d.nr_luma);
+    detail_slider(&nr, &gettext("Detail"), (0.0, 100.0), 0.0, |d| &mut d.nr_detail);
+    detail_slider(&nr, &gettext("Chrominance"), (0.0, 100.0), 0.0, |d| &mut d.nr_chroma);
+    root.append(&section(&gettext("Noise reduction"), &nr));
     let lens = vbox(4);
     detail_slider(&lens, &gettext("Lens vignetting"), (-100.0, 100.0), 0.0, |d| &mut d.lens_vignette);
     root.append(&section(&gettext("Lens"), &lens));

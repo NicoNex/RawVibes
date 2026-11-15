@@ -13,6 +13,7 @@ use wgpu::util::DeviceExt;
 
 use crate::develop::{Camera, Detail, Develop};
 use crate::gpu::{Gpu, GpuPhoto, WORKGROUP};
+use crate::noise::NoiseModel;
 use crate::photo::{Photo, RAW_TO_SCENE};
 use crate::profiles::{Profile, rec2020_to_rec709};
 use crate::view::Region;
@@ -155,6 +156,8 @@ pub(crate) fn camera(raw: &rawler::RawImage) -> Camera {
 pub struct GpuRaw {
     pub(crate) levels: Vec<(wgpu::Buffer, u32, u32)>,
     pub camera: Camera,
+    /// Noise of the full-resolution camera RGB, estimated at load.
+    pub noise: NoiseModel,
     pub orientation: u16,
 }
 
@@ -208,6 +211,12 @@ pub struct Pipelines {
     mip: wgpu::ComputePipeline,
     develop_linear: wgpu::ComputePipeline,
     develop_encode: wgpu::ComputePipeline,
+    nr_gat: wgpu::ComputePipeline,
+    nr_nlm: wgpu::ComputePipeline,
+    nr_luma_apply: wgpu::ComputePipeline,
+    nr_chroma_init: wgpu::ComputePipeline,
+    nr_atrous: wgpu::ComputePipeline,
+    nr_chroma_apply: wgpu::ComputePipeline,
     /// The OETF table of the last profile developed into.
     oetf: std::cell::RefCell<Option<(Profile, wgpu::Buffer)>>,
     /// `DevelopParams`, rewritten per frame.
@@ -217,7 +226,14 @@ pub struct Pipelines {
 impl Pipelines {
     pub(crate) fn new(device: &wgpu::Device) -> Self {
         let pipeline = crate::gpu::shader(device, "raw.wgsl", include_str!("raw.wgsl"));
+        let denoise = crate::gpu::shader(device, "denoise.wgsl", include_str!("denoise.wgsl"));
         Self {
+            nr_gat: denoise("nr_gat"),
+            nr_nlm: denoise("nr_nlm"),
+            nr_luma_apply: denoise("nr_luma_apply"),
+            nr_chroma_init: denoise("nr_chroma_init"),
+            nr_atrous: denoise("nr_atrous"),
+            nr_chroma_apply: denoise("nr_chroma_apply"),
             white_balance: pipeline("white_balance"),
             hl_partials: pipeline("hl_partials"),
             hl_reduce: pipeline("hl_reduce"),
@@ -276,6 +292,23 @@ struct DevelopParams {
     k: f32,
     lens: f32,
     _pad: [f32; 2],
+}
+
+/// `NrParams` of `denoise.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct NrParams {
+    size: [u32; 2],
+    patch: i32,
+    search: i32,
+    step: i32,
+    _pad: u32,
+    a: f32,
+    b: f32,
+    luma: f32,
+    detail: f32,
+    chroma: f32,
+    _pad2: f32,
 }
 
 /// Rows of a row-major 3×3 matrix, padded as WGSL lays out `mat3x3` columns
@@ -405,7 +438,16 @@ impl Gpu {
             self.passes(&[(&p.mip, &[(0, &params), (10, src), (11, &dst)], grid(nw * nh))]);
             levels.push((dst, nw, nh));
         }
-        Ok(GpuRaw { levels, camera: raw.camera.clone(), orientation: raw.orientation })
+        let mut gpu_raw =
+            GpuRaw { levels, camera: raw.camera.clone(), orientation: raw.orientation, noise: Default::default() };
+        // From level 1 (half size: fast, and demosaic artefacts averaged out);
+        // its variances are a quarter of full resolution's.
+        let k = 1.min(gpu_raw.levels.len() - 1);
+        let (_, lw, lh) = gpu_raw.levels[k];
+        let m = crate::noise::estimate(&self.read_level(&gpu_raw, k), lw as usize, lh as usize);
+        let up = 4f32.powi(k as i32);
+        gpu_raw.noise = NoiseModel { a: m.a * up, b: m.b * up };
+        Ok(gpu_raw)
     }
 
     /// `r` (oriented full-resolution coordinates) of `raw` developed to
@@ -466,10 +508,14 @@ impl Gpu {
         }
         let table = &oetf.as_ref().expect("set above").1;
         let photo = self.photo_slot(slot, w, h);
-        let lin = photo.lin.get_or_init(|| self.buffer(w as u64 * h as u64 * 16, wgpu::BufferUsages::empty()));
+        let lin = photo.lin.get_or_init(|| self.buffer(w as u64 * h as u64 * 16, wgpu::BufferUsages::COPY_SRC));
         let (p, g) = (&self.raw, grid(w * h));
         self.passes(&[(&p.develop_linear, &[(10, level), (12, &p.develop_params), (15, lin)], g)]);
-        self.stages(lin, w, h, 1.0 / scale, &dev.detail);
+        // The sampled level averaged 4^k pixels: a quarter of the variance each;
+        // exposure scales the signal, so the model of Y follows it.
+        let (var, e) = (0.25f32.powi(k as i32), RAW_TO_SCENE * dev.exposure.exp2());
+        let noise = NoiseModel { a: raw.noise.a * var * e, b: raw.noise.b * var * e * e };
+        self.stages(photo, w, h, 1.0 / scale, &dev.detail, noise);
         self.passes(&[(&p.develop_encode, &[(12, &p.develop_params), (13, &photo.src), (14, table), (15, lin)], g)]);
         Ok(())
     }
@@ -477,7 +523,79 @@ impl Gpu {
     /// The detail tools on `lin` (`w` × `h` linear Rec.2020), in the spec's
     /// order; only those whose amount is not zero run. `scale`: output
     /// pixels per full-resolution pixel, by which radii shrink.
-    fn stages(&self, _lin: &wgpu::Buffer, _w: u32, _h: u32, _scale: f32, _detail: &Detail) {}
+    /// `noise`: the model of Y in `lin`.
+    fn stages(&self, photo: &GpuPhoto, w: u32, h: u32, scale: f32, detail: &Detail, noise: NoiseModel) {
+        let lin = photo.lin.get().expect("made by develop_into");
+        if detail.nr_luma > 0.0 || detail.nr_chroma > 0.0 {
+            let [sa, sb] = photo
+                .scratch
+                .get_or_init(|| [0, 1].map(|_| self.buffer(w as u64 * h as u64 * 16, wgpu::BufferUsages::empty())));
+            self.denoise(lin, sa, sb, w, h, scale, detail, noise);
+        }
+    }
+
+    /// Classic noise reduction (`denoise.wgsl`); radii shrink with `scale`.
+    #[allow(clippy::too_many_arguments)]
+    fn denoise(
+        &self,
+        lin: &wgpu::Buffer,
+        sa: &wgpu::Buffer,
+        sb: &wgpu::Buffer,
+        w: u32,
+        h: u32,
+        scale: f32,
+        detail: &Detail,
+        noise: NoiseModel,
+    ) {
+        let radius = |full: f32| (full * scale.min(1.0)).round().max(1.0) as i32;
+        let params = |step: i32| {
+            self.storage(bytemuck::bytes_of(&NrParams {
+                size: [w, h],
+                patch: radius(2.0),
+                search: radius(7.0),
+                step,
+                _pad: 0,
+                a: noise.a,
+                b: noise.b,
+                luma: detail.nr_luma / 100.0,
+                detail: detail.nr_detail / 200.0,
+                chroma: detail.nr_chroma / 100.0,
+                _pad2: 0.0,
+            }))
+        };
+        let (p, g, base) = (&self.raw, grid(w * h), params(1));
+        if detail.nr_luma > 0.0 {
+            // Each pass binds only what it uses (layouts are derived from the shader).
+            self.passes(&[
+                (&p.nr_gat, &[(0, &base), (1, lin), (2, sa)], g),
+                (&p.nr_nlm, &[(0, &base), (2, sa), (3, sb)], g),
+                (&p.nr_luma_apply, &[(0, &base), (1, lin), (3, sb)], g),
+            ]);
+        }
+        if detail.nr_chroma > 0.0 {
+            // Five levels at full resolution (31 px), fewer when downscaled.
+            let levels = (5.0 + scale.min(1.0).log2()).round().clamp(1.0, 5.0) as i32;
+            let steps: Vec<_> = (0..levels).map(|l| params(1 << l)).collect();
+            let mut passes: Vec<Pass> = Vec::new();
+            let init = [(0, &base), (1, lin), (2, sa)];
+            passes.push((&p.nr_chroma_init, &init, g));
+            let order = [[(0, sa), (1, sb)], [(0, sb), (1, sa)]];
+            let binds: Vec<[(u32, &wgpu::Buffer); 3]> = steps
+                .iter()
+                .enumerate()
+                .map(|(l, s)| {
+                    let [(_, from), (_, to)] = order[l % 2];
+                    [(0, s), (2, from), (3, to)]
+                })
+                .collect();
+            passes.extend(binds.iter().map(|b| (&p.nr_atrous, b.as_slice(), g)));
+            // The last level wrote the buffer the next one would read: bind it as `sa`.
+            let last = if levels % 2 == 1 { sb } else { sa };
+            let apply = [(0, &base), (1, lin), (2, last)];
+            passes.push((&p.nr_chroma_apply, &apply, g));
+            self.passes(&passes);
+        }
+    }
 
     /// The developed pixels back on the CPU.
     pub fn read_photo(&self, p: &GpuPhoto) -> Photo {
@@ -891,6 +1009,91 @@ mod tests {
         assert!(at(&flat_lens(&gpu, -50.0), 0, 0) < centre - 0.01);
     }
 
+    const NOISE: crate::noise::NoiseModel = crate::noise::NoiseModel { a: 0.002, b: 0.0002 };
+
+    /// A `w` × `h` field of `f(x)` with Poisson–Gaussian noise of [`NOISE`], developed
+    /// at full resolution with `detail`; the linear Rec.2020 result.
+    fn noisy(gpu: &Gpu, w: u32, h: u32, f: impl Fn(u32) -> f32, detail: Detail) -> Vec<[f32; 4]> {
+        let mut n = crate::noise::tests::normals(11);
+        let px = (0..w * h)
+            .map(|i| {
+                let x = f(i % w);
+                std::array::from_fn(|_| x + (NOISE.a * x + NOISE.b).sqrt() * n())
+            })
+            .collect();
+        let mut raw = rgb_raw(gpu, w, h, px, 1, Camera::neutral());
+        raw.noise = NOISE;
+        let dev = Develop { detail, ..Develop::default() };
+        let photo = gpu.develop(&raw, &whole(w, h), w, h, &dev, Profile::Standard).unwrap();
+        bytemuck::cast_slice(&gpu.read_f32(photo.lin.get().unwrap())).to_vec()
+    }
+
+    fn luma(p: &[f32; 4]) -> f32 {
+        0.2627 * p[0] + 0.678 * p[1] + 0.0593 * p[2]
+    }
+
+    fn mean_std(v: impl Iterator<Item = f32> + Clone) -> (f32, f32) {
+        let n = v.clone().count() as f32;
+        let m = v.clone().sum::<f32>() / n;
+        (m, (v.map(|x| (x - m).powi(2)).sum::<f32>() / n).sqrt())
+    }
+
+    fn nr(luma: f32, chroma: f32) -> Detail {
+        Detail { nr_luma: luma, nr_chroma: chroma, ..Detail::default() }
+    }
+
+    #[test]
+    fn nr_preserves_the_mean() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let before = mean_std(noisy(&gpu, 96, 96, |_| 0.2, nr(0.0, 0.0)).iter().map(luma)).0;
+        let after = mean_std(noisy(&gpu, 96, 96, |_| 0.2, nr(100.0, 100.0)).iter().map(luma)).0;
+        assert!((after / before - 1.0).abs() < 0.005, "{after} vs {before}");
+    }
+
+    #[test]
+    fn nr_reduces_noise() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let before = mean_std(noisy(&gpu, 96, 96, |_| 0.2, nr(0.0, 0.0)).iter().map(luma)).1;
+        let after = mean_std(noisy(&gpu, 96, 96, |_| 0.2, nr(100.0, 0.0)).iter().map(luma)).1;
+        assert!(after * 3.0 <= before, "std {after} vs {before}");
+    }
+
+    /// 10–90% rise of a step edge, from the row-averaged profile.
+    fn rise(px: &[[f32; 4]], w: usize) -> f32 {
+        let h = px.len() / w;
+        let profile: Vec<f32> = (0..w).map(|x| (0..h).map(|y| luma(&px[y * w + x])).sum::<f32>() / h as f32).collect();
+        let (lo, hi) = (
+            profile[..w / 4].iter().sum::<f32>() / (w / 4) as f32,
+            profile[3 * w / 4..].iter().sum::<f32>() / (w / 4) as f32,
+        );
+        let cross = |t: f32| {
+            let level = lo + t * (hi - lo);
+            let i = profile.iter().position(|&v| v >= level).unwrap();
+            i as f32 - 1.0 + (level - profile[i - 1]) / (profile[i] - profile[i - 1])
+        };
+        cross(0.9) - cross(0.1)
+    }
+
+    #[test]
+    fn nr_keeps_edges() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let step = |x: u32| if x < 48 { 0.1 } else { 0.4 };
+        let before = rise(&noisy(&gpu, 96, 64, step, nr(0.0, 0.0)), 96);
+        let after = rise(&noisy(&gpu, 96, 64, step, nr(100.0, 100.0)), 96);
+        assert!(after <= before + 1.0, "rise {after} vs {before}");
+    }
+
+    #[test]
+    fn chroma_nr_leaves_luminance() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let f = |x: u32| 0.1 + x as f32 / 200.0;
+        let before = noisy(&gpu, 64, 48, f, nr(0.0, 0.0));
+        let after = noisy(&gpu, 64, 48, f, nr(0.0, 100.0));
+        assert!(before.iter().zip(&after).all(|(p, q)| (luma(p) - luma(q)).abs() < 1e-3));
+        let chroma = |v: &[[f32; 4]]| mean_std(v.iter().map(|p| p[2] - luma(p))).1;
+        assert!(chroma(&after) * 2.0 < chroma(&before), "chroma noise {} vs {}", chroma(&after), chroma(&before));
+    }
+
     /// Every EXIF orientation gives what the image crate's `apply_orientation` does.
     #[test]
     fn develop_honours_orientation() {
@@ -960,6 +1163,33 @@ mod tests {
             eprintln!("frame {w}×{h}: {:?}", t.elapsed() / 10);
         }
         assert!(rmse < 0.03, "RMSE {rmse}");
+    }
+
+    /// On a real file (RAWVALLEY_RAW): the estimated noise model, and what
+    /// noise reduction costs a 2048 px fit and a 100% 2048 px view.
+    #[test]
+    fn nr_on_sample() {
+        let Ok(path) = std::env::var("RAWVALLEY_RAW") else { return eprintln!("no sample, skipped") };
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let t = std::time::Instant::now();
+        let raw = gpu.load_raw(&read_raw(Path::new(&path)).unwrap()).unwrap();
+        eprintln!("load {:?}, noise {:?}", t.elapsed(), raw.noise);
+        assert!(raw.noise.a > 0.0 || raw.noise.b > 0.0);
+        let (w, h) = raw.oriented_size();
+        let fit = whole(w, h);
+        let (fw, fh) = crate::photo::Decoded::fit_size(&fit, 2048);
+        let view = Region { center: fit.center, size: [2048.0, 1365.0], angle: 0.0 };
+        let dev = Develop { detail: nr(50.0, 50.0), ..Develop::default() };
+        for (name, r, ow, oh) in [("fit", fit, fw, fh), ("100%", view, 2048, 1365)] {
+            let mut slot = None;
+            gpu.develop_into(&mut slot, &raw, &r, ow, oh, &dev, Profile::Standard).unwrap();
+            let t = std::time::Instant::now();
+            for _ in 0..3 {
+                gpu.develop_into(&mut slot, &raw, &r, ow, oh, &dev, Profile::Standard).unwrap();
+                gpu.read_range(&slot.as_ref().unwrap().src, 0, 16);
+            }
+            eprintln!("NR {name} {ow}×{oh}: {:?}", t.elapsed() / 3);
+        }
     }
 
     /// The picker reads the pixel shown at a point, whatever the orientation.

@@ -9,6 +9,7 @@ pub mod grade;
 pub mod lab;
 pub mod lut;
 pub mod matching;
+pub mod noise;
 pub mod photo;
 pub mod preset;
 pub mod profiles;

@@ -349,6 +349,109 @@ fn audit_grade_sliders() {
     assert!(fails.is_empty(), "{} grade slider failures:\n{}", fails.len(), fails.join("\n"));
 }
 
+/// Every curve: one point moved over its range, on the chart.
+#[test]
+fn audit_curves() {
+    use crate::grade::{HUE_HUE, HUE_SAT, LUM_SAT, MASTER, neutral_curve};
+    let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+    let chart = gpu.upload(&chart());
+    let mid = |c: usize| move |px: &[[f32; 3]]| mean(px, ramp(0.4, 0.6), |lab| lab[c]);
+    let red = 0usize;
+    let red_x = HUES[red] / std::f32::consts::TAU;
+    // Curve, the point moved (x, its y is swept around the curve's own value there), measure, direction.
+    type CurveCase = (&'static str, usize, f32, Measure, Dir);
+    let cases: Vec<CurveCase> = vec![
+        ("curve master (mid L)", MASTER, 0.5, Box::new(mid(0)), Dir::Up),
+        ("curve red (a)", 1, 0.5, Box::new(mid(1)), Dir::Up),
+        ("curve green (a)", 2, 0.5, Box::new(mid(1)), Dir::Down),
+        ("curve blue (b)", 3, 0.5, Box::new(mid(2)), Dir::Down),
+        (
+            "curve hue vs hue (red)",
+            HUE_HUE,
+            red_x,
+            Box::new(move |px: &[[f32; 3]]| {
+                let (a, b) = (mean(px, patch(red, 1, 1), |c| c[1]), mean(px, patch(red, 1, 1), |c| c[2]));
+                b.atan2(a)
+            }),
+            Dir::Up,
+        ),
+        (
+            "curve hue vs sat (red)",
+            HUE_SAT,
+            red_x,
+            Box::new(move |px: &[[f32; 3]]| mean(px, patch(red, 1, 1), chroma)),
+            Dir::Up,
+        ),
+        (
+            "curve lum vs sat (mid)",
+            LUM_SAT,
+            0.6,
+            Box::new(move |px: &[[f32; 3]]| mean(px, any_patch(Some(1), Some(0)), chroma)),
+            Dir::Up,
+        ),
+    ];
+    let mut fails = Vec::new();
+    for (name, ch, x, measure, dir) in cases {
+        let render = |dy: f32| {
+            let mut g = Grade::default();
+            let base = if ch == MASTER || ch < HUE_HUE { x } else { 0.5 };
+            let mut pts = neutral_curve(ch);
+            pts.insert(1, (x, base + dy));
+            if crate::grade::is_periodic(ch) {
+                // Periodic: the end points are the same hue, both neutral.
+                pts[0].1 = 0.5;
+            }
+            g.curves[ch] = pts;
+            gpu.render(&chart, &g, None, 0.0)
+        };
+        if render(0.0) != gpu.render(&chart, &Grade::default(), None, 0.0) {
+            fails.push(format!("{name}: a point on the neutral curve is not the identity"));
+        }
+        let values = sweep(-0.2, 0.2);
+        let m: Vec<f32> = values.iter().map(|&v| measure(&lab(&render(v)))).collect();
+        judge(name, &values, &m, Some(STEPS / 2), dir, &mut fails);
+        // A curve never folds the ramp back: brighter in, never darker out.
+        if ch == MASTER {
+            for v in [-0.2, 0.2] {
+                let px = lab(&render(v));
+                let l: Vec<f32> = (0..CW).map(|x| px[(8 * CW + x) as usize][0]).collect();
+                if l.windows(2).any(|w| w[1] < w[0] - 1e-3) {
+                    fails.push(format!("{name}: ramp not monotone with the point at {v:+}"));
+                }
+            }
+        }
+    }
+    assert!(fails.is_empty(), "{} curve failures:\n{}", fails.len(), fails.join("\n"));
+}
+
+/// The curve interpolation itself: through every point, never past its
+/// neighbours (Fritsch–Carlson), hue curves continuous across 0 / 1.
+#[test]
+fn curve_interpolation_is_exact_and_monotone() {
+    use crate::grade::{CURVE_RES, sample_curve, sample_periodic};
+    let at = |s: &[f32], x: f32| s[(x * (CURVE_RES - 1) as f32).round() as usize];
+    let mut out = vec![0.0; CURVE_RES];
+    for pts in [
+        vec![(0.0, 0.0), (0.25, 0.1), (0.5, 0.5), (0.75, 0.95), (1.0, 1.0)],
+        vec![(0.0, 0.05), (0.3, 0.3), (0.31, 0.7), (1.0, 0.9)],
+        vec![(0.0, 0.0), (0.5, 0.2), (1.0, 1.0)],
+    ] {
+        sample_curve(&pts, &mut out);
+        for &(x, y) in &pts {
+            assert!((at(&out, x) - y).abs() < 2e-3, "{pts:?}: misses ({x}, {y}): {}", at(&out, x));
+        }
+        assert!(out.windows(2).all(|w| w[1] >= w[0] - 1e-6), "{pts:?}: not monotone");
+        assert!(out.iter().all(|v| (pts[0].1..=pts[pts.len() - 1].1).contains(v)), "{pts:?}: overshoots");
+    }
+    let hue = vec![(0.0, 0.5), (0.2, 0.7), (0.6, 0.4), (1.0, 0.5)];
+    sample_periodic(&hue, &mut out);
+    let (first, last) = (out[0], out[CURVE_RES - 1]);
+    assert!((first - last).abs() < 1e-3, "hue curve jumps at 0/1: {first} vs {last}");
+    let slope = |a: f32, b: f32| (b - a) * (CURVE_RES - 1) as f32;
+    let (s0, s1) = (slope(out[0], out[1]), slope(out[CURVE_RES - 2], out[CURVE_RES - 1]));
+    assert!((s0 - s1).abs() < 0.05 * s0.abs().max(0.1), "hue curve slope jumps at 0/1: {s0} vs {s1}");
+}
+
 // ------------------------------------------------------------------ RAW develop
 
 const RW: u32 = 192;

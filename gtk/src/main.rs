@@ -1043,7 +1043,9 @@ impl App {
         self.ui.camera_btn.set_sensitive(raw);
         self.ui.sidebar.matching.camera.set_visible(raw);
         let ui = &self.ui.sidebar.develop;
-        ui.root.set_visible(raw);
+        // Always there, so the editor looks the same before a photo opens; only RAWs develop.
+        ui.root.set_sensitive(raw);
+        ui.root.set_tooltip_text((!raw).then(|| gettext("RAW development: open a RAW file to use it")).as_deref());
         let Some(cam) = self.camera() else { return };
         let [k, t] = self.develop.wb.unwrap_or_else(|| cam.as_shot_kelvin_tint());
         let preset = match self.develop.wb {
@@ -1564,6 +1566,9 @@ struct MatchUi {
 struct Sidebar {
     /// The pinned scopes (when pinned) over `scroll`.
     pane: gtk::Box,
+    /// What the Photo tab shows (develop, crop, vignette: not in the LUT) and the Grade tab (all in the LUT).
+    photo: gtk::Box,
+    grade: gtk::Box,
     scroll: gtk::ScrolledWindow,
     sliders: Vec<(Slider, Field)>,
     wheels: Vec<(ColorWheel, Slider)>,
@@ -1614,7 +1619,6 @@ const WB_CUSTOM: u32 = WB_PRESETS.len() as u32 + 1;
 
 fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     let root = vbox(12);
-    root.append(&group_heading(&gettext("Develop · not in LUT")));
 
     let wb = vbox(4);
     let names: Vec<String> = std::iter::once(gettext("As shot"))
@@ -1758,7 +1762,9 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     list.append(&ca);
     lens.append(&list);
     root.append(&section(&gettext("Lens"), &lens));
-    root.set_visible(false);
+    // Greyed out until a RAW opens (`sync_develop`).
+    root.set_sensitive(false);
+    root.set_tooltip_text(Some(&gettext("RAW development: open a RAW file to use it")));
     DevelopUi {
         syncing,
         root,
@@ -2021,9 +2027,14 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     pin.update_property(&[gtk::accessible::Property::Label(&gettext("Pin scopes"))]);
     let scopes = section_with(&gettext("Scopes"), &scopes_box, &[pin.clone().upcast()], true);
     panel.append(&scopes);
+    // The Photo and Grade tabs show one of these each (`App::init` swaps them).
+    let photo = vbox(12);
+    photo.append(&group_heading(&gettext("Not in the exported LUT")));
     let develop = build_develop(sender);
-    panel.append(&develop.root);
-    panel.append(&group_heading(&gettext("Grade · in LUT")));
+    photo.append(&develop.root);
+    let grade = vbox(12);
+    grade.set_visible(false);
+    grade.append(&group_heading(&gettext("In the exported LUT")));
 
     // Input profile: the signal the LUT will receive in camera.
     let profile_box = vbox(6);
@@ -2038,11 +2049,11 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     });
     profile_box.append(&profile_sel);
     profile_box.append(&hint);
-    panel.append(&section(&gettext("Input profile"), &profile_box));
+    grade.append(&section(&gettext("Input profile"), &profile_box));
 
     // Reference match comes first: the rest refines it.
     let matching = build_match(sender);
-    panel.append(&bypassable(&gettext("Reference match"), &matching.stack, Some(Stage::Match), false, sender));
+    grade.append(&bypassable(&gettext("Reference match"), &matching.stack, Some(Stage::Match), false, sender));
 
     let mut sliders = Vec::new();
     let mut add = |bx: &gtk::Box, label: &str, min: f64, max: f64, digits: u32, track: Option<&str>, field: Field| {
@@ -2056,7 +2067,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     let wb = vbox(4);
     add(&wb, &gettext("Temperature"), -100.0, 100.0, 0, Some("track-temp"), |p| &mut p.temperature);
     add(&wb, &gettext("Tint"), -100.0, 100.0, 0, Some("track-tint"), |p| &mut p.tint);
-    panel.append(&bypassable(&gettext("Warmth"), &wb, Some(Stage::WhiteBalance), true, sender));
+    grade.append(&bypassable(&gettext("Warmth"), &wb, Some(Stage::WhiteBalance), true, sender));
 
     let tone = vbox(4);
     add(&tone, &gettext("Exposure"), -3.0, 3.0, 2, None, |p| &mut p.exposure);
@@ -2065,17 +2076,17 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     add(&tone, &gettext("Shadows"), -100.0, 100.0, 0, None, |p| &mut p.shadows);
     add(&tone, &gettext("Whites"), -100.0, 100.0, 0, None, |p| &mut p.whites);
     add(&tone, &gettext("Blacks"), -100.0, 100.0, 0, None, |p| &mut p.blacks);
-    panel.append(&bypassable(&gettext("Tone"), &tone, Some(Stage::Tone), true, sender));
+    grade.append(&bypassable(&gettext("Tone"), &tone, Some(Stage::Tone), true, sender));
 
     let (mixer_box, mixer) = build_mixer(sender);
-    panel.append(&bypassable(&gettext("Channel mixer"), &mixer_box, Some(Stage::Mixer), false, sender));
+    grade.append(&bypassable(&gettext("Channel mixer"), &mixer_box, Some(Stage::Mixer), false, sender));
 
     let color = vbox(4);
     add(&color, &gettext("Saturation"), -100.0, 100.0, 0, None, |p| &mut p.saturation);
     add(&color, &gettext("Vibrance"), -100.0, 100.0, 0, None, |p| &mut p.vibrance);
     add(&color, &gettext("Shadow saturation"), -100.0, 100.0, 0, None, |p| &mut p.sat_shadows);
     add(&color, &gettext("Highlight saturation"), -100.0, 100.0, 0, None, |p| &mut p.sat_highlights);
-    panel.append(&bypassable(&gettext("Color"), &color, Some(Stage::Color), true, sender));
+    grade.append(&bypassable(&gettext("Color"), &color, Some(Stage::Color), true, sender));
 
     let film = vbox(4);
     add(&film, &gettext("Subtractive saturation"), -100.0, 100.0, 0, Some("track-film-sat"), |p| &mut p.film_sat);
@@ -2087,7 +2098,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     film.append(&caption(&gettext(
         "Soft light deepens shadows and lifts highlights, as RawTherapee's; 30 is its default.",
     )));
-    panel.append(&bypassable(&gettext("Film color"), &film, Some(Stage::Film), true, sender));
+    grade.append(&bypassable(&gettext("Film color"), &film, Some(Stage::Film), true, sender));
 
     // HSL mixer (OKLCh bands)
     let hsl = vbox(6);
@@ -2127,7 +2138,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         hsl.append(&s.root);
         s
     });
-    panel.append(&bypassable(&gettext("Selective color"), &hsl, Some(Stage::Selective), true, sender));
+    grade.append(&bypassable(&gettext("Selective color"), &hsl, Some(Stage::Selective), true, sender));
 
     let snd = sender.clone();
     let hue_curves = CurveEditor::new(HUE_HUE..LUM_SAT + 1, move |ch, c| snd.input(Msg::Curve(ch, c)));
@@ -2143,7 +2154,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         ),
         sender,
     );
-    panel.append(&bypassable(&gettext("Hue curves"), &hue_box, Some(Stage::HueCurves), false, sender));
+    grade.append(&bypassable(&gettext("Hue curves"), &hue_box, Some(Stage::HueCurves), false, sender));
 
     // Primaries: lift / gamma / gain / offset wheels with a master slider each.
     let wheels_row = gtk::Grid::builder().column_spacing(10).row_spacing(10).column_homogeneous(true).build();
@@ -2161,7 +2172,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         wheels_row.attach(&col, (i % 2) as i32, (i / 2) as i32, 1, 1);
         wheels.push((wheel, luma));
     }
-    panel.append(&bypassable(&gettext("Primary color wheels"), &wheels_row, Some(Stage::Wheels), true, sender));
+    grade.append(&bypassable(&gettext("Primary color wheels"), &wheels_row, Some(Stage::Wheels), true, sender));
 
     // Curves
     let snd = sender.clone();
@@ -2177,7 +2188,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         &gettext("Click to add a point, double-click or right-click to remove it"),
         sender,
     );
-    panel.append(&bypassable(&gettext("Curves"), &curve_box, Some(Stage::Curves), true, sender));
+    grade.append(&bypassable(&gettext("Curves"), &curve_box, Some(Stage::Curves), true, sender));
 
     // LUTs after the grade
     let look_box = vbox(8);
@@ -2219,16 +2230,17 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     let browse = gtk::Revealer::builder().transition_type(gtk::RevealerTransitionType::SlideDown).build();
     look_box.append(&browse);
     look_box.append(&caption(&gettext("Applied after the grade, top to bottom, and included in the exported LUT.")));
-    panel.append(&bypassable(&gettext("LUTs"), &look_box, None, true, sender));
-    panel.append(&group_heading(&gettext("Finish · not in LUT")));
-    panel.append(crop);
+    grade.append(&bypassable(&gettext("LUTs"), &look_box, None, true, sender));
+    photo.append(crop);
 
     let vig = vbox(4);
     add(&vig, &gettext("Amount"), -100.0, 100.0, 0, None, |p| &mut p.vignette);
     add(&vig, &gettext("Midpoint"), -100.0, 100.0, 0, None, |p| &mut p.vignette_mid);
     add(&vig, &gettext("Roundness"), -100.0, 100.0, 0, None, |p| &mut p.vignette_round);
     add(&vig, &gettext("Feather"), -100.0, 100.0, 0, None, |p| &mut p.vignette_feather);
-    panel.append(&bypassable(&gettext("Vignette"), &vig, Some(Stage::Vignette), false, sender));
+    photo.append(&bypassable(&gettext("Vignette"), &vig, Some(Stage::Vignette), false, sender));
+    panel.append(&photo);
+    panel.append(&grade);
 
     let reset = gtk::Button::builder()
         .label(gettext("Reset all"))
@@ -2269,6 +2281,8 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     pin.set_active(settings::value(settings::SCOPES_PINNED).as_deref() != Some("0"));
     Sidebar {
         pane,
+        photo,
+        grade,
         scroll,
         sliders,
         wheels,
@@ -2545,8 +2559,10 @@ impl SimpleComponent for App {
             if !browse.is_child_revealed() {
                 return;
             }
+            // The viewport's coordinates are those of what is visible: add the current offset.
             if let Some(p) = scroll.child().and_then(|c| btn.compute_point(&c, &gtk::graphene::Point::zero())) {
-                scroll.vadjustment().set_value(p.y() as f64 - 12.0);
+                let adj = scroll.vadjustment();
+                adj.set_value(adj.value() + p.y() as f64 - 12.0);
             }
             // Ctrl+F put the focus in the search entry: leave it there.
             let inside = browse.root().and_then(|r| r.focus()).is_some_and(|f| f.is_ancestor(browse));
@@ -2557,12 +2573,27 @@ impl SimpleComponent for App {
 
         // ---------------- view stack + header
         let stack = adw::ViewStack::new();
-        stack.add_titled_with_icon(&grade_split, Some("grade"), &gettext("Grade"), "color-select-symbolic");
+        // Photo and Grade share the canvas: it moves to whichever of the two is shown.
+        let tab = || gtk::Box::builder().orientation(gtk::Orientation::Vertical).vexpand(true).hexpand(true).build();
+        let (photo_tab, grade_tab) = (tab(), tab());
+        photo_tab.append(&grade_split);
+        stack.add_titled_with_icon(&photo_tab, Some("photo"), &gettext("Photo"), "camera-photo-symbolic");
+        stack.add_titled_with_icon(&grade_tab, Some("grade"), &gettext("Grade"), "color-select-symbolic");
         let lab = lab_page::build(&sender, &export_menu("lab-export", false));
         stack.add_titled_with_icon(&lab.root, Some("lab"), &gettext("LUT Lab"), "view-list-symbolic");
         let snd = sender.clone();
+        let (split, photo, grade) = (grade_split.clone(), sidebar.photo.clone(), sidebar.grade.clone());
         stack.connect_visible_child_name_notify(move |s| {
-            let page = match s.visible_child_name().as_deref() {
+            let name = s.visible_child_name();
+            if let Some(tab) = s.visible_child().and_downcast::<gtk::Box>().filter(|_| name.as_deref() != Some("lab"))
+                && split.parent().as_ref() != Some(tab.upcast_ref())
+            {
+                split.unparent();
+                tab.append(&split);
+            }
+            photo.set_visible(name.as_deref() == Some("photo"));
+            grade.set_visible(name.as_deref() == Some("grade"));
+            let page = match name.as_deref() {
                 Some("lab") => Page::Lab,
                 _ => Page::Grade,
             };
@@ -2836,9 +2867,11 @@ impl SimpleComponent for App {
         let snd = sender.clone();
         shortcut("<Control>s", Box::new(move || snd.input(Msg::PresetSave)));
         let s = stack.clone();
-        shortcut("<Alt>1", Box::new(move || s.set_visible_child_name("grade")));
+        shortcut("<Alt>1", Box::new(move || s.set_visible_child_name("photo")));
         let s = stack.clone();
-        shortcut("<Alt>2", Box::new(move || s.set_visible_child_name("lab")));
+        shortcut("<Alt>2", Box::new(move || s.set_visible_child_name("grade")));
+        let s = stack.clone();
+        shortcut("<Alt>3", Box::new(move || s.set_visible_child_name("lab")));
         let (s, b, e) = (stack.clone(), sidebar.browse_btn.clone(), search.clone());
         shortcut(
             "<Control>f",
@@ -4275,8 +4308,9 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
         (gettext("Zoom in"), "<Control>plus"),
         (gettext("Zoom out"), "<Control>minus"),
         (gettext("Save preset"), "<Control>s"),
-        (gettext("Grade view"), "<Alt>1"),
-        (gettext("LUT Lab view"), "<Alt>2"),
+        (gettext("Photo view"), "<Alt>1"),
+        (gettext("Grade view"), "<Alt>2"),
+        (gettext("LUT Lab view"), "<Alt>3"),
         (gettext("Browse LUTs"), "b"),
         (gettext("Search LUTs"), "<Control>f"),
         (gettext("Reload LUTs"), "F5"),

@@ -56,9 +56,21 @@ impl Weights {
         if bytes.len() % 4 != 0 {
             return Err(format!("{stem}.bin is not a list of f32"));
         }
-        let data: Vec<f32> = bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+        let data: Vec<f32> = bytemuck::pod_collect_to_vec(&bytes);
         if let Some(t) = tensors.iter().find(|t| t.offset + t.size() > data.len()) {
             return Err(format!("{stem}: tensor {} runs past the weights", t.name));
+        }
+        // UtNet2 reads these by name, each weight followed by its bias.
+        let paired = tensors.chunks(2).all(|p| {
+            p.len() == 2 && p[1].name == p[0].name.replace(".weight", ".bias") && p[0].name.ends_with(".weight")
+        });
+        let expected = (1..=4)
+            .flat_map(|l| [format!("convs{l}.0"), format!("convs{l}.2"), format!("up{l}"), format!("tconvs{l}.0")]);
+        let names: Vec<&str> = tensors.iter().map(|t| t.name.trim_end_matches(".weight")).collect();
+        if !paired
+            || !expected.chain(["bottom.0".into(), "output_module.0".into()]).all(|n| names.contains(&n.as_str()))
+        {
+            return Err(format!("{stem}: not the RawNIND UtNet2 tensor layout"));
         }
         Ok(Self { variant, tensors, data })
     }

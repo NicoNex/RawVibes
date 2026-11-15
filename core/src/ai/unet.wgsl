@@ -11,8 +11,9 @@ struct LayerParams {
     // First channel read from `src` / written to `dst`.
     src_c0: u32,
     dst_c0: u32,
-    // Kernel size (3 or 1); 1: LeakyReLU 0.2 after the bias.
+    // Kernel size: 3 or 1 (conv), 2 (convT), 0 (no weights: pool, shuffle).
     k: u32,
+    // 1: LeakyReLU 0.2 after the bias.
     relu: u32,
     w_off: u32,
     b_off: u32,

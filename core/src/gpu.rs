@@ -460,6 +460,8 @@ struct Worker {
     /// whether `raw` was loaded CA-corrected (the last flag asked for).
     raw_data: Option<Arc<RawData>>,
     raw_ca: bool,
+    /// The CA-corrected data, computed once per photo (`None` inside: not a Bayer RAW).
+    ca_data: Option<Option<Arc<RawData>>>,
     /// The whole (cropped) uploaded photo — a raster or the test chart — and its pixels.
     fit: Option<GpuPhoto>,
     source: Option<Arc<Photo>>,
@@ -548,14 +550,13 @@ impl Worker {
             }
             Job::LoadRaw(generation, path, data) => {
                 // The previous RAW stays until this one loads: a failed open keeps editing it.
-                // shortcut: loads with the last photo's CA flag; the first develop reloads
-                // it when this photo's differs (one extra load), pass the flag here if that shows.
-                let loaded = load_raw(gpu, &data, self.raw_ca).map(|raw| {
+                // Loaded uncorrected (fast); the first develop asking for CA correction reloads.
+                let loaded = gpu.load_raw(&data).map(|raw| {
                     let size = raw.oriented_size();
                     let small = gpu.small(&raw, RAW_SMALL);
                     let decoded = Decoded::raw(small, raw.camera.clone(), size);
                     self.raw = Some(raw);
-                    self.raw_data = Some(data);
+                    (self.raw_data, self.raw_ca, self.ca_data) = (Some(data), false, None);
                     decoded
                 });
                 notify(Done::RawLoaded(generation, path, loaded));
@@ -563,10 +564,17 @@ impl Worker {
             Job::DevelopRaw { generation, region, width, height, develop, profile, view } => {
                 let ca = develop.detail.ca_correct;
                 if ca != self.raw_ca
-                    && let Some(data) = &self.raw_data
-                    && let Ok(raw) = load_raw(gpu, data, ca)
+                    && let Some(data) = self.raw_data.clone()
                 {
-                    (self.raw, self.raw_ca) = (Some(raw), ca);
+                    // Set even if the reload fails: a slider drag must not retry it every frame.
+                    self.raw_ca = ca;
+                    let src = match ca {
+                        true => self.ca_data.get_or_insert_with(|| crate::ca::corrected(&data).map(Arc::new)).clone(),
+                        false => None,
+                    };
+                    if let Ok(raw) = gpu.load_raw(&src.unwrap_or(data)) {
+                        self.raw = Some(raw);
+                    }
                 }
                 let Some(raw) = &self.raw else { return };
                 // shortcut: a develop too large for the GPU is skipped (the preview stays); only a huge HiDPI canvas gets there.
@@ -674,14 +682,6 @@ impl Worker {
                 notify(Done::Exported(lut.save(&path).map(|_| path)));
             }
         }
-    }
-}
-
-/// `data` on the GPU, its lateral CA corrected first when `ca` (Bayer only).
-fn load_raw(gpu: &Gpu, data: &RawData, ca: bool) -> Result<GpuRaw, String> {
-    match ca.then(|| crate::ca::corrected(data)).flatten() {
-        Some(corrected) => gpu.load_raw(&corrected),
-        None => gpu.load_raw(data),
     }
 }
 

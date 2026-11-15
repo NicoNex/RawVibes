@@ -64,23 +64,26 @@ pot:
 target/release/$(BIN):
 	$(CARGO) build --release
 
-models: models/rawnind/bayer.bin
+models: $(MODELS)
 
-models/rawnind/bayer.bin:
+# One run writes every file; a failed one leaves none behind to look done.
+$(MODELS) &:
 	mkdir -p target/models
 	curl -L --fail -o target/models/rawdenoise-nind.dtmodel $(MODELS_URL)
 	echo "$(MODELS_SHA)  target/models/rawdenoise-nind.dtmodel" | sha256sum -c
 	unzip -o -q target/models/rawdenoise-nind.dtmodel -d target/models
-	python3 tools/convert_rawnind.py target/models/rawdenoise-nind models/rawnind
+	python3 tools/convert_rawnind.py target/models/rawdenoise-nind models/rawnind || { rm -rf models/rawnind; exit 1; }
 
-install: target/release/$(BIN) locale models
+# Installs the AI models when `make models` fetched them (no network here: packagers run it first).
+install: target/release/$(BIN) locale
 	install -Dm755 target/release/$(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
 	for l in $(LINGUAS); do install -Dm644 target/locale/$$l/LC_MESSAGES/$(BIN).mo \
 	  $(DESTDIR)$(PREFIX)/share/locale/$$l/LC_MESSAGES/$(BIN).mo; done
 	install -Dm644 data/$(APP_ID).desktop $(DESTDIR)$(PREFIX)/share/applications/$(APP_ID).desktop
 	install -Dm644 data/$(APP_ID).svg $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/$(APP_ID).svg
 	install -Dm644 LICENSE $(DESTDIR)$(PREFIX)/share/licenses/$(BIN)/LICENSE
-	for f in $(MODELS) models/README.md; do install -Dm644 $$f $(DESTDIR)$(PREFIX)/share/$(BIN)/$$f; done
+	if [ -f models/rawnind/bayer.bin ]; then for f in $(MODELS) models/README.md; do \
+	  install -Dm644 $$f $(DESTDIR)$(PREFIX)/share/$(BIN)/$$f; done; fi
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN) \

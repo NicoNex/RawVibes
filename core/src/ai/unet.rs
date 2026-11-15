@@ -96,18 +96,15 @@ impl UNet {
         let (w_off, b_off) = name.map_or((0, 0), |n| self.layers[n]);
         let relu = (k == 3) as u32;
         let params = LayerParams { w: dst.w, h: dst.h, cin, cout, src_c0, dst_c0, k, relu, w_off, b_off, _pad: [0; 2] };
-        // Convolutions cover 8 output channels per workgroup; pool and shuffle one.
-        let z = if std::ptr::eq(pipeline, &self.conv) || std::ptr::eq(pipeline, &self.convt) {
-            cout.div_ceil(8)
-        } else {
-            cout
-        };
+        // Weighted layers (k > 0) cover 8 output channels per workgroup; pool and shuffle one.
+        let z = if k > 0 { cout.div_ceil(8) } else { cout };
         ops.push(Op { pipeline, params, src: src.clone(), dst: dst.clone(), z });
     }
 
     /// Runs the network on `input` (planar, 4 channels for Bayer, 3 for
     /// linear, `w` × `h`, both multiples of 16). The output is 3 planar
     /// channels at `w` × `h` (linear) or `2w` × `2h` (Bayer).
+    // shortcut: allocates every intermediate per call; keep them per tile size once tiling runs it per tile.
     pub fn run(&self, gpu: &Gpu, input: &wgpu::Buffer, w: u32, h: u32) -> wgpu::Buffer {
         debug_assert!(w.is_multiple_of(16) && h.is_multiple_of(16), "UtNet2 needs multiples of 16, got {w}×{h}");
         let bayer = self.variant == Variant::Bayer;
@@ -190,8 +187,11 @@ mod tests {
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
         for (variant, cin, scale) in [(Variant::Bayer, 4usize, 2usize), (Variant::Linear, 3, 1)] {
             let stem = if variant == Variant::Bayer { "bayer" } else { "linear" };
-            let bytes = std::fs::read(dir.join(format!("{stem}_ref.bin"))).unwrap();
-            let all: Vec<f32> = bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+            // Written only by `convert_rawnind.py --ref` (needs onnxruntime).
+            let Ok(bytes) = std::fs::read(dir.join(format!("{stem}_ref.bin"))) else {
+                return eprintln!("no reference tile, skipped");
+            };
+            let all: Vec<f32> = bytemuck::pod_collect_to_vec(&bytes);
             let (input, reference) = all.split_at(cin * 64 * 64);
             assert_eq!(reference.len(), 3 * 64 * scale * 64 * scale);
             let net = UNet::new(&gpu, &Weights::load(&dir, variant).unwrap());

@@ -36,13 +36,19 @@ const CA_AUTOSTRENGTH: f32 = 8.0;
 /// Largest shift corrected, in pixels.
 const BSLIM: f64 = 3.99f32 as f64;
 
+/// Whether `raw` can be corrected: a 2×2 Bayer mosaic at least two tiles across.
+pub fn applies(raw: &RawData) -> bool {
+    let [_, _, w, h] = raw.crop.map(|v| v as usize);
+    matches!(raw.pixels, Pixels::Bayer(_)) && raw.pattern_size == [2, 2] && w >= 2 * TS && h >= 2 * TS
+}
+
 /// `raw` with its lateral CA corrected; `None` when it does not apply: not a
 /// 2×2 Bayer mosaic (X-Trans and linear RAWs arrive demosaiced, as RGB), or
 /// too small for the tile statistics.
 pub fn corrected(raw: &RawData) -> Option<RawData> {
     let Pixels::Bayer(mosaic) = &raw.pixels else { return None };
     let [cx, cy, w, h] = raw.crop.map(|v| v as usize);
-    if raw.pattern_size != [2, 2] || w < 2 * TS || h < 2 * TS {
+    if !applies(raw) {
         return None;
     }
     let pat = |r: usize, c: usize| raw.pattern[((r + cy) % 2) * 2 + (c + cx) % 2] as usize;
@@ -642,10 +648,9 @@ fn fit(
             for c in 0..2 {
                 let mut bs = [0f32; 2];
                 for (dir, b) in bs.iter_mut().enumerate() {
-                    let mut p: Vec<f32> =
-                        (0..9).map(|k| shifts[(v + k / 3 - 1) * hblsz + hb + k % 3 - 1][c][dir]).collect();
-                    p.sort_by(f32::total_cmp);
-                    *b = p[4];
+                    let mut p: [f32; 9] =
+                        std::array::from_fn(|k| shifts[(v + k / 3 - 1) * hblsz + hb + k % 3 - 1][c][dir]);
+                    *b = crate::noise::median(&mut p);
                 }
                 if bs[0] * bs[0] > CA_AUTOSTRENGTH * var[0][c] || bs[1] * bs[1] > CA_AUTOSTRENGTH * var[1][c] {
                     continue;

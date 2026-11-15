@@ -1,6 +1,10 @@
 //! RawValley engine: UI-agnostic photo loading, GPU grading, LUT baking and
 //! scopes. Front-ends talk to it through [`gpu::spawn`] jobs/results.
 
+#[cfg(feature = "ai")]
+pub mod ai;
+#[cfg(test)]
+mod audit;
 pub mod ca;
 pub mod chart;
 pub mod crop;

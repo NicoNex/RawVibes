@@ -442,6 +442,11 @@ pub enum Done {
     },
     /// What `Job::SampleRaw` read: as-shot-balanced camera RGB.
     Sampled([f32; 3]),
+    /// AI noise reduction of the RAW of this load generation: fraction done,
+    /// then ready (develop again to see it), or why it cannot run.
+    AiProgress(u64, f32),
+    AiReady(u64),
+    AiFailed(u64, String),
 }
 
 /// A filmstrip photo on the GPU and the grade its frame was last rendered with.
@@ -456,10 +461,12 @@ struct RollFrame {
 struct Worker {
     /// The RAW being edited, at full resolution.
     raw: Option<GpuRaw>,
-    /// Its CPU data, kept to reload it when `Detail::ca_correct` flips, and
-    /// whether `raw` was loaded CA-corrected (the last flag asked for).
+    /// Its CPU data, kept to reload it when `Detail::ca_correct` flips and
+    /// for the AI, and whether `raw` was loaded CA-corrected (the last flag asked for).
     raw_data: Option<Arc<RawData>>,
     raw_ca: bool,
+    /// The CA-corrected data, computed once per photo (`None` inside: not a Bayer RAW).
+    ca_data: Option<Option<Arc<RawData>>>,
     /// The whole (cropped) uploaded photo — a raster or the test chart — and its pixels.
     fit: Option<GpuPhoto>,
     source: Option<Arc<Photo>>,
@@ -488,6 +495,24 @@ struct Worker {
     roll: (u64, Vec<RollFrame>),
     /// Last grade baked for the Lab, reused until the grade changes.
     grade_lut: std::cell::RefCell<Option<(Grade, Arc<Lut3d>)>>,
+    #[cfg(feature = "ai")]
+    ai: Ai,
+}
+
+/// AI noise reduction of the loaded RAW, run a tile per worker turn.
+#[cfg(feature = "ai")]
+#[derive(Default)]
+struct Ai {
+    /// The Bayer and linear networks, each loaded on first use (or why it could not be).
+    nets: [Option<Result<crate::ai::UNet, String>>; 2],
+    /// The loaded RAW's load generation.
+    generation: u64,
+    run: Option<crate::ai::AiRun>,
+    /// Why this RAW cannot be denoised: not retried until another loads,
+    /// only said again each time AI is picked again.
+    failed: Option<String>,
+    /// AI was asked for by the last develop.
+    on: bool,
 }
 
 /// Longest side of the CPU copy of each developed RAW frame.
@@ -531,6 +556,77 @@ impl Worker {
         lut
     }
 
+    /// The CPU data `raw` was loaded from: CA-corrected or not.
+    #[cfg(feature = "ai")]
+    fn loaded(&self) -> Option<Arc<RawData>> {
+        self.ca_data.clone().flatten().filter(|_| self.raw_ca).or_else(|| self.raw_data.clone())
+    }
+
+    /// Starts denoising the loaded RAW when `on` and it was not yet; stops when not `on`.
+    #[cfg(feature = "ai")]
+    fn ai_begin(&mut self, gpu: &Gpu, on: bool, notify: &impl Fn(Done)) {
+        let data = self.loaded();
+        let ai = &mut self.ai;
+        let was_on = std::mem::replace(&mut ai.on, on);
+        let picked = on && !was_on;
+        if !on {
+            ai.run = None;
+            return;
+        }
+        if let Some(e) = ai.failed.clone().filter(|_| picked) {
+            notify(Done::AiFailed(ai.generation, e));
+        }
+        let (Some(raw), Some(data)) = (&self.raw, &data) else { return };
+        if raw.ai.is_some() || ai.run.is_some() || ai.failed.is_some() {
+            return;
+        }
+        let variant = crate::ai::variant(data);
+        let net = ai.nets[variant as usize].get_or_insert_with(|| {
+            let dir = crate::ai::models_dir().ok_or("AI models not installed")?;
+            Ok(crate::ai::UNet::new(gpu, &crate::ai::Weights::load(&dir, variant)?))
+        });
+        let started = net.as_ref().map_err(Clone::clone).and_then(|_| gpu.ai_start(data, gpu.ai_tile_edge()?));
+        match started {
+            Ok(run) => {
+                ai.run = Some(run);
+                notify(Done::AiProgress(ai.generation, 0.0));
+            }
+            Err(e) => {
+                ai.failed = Some(e.clone());
+                notify(Done::AiFailed(ai.generation, e));
+            }
+        }
+    }
+
+    /// Runs the next AI tile; false once no run is left.
+    fn ai_step(&mut self, gpu: &Gpu, notify: &impl Fn(Done)) -> bool {
+        #[cfg(feature = "ai")]
+        {
+            let data = self.loaded();
+            let ai = &mut self.ai;
+            let (Some(run), Some(raw), Some(data)) = (&mut ai.run, &mut self.raw, &data) else { return false };
+            let Some(Ok(net)) = &ai.nets[run.variant as usize] else { return false };
+            if let Err(e) = gpu.ai_step(run, net) {
+                (ai.run, ai.failed) = (None, Some(e.clone()));
+                notify(Done::AiFailed(ai.generation, e));
+                return false;
+            }
+            notify(Done::AiProgress(ai.generation, run.progress()));
+            if !run.done() {
+                return true;
+            }
+            let level0 = ai.run.take().expect("stepped above").level0;
+            raw.ai = Some(gpu.mips(data, level0));
+            notify(Done::AiReady(ai.generation));
+            false
+        }
+        #[cfg(not(feature = "ai"))]
+        {
+            let _ = (gpu, notify);
+            false
+        }
+    }
+
     fn handle(&mut self, gpu: &Gpu, job: Job, notify: &impl Fn(Done)) {
         match job {
             Job::SetPhoto(p) => {
@@ -548,14 +644,17 @@ impl Worker {
             }
             Job::LoadRaw(generation, path, data) => {
                 // The previous RAW stays until this one loads: a failed open keeps editing it.
-                // shortcut: loads with the last photo's CA flag; the first develop reloads
-                // it when this photo's differs (one extra load), pass the flag here if that shows.
-                let loaded = load_raw(gpu, &data, self.raw_ca).map(|raw| {
+                // Loaded uncorrected (fast); the first develop asking for CA correction reloads.
+                let loaded = gpu.load_raw(&data).map(|raw| {
                     let size = raw.oriented_size();
                     let small = gpu.small(&raw, RAW_SMALL);
                     let decoded = Decoded::raw(small, raw.camera.clone(), size);
                     self.raw = Some(raw);
-                    self.raw_data = Some(data);
+                    #[cfg(feature = "ai")]
+                    {
+                        self.ai = Ai { nets: std::mem::take(&mut self.ai.nets), generation, ..Ai::default() };
+                    }
+                    (self.raw_data, self.raw_ca, self.ca_data) = (Some(data), false, None);
                     decoded
                 });
                 notify(Done::RawLoaded(generation, path, loaded));
@@ -563,11 +662,26 @@ impl Worker {
             Job::DevelopRaw { generation, region, width, height, develop, profile, view } => {
                 let ca = develop.detail.ca_correct;
                 if ca != self.raw_ca
-                    && let Some(data) = &self.raw_data
-                    && let Ok(raw) = load_raw(gpu, data, ca)
+                    && let Some(data) = self.raw_data.clone().filter(|d| crate::ca::applies(d))
                 {
-                    (self.raw, self.raw_ca) = (Some(raw), ca);
+                    // Set even if the reload fails: a slider drag must not retry it every frame.
+                    self.raw_ca = ca;
+                    let src = match ca {
+                        true => self.ca_data.get_or_insert_with(|| crate::ca::corrected(&data).map(Arc::new)).clone(),
+                        false => None,
+                    };
+                    let data = src.unwrap_or(data);
+                    if let Ok(raw) = gpu.load_raw(&data) {
+                        self.raw = Some(raw);
+                        // The AI result was made from the other mosaic: denoise this one.
+                        #[cfg(feature = "ai")]
+                        {
+                            (self.ai.run, self.ai.failed) = (None, None);
+                        }
+                    }
                 }
+                #[cfg(feature = "ai")]
+                self.ai_begin(gpu, develop.detail.nr_ai, notify);
                 let Some(raw) = &self.raw else { return };
                 // shortcut: a develop too large for the GPU is skipped (the preview stays); only a huge HiDPI canvas gets there.
                 let slot = if view { &mut self.view } else { &mut self.raw_fit };
@@ -677,14 +791,6 @@ impl Worker {
     }
 }
 
-/// `data` on the GPU, its lateral CA corrected first when `ca` (Bayer only).
-fn load_raw(gpu: &Gpu, data: &RawData, ca: bool) -> Result<GpuRaw, String> {
-    match ca.then(|| crate::ca::corrected(data)).flatten() {
-        Some(corrected) => gpu.load_raw(&corrected),
-        None => gpu.load_raw(data),
-    }
-}
-
 /// Spawns the render thread. Previews and gallery passes are coalesced to
 /// the latest request so slider drags never queue up stale frames.
 pub fn spawn(notify: impl Fn(Done) + Send + 'static) -> mpsc::Sender<Job> {
@@ -697,10 +803,10 @@ pub fn spawn(notify: impl Fn(Done) + Send + 'static) -> mpsc::Sender<Job> {
                 Err(e) => return notify(Done::Failed(e)),
             };
             let mut worker = Worker::default();
-            let mut thumbs_left = false;
+            let (mut thumbs_left, mut ai_left) = (false, false);
             loop {
-                // Block for work only when no thumbnail pass is pending.
-                let first = if thumbs_left {
+                // Block for work only when no thumbnail pass or AI run is pending.
+                let first = if thumbs_left || ai_left {
                     rx.try_recv().ok()
                 } else {
                     match rx.recv() {
@@ -718,6 +824,7 @@ pub fn spawn(notify: impl Fn(Done) + Send + 'static) -> mpsc::Sender<Job> {
                 let ok = catch_unwind(AssertUnwindSafe(|| {
                     batch.into_iter().for_each(|job| worker.handle(&gpu, job, &notify));
                     thumbs_left = worker.gallery_step(&gpu, &notify);
+                    ai_left = worker.ai_step(&gpu, &notify);
                 }));
                 if ok.is_err() {
                     return notify(Done::Failed("GPU error, restart the application".into()));
@@ -786,6 +893,106 @@ mod tests {
         let on = develop_with(true);
         assert_ne!(off, on, "CA correction changed nothing");
         assert_eq!(off, develop_with(false));
+    }
+
+    /// Opening another RAW mid-run drops the AI run: no result reaches the
+    /// new photo; asked again, the new photo gets its own.
+    #[cfg(feature = "ai")]
+    #[test]
+    fn stale_ai_result_is_dropped() {
+        if crate::ai::models_dir().is_none() {
+            return eprintln!("no models, skipped");
+        }
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let photo = |v: f32| {
+            let mut pattern = [0; 36];
+            pattern[..4].copy_from_slice(&[0, 1, 1, 2]);
+            let (w, h) = (2400, 1800);
+            Arc::new(RawData {
+                pixels: crate::raw::Pixels::Bayer(vec![v; w * h]),
+                width: w as u32,
+                height: h as u32,
+                pattern,
+                pattern_size: [2, 2],
+                crop: [0, 0, w as u32, h as u32],
+                orientation: 1,
+                camera: crate::develop::Camera::neutral(),
+            })
+        };
+        let done = std::cell::RefCell::new(Vec::new());
+        let notify = |d: Done| done.borrow_mut().push(d);
+        let mut worker = Worker::default();
+        let mut develop = Develop::default();
+        develop.detail.nr_ai = true;
+        let job = |generation| Job::DevelopRaw {
+            generation,
+            region: Region { center: [1200.0, 900.0], size: [2400.0, 1800.0], angle: 0.0 },
+            width: 300,
+            height: 225,
+            develop,
+            profile: Profile::Standard,
+            view: false,
+        };
+        worker.handle(&gpu, Job::LoadRaw(1, PathBuf::new(), photo(0.2)), &notify);
+        worker.handle(&gpu, job(1), &notify);
+        assert!(worker.ai_step(&gpu, &notify), "one tile of several");
+        worker.handle(&gpu, Job::LoadRaw(2, PathBuf::new(), photo(0.5)), &notify);
+        assert!(!worker.ai_step(&gpu, &notify), "the old run is gone");
+        assert!(worker.raw.as_ref().unwrap().ai.is_none());
+        worker.handle(&gpu, job(2), &notify);
+        while worker.ai_step(&gpu, &notify) {}
+        assert!(worker.raw.as_ref().unwrap().ai.is_some());
+        let ready: Vec<u64> =
+            done.borrow().iter().filter_map(|d| if let Done::AiReady(g) = d { Some(*g) } else { None }).collect();
+        assert_eq!(ready, [2]);
+    }
+
+    /// A RAW the AI cannot denoise says why each time AI is picked again,
+    /// not only the first time.
+    #[cfg(feature = "ai")]
+    #[test]
+    fn ai_failure_is_reported_again() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        // A 2×2 pattern without R and B in RGGB order: no net takes it (nor do missing models).
+        let mut pattern = [1; 36];
+        pattern[0] = 0;
+        let data = Arc::new(RawData {
+            pixels: crate::raw::Pixels::Bayer(vec![0.2; 64 * 64]),
+            width: 64,
+            height: 64,
+            pattern,
+            pattern_size: [2, 2],
+            crop: [0, 0, 64, 64],
+            orientation: 1,
+            camera: crate::develop::Camera::neutral(),
+        });
+        let done = std::cell::RefCell::new(Vec::new());
+        let notify = |d: Done| done.borrow_mut().push(d);
+        let mut worker = Worker::default();
+        worker.handle(&gpu, Job::LoadRaw(1, PathBuf::new(), data), &notify);
+        let mut develop = |ai: bool| {
+            let mut develop = Develop::default();
+            develop.detail.nr_ai = ai;
+            let region = Region { center: [32.0, 32.0], size: [64.0, 64.0], angle: 0.0 };
+            let job = Job::DevelopRaw {
+                generation: 1,
+                region,
+                width: 64,
+                height: 64,
+                develop,
+                profile: Profile::Standard,
+                view: false,
+            };
+            worker.handle(&gpu, job, &notify);
+        };
+        let failures = || done.borrow().iter().filter(|d| matches!(d, Done::AiFailed(1, _))).count();
+        develop(true);
+        assert_eq!(failures(), 1);
+        develop(true);
+        assert_eq!(failures(), 1, "not repeated on every develop");
+        develop(false);
+        develop(true);
+        assert_eq!(failures(), 2);
     }
 
     /// The RAW renders at the size it was developed at, from the GPU; the
@@ -918,6 +1125,21 @@ mod tests {
         let at = |v: &[u8], i: usize| v[i * 4] as i32;
         assert!(at(&soft, 16) < at(&plain, 16) - 3 && at(&soft, 48) > at(&plain, 48) + 3);
         assert!((at(&soft, 63) - at(&plain, 63)).abs() <= 1 && (at(&soft, 0) - at(&plain, 0)).abs() <= 1);
+    }
+
+    /// Positive tint is magenta (the slider's right end), negative green.
+    #[test]
+    fn grade_positive_tint_is_magenta() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let p = gpu.upload(&grey(1, 1));
+        for (tint, magenta) in [(50.0, true), (-50.0, false)] {
+            let mut grade = Grade::default();
+            grade.params.tint = tint;
+            let out = gpu.render(&p, &grade, None, 0.0);
+            let (r, g, b) = (out[0] as i32, out[1] as i32, out[2] as i32);
+            assert_eq!(r > g + 2 && b > g + 2, magenta, "tint {tint}: {:?}", &out[..3]);
+            assert_eq!(g > r + 2 && g > b + 2, !magenta, "tint {tint}: {:?}", &out[..3]);
+        }
     }
 
     /// The creative vignette darkens the corners of the photo, not its centre.

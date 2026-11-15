@@ -186,6 +186,14 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// Sidecars from before AI denoise keep classic noise reduction.
+    #[test]
+    fn sidecar_without_ai_fields_is_classic() {
+        let d: crate::develop::Detail = serde_json::from_str(r#"{ "nr_luma": 20.0 }"#).unwrap();
+        assert!(!d.nr_ai);
+        assert_eq!(d.nr_ai_strength, 100.0);
+    }
+
     #[test]
     fn sidecar_path_is_next_to_the_file() {
         assert_eq!(path_for(Path::new("/a/P1.RW2")), PathBuf::from("/a/P1.RW2.rawvalley.json"));

@@ -6,11 +6,15 @@ pkgdesc="Color grade photos (JPEG/RAW) and export 3D LUTs (.cube), GPU accelerat
 arch=('x86_64' 'aarch64')
 license=('GPL-3.0-or-later')
 depends=('gtk4' 'libadwaita' 'vulkan-icd-loader')
-makedepends=('cargo' 'gettext')
+makedepends=('cargo' 'gettext' 'unzip' 'python-onnx' 'python-numpy')
 options=('!lto' '!debug')
 # Tarball produced by `make arch` from the committed HEAD.
-source=("$pkgname-$pkgver.tar.gz")
-sha256sums=('SKIP')
+# The AI denoise weights darktable ships, converted at build time (models/README.md).
+source=("$pkgname-$pkgver.tar.gz"
+        "https://github.com/darktable-org/darktable-ai/releases/download/release-5.6.0/rawdenoise-nind.dtmodel")
+noextract=('rawdenoise-nind.dtmodel')
+sha256sums=('SKIP'
+            'd71b5f1e727c85a359e6f74dca9e2016c9d8fc3e2f7ac3e9b347d80ceca969af')
 
 prepare() {
   cd "$pkgname-$pkgver"
@@ -21,6 +25,8 @@ build() {
   cd "$pkgname-$pkgver"
   export CARGO_TARGET_DIR=target
   cargo build --frozen --release
+  install -Dm644 "$srcdir/rawdenoise-nind.dtmodel" target/models/rawdenoise-nind.dtmodel
+  make models
 }
 
 check() {

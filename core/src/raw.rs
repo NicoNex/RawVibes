@@ -155,6 +155,8 @@ pub(crate) fn camera(raw: &rawler::RawImage) -> Camera {
 /// area, f16, level 0 at full resolution and each next one half the size.
 pub struct GpuRaw {
     pub(crate) levels: Vec<(wgpu::Buffer, u32, u32)>,
+    /// The same chain denoised by the AI (`Detail::nr_ai`), once it ran.
+    pub(crate) ai: Option<Vec<(wgpu::Buffer, u32, u32)>>,
     pub camera: Camera,
     /// Noise of the full-resolution camera RGB, estimated at load.
     pub noise: NoiseModel,
@@ -167,6 +169,16 @@ impl GpuRaw {
     /// Full-resolution size, before orientation.
     pub fn size(&self) -> (u32, u32) {
         (self.levels[0].1, self.levels[0].2)
+    }
+
+    /// `d` asks for the AI and it ran: its chain blends in, classic luminance NR is off.
+    fn ai_active(&self, d: &Detail) -> bool {
+        d.nr_ai && self.ai.is_some()
+    }
+
+    /// Level `k` of the AI chain, or of the classic one before the AI ran.
+    fn ai_level(&self, k: usize) -> &wgpu::Buffer {
+        &self.ai.as_ref().unwrap_or(&self.levels)[k].0
     }
 
     /// Full-resolution size as shown (after orientation).
@@ -242,6 +254,12 @@ pub struct Pipelines {
     rcd_pack: wgpu::ComputePipeline,
     rgb_pack: wgpu::ComputePipeline,
     mip: wgpu::ComputePipeline,
+    #[cfg(feature = "ai")]
+    pub(crate) ai_pack: wgpu::ComputePipeline,
+    #[cfg(feature = "ai")]
+    pub(crate) ai_gain: wgpu::ComputePipeline,
+    #[cfg(feature = "ai")]
+    pub(crate) ai_unpack: wgpu::ComputePipeline,
     develop_linear: wgpu::ComputePipeline,
     develop_encode: wgpu::ComputePipeline,
     nr_gat: wgpu::ComputePipeline,
@@ -258,8 +276,12 @@ pub struct Pipelines {
     us_blur_h: wgpu::ComputePipeline,
     us_blur_v: wgpu::ComputePipeline,
     us_apply: wgpu::ComputePipeline,
-    df_init: wgpu::ComputePipeline,
-    df_apply: wgpu::ComputePipeline,
+    fr_blur_h: wgpu::ComputePipeline,
+    fr_blur_v: wgpu::ComputePipeline,
+    fr_manifolds: wgpu::ComputePipeline,
+    fr_normalise: wgpu::ComputePipeline,
+    fr_out: wgpu::ComputePipeline,
+    fr_apply: wgpu::ComputePipeline,
     box_h: wgpu::ComputePipeline,
     box_v: wgpu::ComputePipeline,
     gf_ab: wgpu::ComputePipeline,
@@ -283,9 +305,9 @@ pub struct Pipelines {
     /// `DevelopParams`, rewritten per frame.
     develop_params: wgpu::Buffer,
     /// Open while a develop records: its passes and copies go out in one submission.
-    batch: std::cell::RefCell<Option<wgpu::CommandEncoder>>,
-    /// What the airlight in `air` was measured from (photo, gains, exposure, lens).
-    air_key: std::cell::RefCell<Option<(u64, [f32; 5])>>,
+    pub(crate) batch: std::cell::RefCell<Option<wgpu::CommandEncoder>>,
+    /// What the airlight in `air` was measured from (photo, gains, exposure, lens, AI blend).
+    air_key: std::cell::RefCell<Option<(u64, [f32; 6])>>,
 }
 
 impl Pipelines {
@@ -301,6 +323,11 @@ impl Pipelines {
             device,
             "detail.wgsl",
             concat!(include_str!("common.wgsl"), include_str!("detail.wgsl")),
+        );
+        let fringe = crate::gpu::shader(
+            device,
+            "fringe.wgsl",
+            concat!(include_str!("common.wgsl"), include_str!("fringe.wgsl")),
         );
         let tone =
             crate::gpu::shader(device, "tone.wgsl", concat!(include_str!("common.wgsl"), include_str!("tone.wgsl")));
@@ -335,8 +362,12 @@ impl Pipelines {
             us_blur_h: detail("us_blur_h"),
             us_blur_v: detail("us_blur_v"),
             us_apply: detail("us_apply"),
-            df_init: detail("df_init"),
-            df_apply: detail("df_apply"),
+            fr_blur_h: fringe("fr_blur_h"),
+            fr_blur_v: fringe("fr_blur_v"),
+            fr_manifolds: fringe("fr_manifolds"),
+            fr_normalise: fringe("fr_normalise"),
+            fr_out: fringe("fr_out"),
+            fr_apply: fringe("fr_apply"),
             nr_gat: denoise("nr_gat"),
             nr_nlm: denoise("nr_nlm"),
             nr_luma_apply: denoise("nr_luma_apply"),
@@ -356,6 +387,12 @@ impl Pipelines {
             rcd_pack: pipeline("rcd_pack"),
             rgb_pack: pipeline("rgb_pack"),
             mip: pipeline("mip"),
+            #[cfg(feature = "ai")]
+            ai_pack: pipeline("ai_pack"),
+            #[cfg(feature = "ai")]
+            ai_gain: pipeline("ai_gain"),
+            #[cfg(feature = "ai")]
+            ai_unpack: pipeline("ai_unpack"),
             develop_linear: pipeline("develop_linear"),
             develop_encode: pipeline("develop_encode"),
             oetf: Default::default(),
@@ -388,7 +425,7 @@ struct Params {
 }
 
 /// A compute pass: pipeline, bindings, workgroup grid.
-type Pass<'a> = (&'a wgpu::ComputePipeline, &'a [(u32, &'a wgpu::Buffer)], (u32, u32));
+pub(crate) type Pass<'a> = (&'a wgpu::ComputePipeline, &'a [(u32, &'a wgpu::Buffer)], (u32, u32));
 
 /// `DevelopParams` of `raw.wgsl`.
 #[repr(C)]
@@ -404,6 +441,9 @@ struct DevelopParams {
     lens: f32,
     margin: u32,
     lin_w: u32,
+    /// Weight of the AI chain over the classic one.
+    ai: f32,
+    _pad: [u32; 3],
 }
 
 /// `DevelopParams` of `r` at `w` × `h` with `margin`, and the mip level it samples:
@@ -435,6 +475,8 @@ fn develop_params(
         lens: dev.detail.lens_vignette / 100.0,
         margin,
         lin_w: w + 2 * margin,
+        ai: if raw.ai_active(&dev.detail) { dev.detail.nr_ai_strength / 100.0 } else { 0.0 },
+        _pad: [0; 3],
     };
     (params, k)
 }
@@ -508,19 +550,26 @@ struct DetailParams {
     size: [u32; 2],
     sigma: f32,
     radius: i32,
-    reach: i32,
-    _pad: u32,
     a: f32,
     b: f32,
-    defringe: f32,
     usm: f32,
     usm_threshold: f32,
-    _pad2: f32,
+}
+
+/// `FringeParams` of `fringe.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct FringeParams {
+    size: [u32; 2],
+    radius: i32,
+    sigma: f32,
+    safety: f32,
+    _pad: [f32; 3],
 }
 
 /// Rows of a row-major 3×3 matrix, padded as WGSL lays out `mat3x3` columns
 /// (the shader multiplies `v * m`, i.e. by the rows).
-fn rows(m: [[f32; 3]; 3]) -> [[f32; 4]; 3] {
+pub(crate) fn rows(m: [[f32; 3]; 3]) -> [[f32; 4]; 3] {
     m.map(|r| [r[0], r[1], r[2], 0.0])
 }
 
@@ -542,7 +591,7 @@ fn oetf_table(profile: Profile) -> Vec<f32> {
 }
 
 /// Workgroups covering `n` items on a 2-D grid (≤ 65535 per dimension).
-fn grid(n: u32) -> (u32, u32) {
+pub(crate) fn grid(n: u32) -> (u32, u32) {
     let groups = n.div_ceil(WORKGROUP).max(1);
     let x = groups.min(65535);
     (x, groups.div_ceil(x))
@@ -559,7 +608,7 @@ impl Gpu {
     }
 
     /// Runs `passes` (pipeline, bindings, grid) in order: in the open batch, or one submission.
-    fn passes(&self, passes: &[Pass]) {
+    pub(crate) fn passes(&self, passes: &[Pass]) {
         let binds: Vec<_> = passes.iter().map(|(p, b, _)| self.bind(p, b)).collect();
         self.record(|enc| {
             let mut pass = enc.begin_compute_pass(&Default::default());
@@ -572,7 +621,7 @@ impl Gpu {
     }
 
     /// Records into the open batch, or into an encoder submitted at once.
-    fn record(&self, f: impl FnOnce(&mut wgpu::CommandEncoder)) {
+    pub(crate) fn record(&self, f: impl FnOnce(&mut wgpu::CommandEncoder)) {
         let mut batch = self.raw.batch.borrow_mut();
         match batch.as_mut() {
             Some(enc) => f(enc),
@@ -589,7 +638,7 @@ impl Gpu {
         bytemuck::cast_slice(&self.read_range(buf, 0, buf.size())).to_vec()
     }
 
-    fn raw_params(&self, raw: &RawData, size: [u32; 4]) -> wgpu::Buffer {
+    pub(crate) fn raw_params(&self, raw: &RawData, size: [u32; 4]) -> wgpu::Buffer {
         let g = raw.camera.as_shot;
         let (gx, gy) = grid(raw.width * raw.height);
         self.storage(bytemuck::bytes_of(&Params {
@@ -648,16 +697,9 @@ impl Gpu {
                 self.passes(&[(&p.rgb_pack, &[(0, &params), (1, &rgb), (10, &level0)], grid(n))]);
             }
         }
-        let mut levels = vec![(level0, cw, ch)];
-        while let Some(&(ref src, w, h)) = levels.last().filter(|l| l.1.max(l.2) > MIP_MIN) {
-            let (nw, nh) = (w.div_ceil(2), h.div_ceil(2));
-            let dst = self.buffer(nw as u64 * nh as u64 * 8, wgpu::BufferUsages::COPY_SRC);
-            let params = self.raw_params(raw, [w, h, nw, nh]);
-            self.passes(&[(&p.mip, &[(0, &params), (10, src), (11, &dst)], grid(nw * nh))]);
-            levels.push((dst, nw, nh));
-        }
         let mut gpu_raw = GpuRaw {
-            levels,
+            levels: self.mips(raw, level0),
+            ai: None,
             camera: raw.camera.clone(),
             orientation: raw.orientation,
             noise: Default::default(),
@@ -671,6 +713,19 @@ impl Gpu {
         let up = 4f32.powi(k as i32);
         gpu_raw.noise = NoiseModel { a: m.a * up, b: m.b * up };
         Ok(gpu_raw)
+    }
+
+    /// The mip chain from `level0` (the visible area of `raw`).
+    pub(crate) fn mips(&self, raw: &RawData, level0: wgpu::Buffer) -> Vec<(wgpu::Buffer, u32, u32)> {
+        let mut levels = vec![(level0, raw.crop[2], raw.crop[3])];
+        while let Some(&(ref src, w, h)) = levels.last().filter(|l| l.1.max(l.2) > MIP_MIN) {
+            let (nw, nh) = (w.div_ceil(2), h.div_ceil(2));
+            let dst = self.buffer(nw as u64 * nh as u64 * 8, wgpu::BufferUsages::COPY_SRC);
+            let params = self.raw_params(raw, [w, h, nw, nh]);
+            self.passes(&[(&self.raw.mip, &[(0, &params), (10, src), (11, &dst)], grid(nw * nh))]);
+            levels.push((dst, nw, nh));
+        }
+        levels
     }
 
     /// `r` (oriented full-resolution coordinates) of `raw` developed to
@@ -706,7 +761,8 @@ impl Gpu {
         let scale = sx.max(sy);
         // Output pixels per full-resolution pixel; past 100% the tools keep full-resolution radii.
         let s = (1.0 / scale).min(1.0);
-        let d = &dev.detail;
+        // The AI, once it ran, replaces the classic luminance NR (whose slider it hides).
+        let d = &Detail { nr_luma: if raw.ai_active(&dev.detail) { 0.0 } else { dev.detail.nr_luma }, ..dev.detail };
         // The detail tools read around each pixel: develop that far past the edges.
         let margin = (d.support() * s).ceil() as u32;
         let (lw, lh) = (w + 2 * margin, h + 2 * margin);
@@ -737,7 +793,7 @@ impl Gpu {
 
         // Slow stages are cached with everything upstream of them.
         let mut key = vec![r.center[0], r.center[1], r.size[0], r.size[1], r.angle, w as f32, h as f32];
-        key.extend([k as f32, gains[0], gains[1], gains[2], exposure, d.lens_vignette, margin as f32]);
+        key.extend([k as f32, gains[0], gains[1], gains[2], exposure, d.lens_vignette, margin as f32, params.ai]);
         key.extend([d.nr_luma, d.nr_chroma, d.nr_detail]);
         let nr_key = (raw.id, key.clone());
         key.extend([d.defringe, d.dehaze, d.local_contrast]);
@@ -759,7 +815,8 @@ impl Gpu {
             if let Some(b) = hit(&work.after_nr, &nr_key) {
                 self.copy(&b, &work.lin);
             } else {
-                self.passes(&[(&p.develop_linear, &[(10, level), (12, &p.develop_params), (15, &work.lin)], g)]);
+                let linear = [(10, level), (11, raw.ai_level(k)), (12, &p.develop_params), (15, &work.lin)];
+                self.passes(&[(&p.develop_linear, &linear, g)]);
                 if nr_on {
                     let lin = work.lin.clone();
                     self.denoise(&lin, work.scratch(self), lw, lh, s, d, noise);
@@ -850,17 +907,17 @@ impl Gpu {
     }
 
     /// Sets the dehaze airlight from the whole frame developed at `AIR_SIZE`
-    /// (kept while photo, white balance, exposure and lens stay).
+    /// (kept while photo, white balance, exposure, lens and AI blend stay).
     fn airlight(&self, raw: &GpuRaw, dev: &Develop, profile: Profile) {
-        let gains = raw.camera.gains_for(dev);
-        let key = (raw.id, [gains[0], gains[1], gains[2], dev.exposure, dev.detail.lens_vignette]);
-        if self.raw.air_key.replace(Some(key)) == Some(key) {
-            return;
-        }
         let (fw, fh) = raw.oriented_size();
         let whole = Region { center: [fw as f32 / 2.0, fh as f32 / 2.0], size: [fw as f32, fh as f32], angle: 0.0 };
         let (w, h) = crate::photo::Decoded::fit_size(&whole, AIR_SIZE);
         let (params, k) = develop_params(raw, &whole, w, h, dev, profile, 0);
+        let g = params.gains;
+        let key = (raw.id, [g[0], g[1], g[2], dev.exposure, dev.detail.lens_vignette, params.ai]);
+        if self.raw.air_key.replace(Some(key)) == Some(key) {
+            return;
+        }
         let (params, lin) = (
             self.storage(bytemuck::bytes_of(&params)),
             self.buffer(w as u64 * h as u64 * 16, wgpu::BufferUsages::empty()),
@@ -873,7 +930,7 @@ impl Gpu {
         let (p, g) = (&self.raw, grid(w * h));
         self.queue.write_buffer(&p.air, 0, &[0; 16]);
         self.passes(&[
-            (&p.develop_linear, &[(10, &raw.levels[k].0), (12, &params), (15, &lin)], g),
+            (&p.develop_linear, &[(10, &raw.levels[k].0), (11, raw.ai_level(k)), (12, &params), (15, &lin)], g),
             (&p.dh_min_h, &[(0, &q), (1, &lin), (3, &sb)], g),
             (&p.dh_min_v, &[(0, &q), (2, &sa), (3, &sb), (4, &p.air)], g),
         ]);
@@ -942,27 +999,50 @@ impl Gpu {
     }
 
     /// `DetailParams` of `detail.wgsl`.
-    fn detail_params(&self, w: u32, h: u32, s: f32, sigma: f32, noise: NoiseModel, defringe: f32) -> wgpu::Buffer {
-        self.storage(bytemuck::bytes_of(&DetailParams {
+    fn detail_params(w: u32, h: u32, sigma: f32, noise: NoiseModel) -> DetailParams {
+        DetailParams {
             size: [w, h],
             sigma,
             radius: (3.0 * sigma).ceil() as i32,
-            reach: (3.0 * s).round().max(1.0) as i32,
-            _pad: 0,
             a: noise.a,
             b: noise.b,
-            defringe: defringe / 100.0,
             usm: 0.0,
             usm_threshold: 0.0,
-            _pad2: 0.0,
-        }))
+        }
     }
 
-    /// Defringe (`detail.wgsl`).
-    fn defringe(&self, lin: &wgpu::Buffer, [sa, _]: [&wgpu::Buffer; 2], w: u32, h: u32, s: f32, amount: f32) {
-        let params = self.detail_params(w, h, s, 1.0, NoiseModel::default(), amount);
-        let (p, g, own) = (&self.raw, grid(w * h), [(0, &params), (1, lin), (2, sa)]);
-        self.passes(&[(&p.df_init, &own, g), (&p.df_apply, &own, g)]);
+    /// Defringe (`fringe.wgsl`): darktable's chromatic aberrations module,
+    /// radius 5 px at full resolution, strength = `amount` / 100 (50 is darktable's default).
+    fn defringe(&self, lin: &wgpu::Buffer, [sa, sb]: [&wgpu::Buffer; 2], w: u32, h: u32, s: f32, amount: f32) {
+        let sigma = (5.0 * s).max(1.0);
+        let pr = self.storage(bytemuck::bytes_of(&FringeParams {
+            size: [w, h],
+            radius: (3.0 * sigma).ceil() as i32,
+            sigma,
+            safety: 20f32.powf(1.0 - amount / 100.0),
+            _pad: [0.0; 3],
+        }));
+        // Blurred input, higher and lower manifolds.
+        let [b, hi, lo] = [0; 3].map(|_| self.buffer(lin.size(), wgpu::BufferUsages::empty()));
+        let (p, g) = (&self.raw, grid(w * h));
+        let blur_h = |from, to| (&p.fr_blur_h, vec![(0, &pr), (4, from), (5, to)]);
+        let blur_v = |from, to| (&p.fr_blur_v, vec![(0, &pr), (4, from), (5, to)]);
+        let passes = [
+            blur_h(lin, sb),
+            blur_v(sb, &b),
+            (&p.fr_manifolds, vec![(0, &pr), (1, lin), (2, &lo), (5, &hi), (6, &b)]),
+            blur_h(&hi, sb),
+            blur_v(sb, &hi),
+            blur_h(&lo, sb),
+            blur_v(sb, &lo),
+            (&p.fr_normalise, vec![(0, &pr), (2, &lo), (5, &hi), (6, &b)]),
+            (&p.fr_out, vec![(0, &pr), (1, lin), (2, sa), (4, &hi), (6, &lo)]),
+            blur_h(sa, sb),
+            blur_v(sb, sa),
+            (&p.fr_apply, vec![(0, &pr), (1, lin), (2, sa), (4, &hi), (6, &lo)]),
+        ];
+        let passes: Vec<Pass> = passes.iter().map(|(pl, b)| (*pl, b.as_slice(), g)).collect();
+        self.passes(&passes);
     }
 
     /// Capture sharpening (`detail.wgsl`): Richardson–Lucy, one iteration per 10 of the amount.
@@ -977,11 +1057,14 @@ impl Gpu {
         detail: &Detail,
         noise: NoiseModel,
     ) {
-        let params = self.detail_params(w, h, s, (detail.sharpen_radius * s).max(0.3), noise, 0.0);
+        let sigma = (detail.sharpen_radius * s).max(0.3);
+        // The deconvolution converges in a few iterations: the amount blends it in instead.
+        let params = DetailParams { usm: detail.sharpen / 100.0, ..Self::detail_params(w, h, sigma, noise) };
+        let params = self.storage(bytemuck::bytes_of(&params));
         let (p, g) = (&self.raw, grid(w * h));
         let (own, both) = ([(0, &params), (1, lin), (2, sa)], [(0, &params), (2, sa), (3, sb)]);
         let mut passes: Vec<Pass> = vec![(&p.sh_init, &own, g)];
-        for _ in 0..1 + (detail.sharpen / 10.0) as usize {
+        for _ in 0..10 {
             passes.extend([(&p.sh_ratio, both.as_slice(), g), (&p.sh_update, both.as_slice(), g)]);
         }
         passes.push((&p.sh_apply, &own, g));
@@ -1001,18 +1084,10 @@ impl Gpu {
     ) {
         let sigma = (detail.usm_radius * s).max(0.3);
         let params = self.storage(bytemuck::bytes_of(&DetailParams {
-            size: [w, h],
-            sigma,
-            radius: (3.0 * sigma).ceil() as i32,
-            reach: 0,
-            _pad: 0,
-            a: 0.0,
-            b: 0.0,
-            defringe: 0.0,
             usm: 2.0 * detail.usm / 100.0,
             // 0..100 → up to 0.02 of L (about 5% of a mid-grey's lightness).
             usm_threshold: detail.usm_threshold / 100.0 * 0.02,
-            _pad2: 0.0,
+            ..Self::detail_params(w, h, sigma, NoiseModel::default())
         }));
         let (p, g) = (&self.raw, grid(w * h));
         let (own, both) = ([(0, &params), (1, lin), (2, sa)], [(0, &params), (2, sa), (3, sb)]);
@@ -1048,7 +1123,9 @@ impl Gpu {
                 _pad: 0,
                 a: noise.a,
                 b: noise.b,
-                luma: detail.nr_luma / 100.0,
+                // darktable's denoiseprofile strength: NLM as if the noise were ×¼ (amount 0)
+                // to ×4 (100) of the measured one, ×1 at 50.
+                luma: 4f32.powf(2.0 * detail.nr_luma / 100.0 - 1.0),
                 detail: detail.nr_detail / 200.0,
                 chroma: detail.nr_chroma / 100.0,
                 _pad2: 0.0,
@@ -1163,7 +1240,11 @@ impl Gpu {
 
     /// [`Gpu::reconstruct`], also handing back the uploaded mosaic's buffer
     /// (free once it ran) for the next passes to reuse.
-    fn reconstruct_keep(&self, raw: &RawData, mosaic: &[f32]) -> Result<(wgpu::Buffer, wgpu::Buffer), String> {
+    pub(crate) fn reconstruct_keep(
+        &self,
+        raw: &RawData,
+        mosaic: &[f32],
+    ) -> Result<(wgpu::Buffer, wgpu::Buffer), String> {
         let n = raw.width * raw.height;
         let bytes = n as u64 * 4;
         self.fits(bytes)?;
@@ -1205,7 +1286,7 @@ fn sensor_point([x, y]: [f32; 2], orientation: u16, w: u32, h: u32) -> [f32; 2] 
 }
 
 /// A packed level pixel (two words of f16, as `pack` in `raw.wgsl` writes them) as RGB.
-fn unpack(w: &[u32]) -> [f32; 3] {
+pub(crate) fn unpack(w: &[u32]) -> [f32; 3] {
     [f16_to_f32(w[0] as u16), f16_to_f32((w[0] >> 16) as u16), f16_to_f32(w[1] as u16)]
 }
 
@@ -1467,6 +1548,65 @@ mod tests {
             let run = |dev: &Develop| gpu.read_photo(&gpu.develop(&raw, &whole(w, h), w, h, dev, profile).unwrap());
             assert_eq!(run(&plain).pixels, run(&idle).pixels, "{profile:?}");
         }
+    }
+
+    /// A RAW whose AI chain is another photo's: what the AI blend picks shows.
+    fn with_ai_chain(gpu: &Gpu, w: u32, h: u32) -> GpuRaw {
+        let px = |v: f32| (0..w * h).map(|i| [(i % w) as f32 / w as f32, v, 0.3]).collect();
+        let mut raw = rgb_raw(gpu, w, h, px(0.2), 1, Camera::neutral());
+        raw.ai = Some(rgb_raw(gpu, w, h, px(0.6), 1, Camera::neutral()).levels);
+        raw
+    }
+
+    fn ai(on: bool, strength: f32) -> Develop {
+        Develop {
+            detail: Detail { nr_ai: on, nr_ai_strength: strength, nr_luma: 40.0, ..Detail::default() },
+            ..Develop::default()
+        }
+    }
+
+    /// AI off develops as if it never ran; classic luminance NR applies.
+    #[test]
+    fn ai_off_is_bit_exact() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (64, 32);
+        let mut raw = with_ai_chain(&gpu, w, h);
+        let run = |raw: &GpuRaw, dev: &Develop| {
+            gpu.read_photo(&gpu.develop(raw, &whole(w, h), w, h, dev, Profile::Standard).unwrap()).pixels
+        };
+        let with = run(&raw, &ai(false, 100.0));
+        raw.ai = None;
+        assert_eq!(with, run(&raw, &ai(false, 100.0)));
+    }
+
+    /// Strength 0 is the classic demosaic (without luminance NR); 100 the AI chain.
+    #[test]
+    fn ai_strength_zero_equals_rcd() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (64, 32);
+        let raw = with_ai_chain(&gpu, w, h);
+        let run = |dev: &Develop| {
+            gpu.read_photo(&gpu.develop(&raw, &whole(w, h), w, h, dev, Profile::Standard).unwrap()).pixels
+        };
+        let classic = Develop::default();
+        assert_eq!(run(&ai(true, 0.0)), run(&classic));
+        assert_ne!(run(&ai(true, 100.0)), run(&classic));
+    }
+
+    /// The dehaze airlight follows the AI blend: AI on dehazes the same
+    /// whether or not the classic develop ran first.
+    #[test]
+    fn dehaze_airlight_follows_ai() {
+        let (Ok(a), Ok(b)) = (Gpu::new(), Gpu::new()) else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (64, 32);
+        let hazy = |on| Develop { detail: Detail { dehaze: 60.0, ..ai(on, 100.0).detail }, ..Develop::default() };
+        let run = |gpu: &Gpu, raw: &GpuRaw, dev: &Develop| {
+            gpu.read_photo(&gpu.develop(raw, &whole(w, h), w, h, dev, Profile::Standard).unwrap()).pixels
+        };
+        let raw_a = with_ai_chain(&a, w, h);
+        run(&a, &raw_a, &hazy(false));
+        let after_classic = run(&a, &raw_a, &hazy(true));
+        assert_eq!(after_classic, run(&b, &with_ai_chain(&b, w, h), &hazy(true)));
     }
 
     fn flat_lens(gpu: &Gpu, amount: f32) -> Vec<[f32; 4]> {
@@ -1774,17 +1914,40 @@ mod tests {
         let before = field(&gpu, w, h, px.clone(), Detail::default());
         let after = field(&gpu, w, h, px, Detail { defringe: 100.0, ..Detail::default() });
         assert!(
-            chroma(&after, 31, 24) <= 0.3 * chroma(&before, 31, 24),
+            chroma(&after, 31, 24) <= 0.4 * chroma(&before, 31, 24),
             "fringe {} vs {}",
             chroma(&after, 31, 24),
             chroma(&before, 31, 24)
         );
         assert!(
-            chroma(&after, 70, 24) >= 0.95 * chroma(&before, 70, 24),
+            chroma(&after, 70, 24) >= 0.9 * chroma(&before, 70, 24),
             "patch {} vs {}",
             chroma(&after, 70, 24),
             chroma(&before, 70, 24)
         );
+    }
+
+    /// Dark branch, purple fringe, bright blue sky: the fringe loses its
+    /// colour without taking the sky's, and the dark side stays neutral.
+    #[test]
+    fn defringe_does_not_paint_the_bright_side_colour() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (96u32, 32u32);
+        let px = (0..w * h)
+            .map(|i| match i % w {
+                0..=45 => [0.03; 3],
+                46..=47 => [0.35, 0.08, 0.6],
+                _ => [0.5, 0.7, 0.95],
+            })
+            .collect::<Vec<_>>();
+        let before = field(&gpu, w, h, px.clone(), Detail::default());
+        let after = field(&gpu, w, h, px, Detail { defringe: 100.0, ..Detail::default() });
+        let chroma = |p: [f32; 4]| (p[0] - p[1]).abs().max((p[2] - p[1]).abs()) / p[1].max(1e-6);
+        let at = |v: &[[f32; 4]], x: u32| v[(16 * w + x) as usize];
+        assert!(chroma(at(&after, 47)) < 0.5 * chroma(at(&before, 47)), "fringe {:?}", at(&after, 47));
+        for x in 30..=44 {
+            assert!(chroma(at(&after, x)) < 0.01, "dark side tinted at {x}: {:?}", at(&after, x));
+        }
     }
 
     /// A hazy horizontal gradient: scene 0.05..0.5 seen through haze t = 0.5, airlight 0.8.

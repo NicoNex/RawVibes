@@ -40,6 +40,9 @@ pub struct Detail {
     pub local_contrast: f32,
     /// Lens vignetting compensation, −100…100.
     pub lens_vignette: f32,
+    /// Automatic lateral chromatic-aberration correction on the Bayer
+    /// mosaic, before demosaic (`ca::corrected`); a no-op on other sensors.
+    pub ca_correct: bool,
 }
 
 impl Detail {
@@ -79,6 +82,7 @@ impl Detail {
             dehaze: signed(d.dehaze),
             local_contrast: amount(d.local_contrast),
             lens_vignette: signed(d.lens_vignette),
+            ca_correct: d.ca_correct,
         })
     }
 }
@@ -95,6 +99,7 @@ impl Default for Detail {
             dehaze: 0.0,
             local_contrast: 0.0,
             lens_vignette: 0.0,
+            ca_correct: false,
         }
     }
 }

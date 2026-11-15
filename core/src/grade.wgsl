@@ -11,7 +11,9 @@ struct Params {
     mixer: array<f32, 9>, mixer_mono: f32, mono_mix: array<f32, 3>, mixer_free: f32,
     film_sat: f32, film_density: f32,
     match_amount: f32, match_ab: array<f32, 6>,
+    vignette: f32, vignette_mid: f32, vignette_round: f32, vignette_feather: f32,
     input: u32, gamut: array<f32, 9>, split: f32, width: u32, height: u32, lut_size: u32, overlay: u32,
+    vignette_view: array<f32, 4>, vignette_aspect: f32,
 }
 
 @group(0) @binding(0) var<storage, read> p: Params;
@@ -460,6 +462,35 @@ fn mark_clipping(idx: u32, raw: vec3<f32>) -> vec3<f32> {
     return g;
 }
 
+// ------------------------------------------------------ creative vignette
+// A finish on the displayed photo, after the looks; never baked (the bake
+// entry point does not call it). Radius 1 at the crop's corners.
+
+fn vignette(idx: u32, c: vec3<f32>) -> vec3<f32> {
+    if p.vignette == 0.0 { return c; }
+    var view = vec4(p.vignette_view[0], p.vignette_view[1], p.vignette_view[2], p.vignette_view[3]);
+    if view.z <= view.x { view = vec4(0.0, 0.0, 1.0, 1.0); }
+    let px = (vec2(f32(idx % p.width), f32(idx / p.width)) + 0.5) / vec2(f32(p.width), f32(p.height));
+    let d = (mix(view.xy, view.zw, px) - 0.5) * 2.0;
+    var aspect = p.vignette_aspect;
+    if aspect <= 0.0 { aspect = f32(p.width) / f32(p.height); }
+    let ellipse = length(d) / sqrt(2.0);
+    let round = p.vignette_round * 0.01;
+    var r: f32;
+    if round >= 0.0 {
+        let a = vec2(aspect, 1.0);
+        r = mix(ellipse, length(d * a) / length(a), round);
+    } else {
+        r = mix(ellipse, max(abs(d.x), abs(d.y)), -round);
+    }
+    let mid = clamp(0.5 + p.vignette_mid * 0.005, 0.0, 1.0);
+    let feather = clamp(0.5 + p.vignette_feather * 0.005, 0.02, 1.0);
+    let t = smoothstep(mid, mid + feather, r);
+    let k = p.vignette * 0.01;
+    if k < 0.0 { return c * (1.0 + k * t); }
+    return c + (1.0 - c) * (k * t);
+}
+
 @compute @workgroup_size(256)
 fn preview(@builtin(global_invocation_id) id: vec3<u32>) {
     let idx = id.x;
@@ -468,6 +499,7 @@ fn preview(@builtin(global_invocation_id) id: vec3<u32>) {
     // Optional look LUT after the grade (lut_size 0 = none).
     var g = grade_unclamped(c);
     if p.lut_size > 0u { g = tetrahedral(clamp(g, vec3(0.0), vec3(1.0))); }
+    g = vignette(idx, g);
     if p.overlay == 1u { g = mark_clipping(idx, g); }
     dst_px[idx] = finish(idx, clamp(g, vec3(0.0), vec3(1.0)), c);
 }

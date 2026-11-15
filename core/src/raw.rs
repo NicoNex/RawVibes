@@ -274,7 +274,8 @@ struct DevelopParams {
     cam: [[f32; 4]; 3],
     target: [[f32; 4]; 3],
     k: f32,
-    _pad: [f32; 3],
+    lens: f32,
+    _pad: [f32; 2],
 }
 
 /// Rows of a row-major 3×3 matrix, padded as WGSL lays out `mat3x3` columns
@@ -455,7 +456,8 @@ impl Gpu {
             cam: rows(raw.camera.cam2rec2020),
             target: rows(target),
             k: RAW_TO_SCENE * dev.exposure.exp2(),
-            _pad: [0.0; 3],
+            lens: dev.detail.lens_vignette / 100.0,
+            _pad: [0.0; 2],
         };
         self.queue.write_buffer(&self.raw.develop_params, 0, bytemuck::bytes_of(&params));
         let mut oetf = self.raw.oetf.borrow_mut();
@@ -856,6 +858,37 @@ mod tests {
             let run = |dev: &Develop| gpu.read_photo(&gpu.develop(&raw, &whole(w, h), w, h, dev, profile).unwrap());
             assert_eq!(run(&plain).pixels, run(&idle).pixels, "{profile:?}");
         }
+    }
+
+    fn flat_lens(gpu: &Gpu, amount: f32) -> Vec<[f32; 4]> {
+        let (w, h) = (30, 20);
+        let raw = rgb_raw(gpu, w, h, vec![[0.2; 3]; (w * h) as usize], 1, Camera::neutral());
+        let dev = Develop { detail: Detail { lens_vignette: amount, ..Detail::default() }, ..Develop::default() };
+        gpu.read_photo(&gpu.develop(&raw, &whole(w, h), w, h, &dev, Profile::VLog).unwrap()).pixels
+    }
+
+    #[test]
+    fn lens_vignette_zero_is_identity() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let base = flat_lens(&gpu, 0.0);
+        assert!(base.iter().all(|p| *p == base[0]), "a flat field stays flat");
+    }
+
+    /// Positive amounts brighten towards the corners, the same at the same
+    /// distance from the centre; negative ones darken.
+    #[test]
+    fn lens_vignette_is_radially_symmetric() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (30usize, 20usize);
+        let at = |px: &[[f32; 4]], x: usize, y: usize| px[y * w + x][1];
+        let up = flat_lens(&gpu, 50.0);
+        let (centre, corner) = (at(&up, w / 2, h / 2), at(&up, 0, 0));
+        assert!(corner > centre + 0.01, "corner {corner} vs centre {centre}");
+        for (x, y) in [(0, 0), (3, 5), (10, 2)] {
+            let mirrored = [at(&up, w - 1 - x, y), at(&up, x, h - 1 - y), at(&up, w - 1 - x, h - 1 - y)];
+            assert!(mirrored.iter().all(|v| (v - at(&up, x, y)).abs() < 1e-5), "({x}, {y}): {mirrored:?}");
+        }
+        assert!(at(&flat_lens(&gpu, -50.0), 0, 0) < centre - 0.01);
     }
 
     /// Every EXIF orientation gives what the image crate's `apply_orientation` does.

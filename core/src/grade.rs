@@ -73,6 +73,13 @@ pub struct Params {
     /// delta from the identity: [m00, m01, m10, m11, t0, t1].
     pub match_amount: f32,
     pub match_ab: [f32; 6],
+    /// Creative vignette (finish, not in LUTs): amount (−100 darkens … 100
+    /// lightens), midpoint, roundness (−100 rectangle, 0 frame-shaped
+    /// ellipse, 100 circle) and feather, all −100..100 around their defaults.
+    pub vignette: f32,
+    pub vignette_mid: f32,
+    pub vignette_round: f32,
+    pub vignette_feather: f32,
     /// Input decoder id ([`Profile::curve`]); 0 = display-referred Rec.709.
     #[serde(skip)]
     pub input: u32,
@@ -91,6 +98,13 @@ pub struct Params {
     /// Preview only: 1 = mark clipped and out-of-gamut pixels.
     #[serde(skip)]
     pub overlay: u32,
+    /// The rendered image's rectangle in crop coordinates (x0, y0, x1, y1;
+    /// all zero = the whole crop) and the crop's pixel aspect (0 = the
+    /// image's): where the creative vignette falls on a zoomed view.
+    #[serde(skip)]
+    pub vignette_view: [f32; 4],
+    #[serde(skip)]
+    pub vignette_aspect: f32,
 }
 
 impl Params {
@@ -145,10 +159,11 @@ pub enum Stage {
     Film,
     HueCurves,
     Match,
+    Vignette,
 }
 
 impl Stage {
-    pub const ALL: [Stage; 10] = [
+    pub const ALL: [Stage; 11] = [
         Stage::Match,
         Stage::WhiteBalance,
         Stage::Tone,
@@ -159,6 +174,7 @@ impl Stage {
         Stage::HueCurves,
         Stage::Wheels,
         Stage::Curves,
+        Stage::Vignette,
     ];
 }
 
@@ -203,6 +219,10 @@ impl Grade {
                 (p.mixer, p.mixer_mono, p.mono_mix, p.mixer_free) = (d.mixer, d.mixer_mono, d.mono_mix, d.mixer_free)
             }
             Stage::Film => (p.film_sat, p.film_density) = (d.film_sat, d.film_density),
+            Stage::Vignette => {
+                (p.vignette, p.vignette_mid) = (d.vignette, d.vignette_mid);
+                (p.vignette_round, p.vignette_feather) = (d.vignette_round, d.vignette_feather);
+            }
             Stage::HueCurves => (HUE_HUE..=LUM_SAT).for_each(|c| curves[c] = neutral_curve(c)),
             Stage::Match => {
                 (p.match_amount, p.match_ab) = (d.match_amount, d.match_ab);
@@ -310,8 +330,9 @@ mod tests {
     #[test]
     fn params_layout_matches_wgsl() {
         // 12 scalars + 4×4 wheels + 3×8 hue + mixer 9+1+3+1 + film 2 + match 1+6
-        // + input + 3×3 gamut + split,width,height,lut_size,overlay
-        assert_eq!(std::mem::size_of::<Params>(), (12 + 16 + 24 + 14 + 2 + 7 + 1 + 9 + 5) * 4);
+        // + vignette 4 + input + 3×3 gamut + split,width,height,lut_size,overlay
+        // + vignette view 4 + aspect
+        assert_eq!(std::mem::size_of::<Params>(), (12 + 16 + 24 + 14 + 2 + 7 + 4 + 1 + 9 + 5 + 5) * 4);
     }
 
     #[test]

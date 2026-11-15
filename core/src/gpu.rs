@@ -802,6 +802,34 @@ mod tests {
         assert!(worst <= 8 && mean < 0.5, "65³ LUT vs direct grade: worst {worst}/255, mean {mean}");
     }
 
+    fn grey(w: u32, h: u32) -> Photo {
+        Photo { width: w, height: h, pixels: vec![[0.5, 0.5, 0.5, 1.0]; (w * h) as usize] }
+    }
+
+    /// The creative vignette darkens the corners of the photo, not its centre.
+    #[test]
+    fn creative_vignette_darkens_corners() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (40, 30);
+        let mut grade = Grade::default();
+        grade.params.vignette = -60.0;
+        let out = gpu.render(&gpu.upload(&grey(w, h)), &grade, None, 0.0);
+        let at = |x: u32, y: u32| out[((y * w + x) * 4) as usize];
+        assert!(at(0, 0) + 20 < at(w / 2, h / 2), "corner {} centre {}", at(0, 0), at(w / 2, h / 2));
+        assert!(at(w / 2, h / 2).abs_diff(128) <= 1);
+    }
+
+    /// The creative vignette is a finish: it never reaches a LUT.
+    #[test]
+    fn creative_vignette_not_in_baked_lut() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let mut grade = Grade::default();
+        grade.params.exposure = 0.3;
+        let plain = gpu.bake(&grade, 9, String::new());
+        (grade.params.vignette, grade.params.vignette_mid) = (50.0, 20.0);
+        assert_eq!(gpu.bake(&grade, 9, String::new()).data, plain.data);
+    }
+
     /// Film colour leaves neutrals alone and makes colours denser, never
     /// lighter; the monochrome mixer outputs grey; the clipping overlay marks
     /// only pixels that clip.

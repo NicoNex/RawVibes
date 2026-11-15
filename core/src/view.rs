@@ -24,6 +24,16 @@ impl Region {
         let r = rotate(d, sin, cos);
         [self.center[0] + r[0], self.center[1] + r[1]]
     }
+
+    /// This region's rectangle (x0, y0, x1, y1) in `outer`'s 0..1 coordinates;
+    /// both turned by the same angle (a view of a crop).
+    pub fn rect_in(&self, outer: &Region) -> [f32; 4] {
+        let (sin, cos) = outer.angle.to_radians().sin_cos();
+        let d = [self.center[0] - outer.center[0], self.center[1] - outer.center[1]];
+        let local = rotate(d, -sin, cos);
+        let at = |i: usize, side: f32| 0.5 + (local[i] + side * self.size[i] / 2.0) / outer.size[i];
+        [at(0, -1.0), at(1, -1.0), at(0, 1.0), at(1, 1.0)]
+    }
 }
 
 /// `d` turned by the angle whose sine and cosine are given (y down).
@@ -218,6 +228,20 @@ mod tests {
     }
 
     const CROP: Region = Region { center: [3000.0, 2000.0], size: [6000.0, 4000.0], angle: 0.0 };
+
+    /// A zoomed view's rectangle in its crop's 0..1 coordinates, also turned.
+    #[test]
+    fn rect_in_maps_a_view_into_the_crop() {
+        for angle in [0.0, 12.0] {
+            let crop = Region { angle, ..CROP };
+            let whole = crop.rect_in(&crop);
+            assert!(whole.iter().zip([0.0, 0.0, 1.0, 1.0]).all(|(a, b)| (a - b).abs() < 1e-5), "{whole:?}");
+            let view = Region { center: crop.point([1500.0, 0.0]), size: [600.0, 400.0], angle };
+            let r = view.rect_in(&crop);
+            let want = [0.7, 0.45, 0.8, 0.55];
+            assert!(r.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-4), "{angle}: {r:?}");
+        }
+    }
     const CANVAS: [f32; 2] = [1500.0, 1000.0];
 
     #[test]

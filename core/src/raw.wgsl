@@ -479,6 +479,8 @@ struct DevelopParams {
     cam: mat3x3<f32>,
     to_out: mat3x3<f32>,
     k: f32,
+    // Lens vignetting compensation, −1…1.
+    lens: f32,
 }
 
 @group(0) @binding(12) var<storage, read> d: DevelopParams;
@@ -564,7 +566,11 @@ fn develop_linear(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups)
     let x = i32(b.x);
     let y = i32(b.y);
     let cam = mix(mix(texel(x, y), texel(x + 1, y), f.x), mix(texel(x, y + 1), texel(x + 1, y + 1), f.x), f.y);
-    lin[i] = vec4<f32>((cam * d.gains.xyz) * d.cam * d.k, 1.0);
+    // Lens vignetting: radial gain 1 + a·r²·(1 + r²), r = 1 at the sensor's corners.
+    let half = 0.5 * vec2<f32>(f32(d.fw), f32(d.fh));
+    let r2 = dot(s - half, s - half) / dot(half, half);
+    let lens = 1.0 + d.lens * r2 * (1.0 + r2);
+    lin[i] = vec4<f32>((cam * d.gains.xyz) * d.cam * (d.k * lens), 1.0);
 }
 
 @compute @workgroup_size(256)

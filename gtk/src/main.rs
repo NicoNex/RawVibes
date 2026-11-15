@@ -28,7 +28,7 @@ use lab_page::{LabAdd, LabKind, LabLayer, LabUi, Layers, caption};
 use presets_ui::PresetsUi;
 use rawvalley_core::chart::test_chart;
 use rawvalley_core::crop::{self, Crop, PRESETS, Ratio};
-use rawvalley_core::develop::{Camera, Develop, KELVIN, WB_PRESETS};
+use rawvalley_core::develop::{Camera, Detail, Develop, KELVIN, WB_PRESETS};
 use rawvalley_core::gpu::{self, Done, Job, ThumbBase};
 use rawvalley_core::grade::{
     BAND_HUE_RANGE, BAND_HUES, Curve, Grade, HUE_HUE, HUE_SAT, LUM_SAT, LUMA, MASTER, Params, Stage,
@@ -234,9 +234,14 @@ enum DevelopEdit {
     Tint(f32),
     Exposure(f32),
     CameraExposure,
+    /// A detail tool's slider.
+    Detail(DetailField, f32),
     Pick(bool),
     Picked([f32; 2]),
 }
+
+/// One of the detail tools' amounts.
+type DetailField = fn(&mut Detail) -> &mut f32;
 
 /// How the RAW preview trades resolution for fluidity while a development
 /// control moves; the full-quality frame follows `DEVELOP_SETTLE` later.
@@ -515,6 +520,12 @@ impl App {
     fn render(&mut self) {
         let mut grade = self.graded();
         grade.params.overlay = self.overlay as u32;
+        // Where the shown image sits in the crop, for the creative vignette.
+        if let (Some(shown), Some(crop)) = (self.shown_region(), self.crop_region()) {
+            let visible = self.view_zoom().map_or(shown, |z| z.view(&shown, self.canvas).0);
+            grade.params.vignette_view = visible.rect_in(&crop);
+            grade.params.vignette_aspect = crop.size[0] / crop.size[1];
+        }
         let req = Some((grade, self.split_value()));
         if self.has_source() && self.sent != req {
             self.sent = req;
@@ -962,6 +973,7 @@ impl App {
             DevelopEdit::Tint(v) => dev.wb = Some([k, v]),
             DevelopEdit::Exposure(v) => dev.exposure = v,
             DevelopEdit::CameraExposure => dev.exposure = cam.baseline_ev,
+            DevelopEdit::Detail(field, v) => *field(&mut dev.detail) = v,
             DevelopEdit::Picked(kt) => {
                 dev.wb = Some(kt);
                 self.ui.sidebar.develop.picker.set_active(false);
@@ -995,6 +1007,9 @@ impl App {
         ui.kelvin.adj.set_value(k as f64);
         ui.tint.adj.set_value(t as f64);
         ui.exposure.adj.set_value(self.develop.exposure as f64);
+        for (s, field) in &ui.detail {
+            s.adj.set_value(*field(&mut self.develop.detail.clone()) as f64);
+        }
         ui.preset.set_selected(preset);
         ui.syncing.set(false);
     }
@@ -1522,6 +1537,7 @@ struct DevelopUi {
     tint: Slider,
     picker: gtk::ToggleButton,
     exposure: Slider,
+    detail: Vec<(Slider, DetailField)>,
 }
 
 /// Index of "Custom" in the white-balance preset dropdown (after As shot and the presets).
@@ -1593,8 +1609,24 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
         sender,
     );
     root.append(&section_with(&gettext("Exposure"), &exp, &[cam_ev.upcast()], true));
+
+    let mut detail = Vec::new();
+    let mut detail_slider = |bx: &gtk::Box, label: &str, range: (f64, f64), default: f64, field: DetailField| {
+        let s = Slider::new(label, range.0, range.1, default, 0, None);
+        let (snd, syncing) = (sender.clone(), syncing.clone());
+        s.connect(move |v| {
+            if !syncing.get() {
+                snd.input(Msg::Develop(DevelopEdit::Detail(field, v as f32)));
+            }
+        });
+        bx.append(&s.root);
+        detail.push((s, field));
+    };
+    let lens = vbox(4);
+    detail_slider(&lens, &gettext("Lens vignetting"), (-100.0, 100.0), 0.0, |d| &mut d.lens_vignette);
+    root.append(&section(&gettext("Lens"), &lens));
     root.set_visible(false);
-    DevelopUi { syncing, root, preset, kelvin, tint, picker, exposure }
+    DevelopUi { syncing, root, preset, kelvin, tint, picker, exposure, detail }
 }
 
 /// Curve editor with a channel selector and a reset button.
@@ -2036,6 +2068,13 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     panel.append(&bypassable(&gettext("LUTs"), &look_box, None, true, sender));
     panel.append(&group_heading(&gettext("Finish · not in LUT")));
     panel.append(crop);
+
+    let vig = vbox(4);
+    add(&vig, &gettext("Amount"), -100.0, 100.0, 0, None, |p| &mut p.vignette);
+    add(&vig, &gettext("Midpoint"), -100.0, 100.0, 0, None, |p| &mut p.vignette_mid);
+    add(&vig, &gettext("Roundness"), -100.0, 100.0, 0, None, |p| &mut p.vignette_round);
+    add(&vig, &gettext("Feather"), -100.0, 100.0, 0, None, |p| &mut p.vignette_feather);
+    panel.append(&bypassable(&gettext("Vignette"), &vig, Some(Stage::Vignette), false, sender));
 
     let reset = gtk::Button::builder()
         .label(gettext("Reset all"))

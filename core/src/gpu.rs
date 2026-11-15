@@ -1127,6 +1127,21 @@ mod tests {
         assert!((at(&soft, 63) - at(&plain, 63)).abs() <= 1 && (at(&soft, 0) - at(&plain, 0)).abs() <= 1);
     }
 
+    /// Positive tint is magenta (the slider's right end), negative green.
+    #[test]
+    fn grade_positive_tint_is_magenta() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let p = gpu.upload(&grey(1, 1));
+        for (tint, magenta) in [(50.0, true), (-50.0, false)] {
+            let mut grade = Grade::default();
+            grade.params.tint = tint;
+            let out = gpu.render(&p, &grade, None, 0.0);
+            let (r, g, b) = (out[0] as i32, out[1] as i32, out[2] as i32);
+            assert_eq!(r > g + 2 && b > g + 2, magenta, "tint {tint}: {:?}", &out[..3]);
+            assert_eq!(g > r + 2 && g > b + 2, !magenta, "tint {tint}: {:?}", &out[..3]);
+        }
+    }
+
     /// The creative vignette darkens the corners of the photo, not its centre.
     #[test]
     fn creative_vignette_darkens_corners() {

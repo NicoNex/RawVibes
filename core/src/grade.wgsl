@@ -161,8 +161,9 @@ fn daylight_lms(cct: f32, dy: f32) -> vec3<f32> {
 fn white_balance(c: vec3<f32>) -> vec3<f32> {
     if p.temperature == 0.0 && p.tint == 0.0 { return c; }
     // ±90 mired around D65; positive = warmer picture (source assumed bluer).
+    // Positive tint = magenta picture: the source is assumed greener (higher y).
     let src_cct = 1.0e6 / (1.0e6 / 6504.0 - p.temperature * 0.9);
-    let gain = daylight_lms(6504.0, 0.0) / daylight_lms(src_cct, -p.tint * 0.0003);
+    let gain = daylight_lms(6504.0, 0.0) / daylight_lms(src_cct, p.tint * 0.0003);
     return inverse3(RGB_TO_LMS) * (gain * (RGB_TO_LMS * c));
 }
 

@@ -1696,7 +1696,9 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     };
     let nr = vbox(4);
     let nr_mode = toggles(&[("classic", &gettext("Classic")), ("ai", &gettext("AI"))]);
-    nr_mode.upcast_ref::<gtk::Widget>().update_property(&[gtk::accessible::Property::Label(&gettext("Noise reduction method"))]);
+    nr_mode
+        .upcast_ref::<gtk::Widget>()
+        .update_property(&[gtk::accessible::Property::Label(&gettext("Noise reduction method"))]);
     let (snd, sync) = (sender.clone(), syncing.clone());
     nr_mode.connect_active_name_notify(move |g| {
         if !sync.get() {

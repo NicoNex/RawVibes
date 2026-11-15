@@ -217,6 +217,12 @@ pub struct Pipelines {
     nr_chroma_init: wgpu::ComputePipeline,
     nr_atrous: wgpu::ComputePipeline,
     nr_chroma_apply: wgpu::ComputePipeline,
+    sh_init: wgpu::ComputePipeline,
+    sh_ratio: wgpu::ComputePipeline,
+    sh_update: wgpu::ComputePipeline,
+    sh_apply: wgpu::ComputePipeline,
+    df_init: wgpu::ComputePipeline,
+    df_apply: wgpu::ComputePipeline,
     /// The OETF table of the last profile developed into.
     oetf: std::cell::RefCell<Option<(Profile, wgpu::Buffer)>>,
     /// `DevelopParams`, rewritten per frame.
@@ -227,7 +233,14 @@ impl Pipelines {
     pub(crate) fn new(device: &wgpu::Device) -> Self {
         let pipeline = crate::gpu::shader(device, "raw.wgsl", include_str!("raw.wgsl"));
         let denoise = crate::gpu::shader(device, "denoise.wgsl", include_str!("denoise.wgsl"));
+        let detail = crate::gpu::shader(device, "detail.wgsl", include_str!("detail.wgsl"));
         Self {
+            sh_init: detail("sh_init"),
+            sh_ratio: detail("sh_ratio"),
+            sh_update: detail("sh_update"),
+            sh_apply: detail("sh_apply"),
+            df_init: detail("df_init"),
+            df_apply: detail("df_apply"),
             nr_gat: denoise("nr_gat"),
             nr_nlm: denoise("nr_nlm"),
             nr_luma_apply: denoise("nr_luma_apply"),
@@ -309,6 +322,21 @@ struct NrParams {
     detail: f32,
     chroma: f32,
     _pad2: f32,
+}
+
+/// `DetailParams` of `detail.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct DetailParams {
+    size: [u32; 2],
+    sigma: f32,
+    radius: i32,
+    reach: i32,
+    _pad: u32,
+    a: f32,
+    b: f32,
+    defringe: f32,
+    _pad2: [f32; 3],
 }
 
 /// Rows of a row-major 3×3 matrix, padded as WGSL lays out `mat3x3` columns
@@ -526,11 +554,43 @@ impl Gpu {
     /// `noise`: the model of Y in `lin`.
     fn stages(&self, photo: &GpuPhoto, w: u32, h: u32, scale: f32, detail: &Detail, noise: NoiseModel) {
         let lin = photo.lin.get().expect("made by develop_into");
-        if detail.nr_luma > 0.0 || detail.nr_chroma > 0.0 {
-            let [sa, sb] = photo
+        let scratch = || {
+            photo
                 .scratch
-                .get_or_init(|| [0, 1].map(|_| self.buffer(w as u64 * h as u64 * 16, wgpu::BufferUsages::empty())));
+                .get_or_init(|| [0, 1].map(|_| self.buffer(w as u64 * h as u64 * 16, wgpu::BufferUsages::empty())))
+        };
+        if detail.nr_luma > 0.0 || detail.nr_chroma > 0.0 {
+            let [sa, sb] = scratch();
             self.denoise(lin, sa, sb, w, h, scale, detail, noise);
+        }
+        if detail.defringe > 0.0 || detail.sharpen > 0.0 {
+            let [sa, sb] = scratch();
+            let sigma = (detail.sharpen_radius * scale.min(1.0)).max(0.3);
+            let params = self.storage(bytemuck::bytes_of(&DetailParams {
+                size: [w, h],
+                sigma,
+                radius: (3.0 * sigma).ceil() as i32,
+                reach: (3.0 * scale.min(1.0)).round().max(1.0) as i32,
+                _pad: 0,
+                a: noise.a,
+                b: noise.b,
+                defringe: detail.defringe / 100.0,
+                _pad2: [0.0; 3],
+            }));
+            let (p, g) = (&self.raw, grid(w * h));
+            let (own, both) = ([(0, &params), (1, lin), (2, sa)], [(0, &params), (2, sa), (3, sb)]);
+            let mut passes: Vec<Pass> = Vec::new();
+            if detail.defringe > 0.0 {
+                passes.extend([(&p.df_init, own.as_slice(), g), (&p.df_apply, own.as_slice(), g)]);
+            }
+            if detail.sharpen > 0.0 {
+                passes.push((&p.sh_init, &own, g));
+                for _ in 0..1 + (detail.sharpen / 10.0) as usize {
+                    passes.extend([(&p.sh_ratio, both.as_slice(), g), (&p.sh_update, both.as_slice(), g)]);
+                }
+                passes.push((&p.sh_apply, &own, g));
+            }
+            self.passes(&passes);
         }
     }
 
@@ -1163,6 +1223,96 @@ mod tests {
             eprintln!("frame {w}×{h}: {:?}", t.elapsed() / 10);
         }
         assert!(rmse < 0.03, "RMSE {rmse}");
+    }
+
+    /// A field of exact pixels (no noise), developed with `detail`; linear result.
+    fn field(gpu: &Gpu, w: u32, h: u32, px: Vec<[f32; 3]>, detail: Detail) -> Vec<[f32; 4]> {
+        let mut raw = rgb_raw(gpu, w, h, px, 1, Camera::neutral());
+        raw.noise = crate::noise::NoiseModel { a: 1e-6, b: 1e-8 };
+        let dev = Develop { detail, ..Develop::default() };
+        let photo = gpu.develop(&raw, &whole(w, h), w, h, &dev, Profile::Standard).unwrap();
+        bytemuck::cast_slice(&gpu.read_f32(photo.lin.get().unwrap())).to_vec()
+    }
+
+    /// A step from 0.1 to 0.5 at x = 32, blurred by a Gaussian of σ 0.8 px
+    /// (the default capture-sharpening PSF).
+    fn soft_step(w: u32, h: u32) -> Vec<[f32; 3]> {
+        let erf = |x: f32| {
+            (1.0 - (-x * x * (4.0 / std::f32::consts::PI + 0.147 * x * x) / (1.0 + 0.147 * x * x)).exp()).sqrt()
+                * x.signum()
+        };
+        (0..w * h)
+            .map(|i| [0.1 + 0.4 * 0.5 * (1.0 + erf(((i % w) as f32 + 0.5 - 32.0) / (0.8 * 2f32.sqrt()))); 3])
+            .collect()
+    }
+
+    fn sharp(amount: f32) -> Detail {
+        Detail { sharpen: amount, ..Detail::default() }
+    }
+
+    #[test]
+    fn sharpening_raises_edge_acutance() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let before = rise(&field(&gpu, 64, 16, soft_step(64, 16), sharp(0.0)), 64);
+        let after = rise(&field(&gpu, 64, 16, soft_step(64, 16), sharp(100.0)), 64);
+        assert!(after <= 0.75 * before, "rise {after} vs {before}");
+    }
+
+    #[test]
+    fn sharpening_overshoot_is_bounded() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let range = |d: Detail| {
+            let out = field(&gpu, 64, 16, soft_step(64, 16), d);
+            out.iter().map(luma).fold((f32::MAX, f32::MIN), |(l, h), v| (l.min(v), h.max(v)))
+        };
+        let ((lo, hi), (a, b)) = (range(sharp(0.0)), range(sharp(100.0)));
+        let slack = 0.05 * (hi - lo);
+        assert!(a >= lo - slack && b <= hi + slack, "{a}..{b} for a {lo}..{hi} step");
+    }
+
+    #[test]
+    fn sharpening_leaves_flat_noise() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let before = mean_std(noisy(&gpu, 96, 96, |_| 0.2, sharp(0.0)).iter().map(luma)).1;
+        let after = mean_std(noisy(&gpu, 96, 96, |_| 0.2, sharp(100.0)).iter().map(luma)).1;
+        assert!(after <= 1.05 * before, "std {after} vs {before}");
+    }
+
+    /// A purple fringe along a dark/bright edge loses its colour; a purple
+    /// patch away from any edge (same luminance as its surround) keeps it.
+    #[test]
+    fn defringe_cleans_purple_edges_only() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (96u32, 48u32);
+        let purple = [0.35, 0.08, 0.6];
+        let y = 0.2627 * purple[0] + 0.678 * purple[1] + 0.0593 * purple[2];
+        let px = (0..w * h)
+            .map(|i| match (i % w, i / w) {
+                (30..=31, _) => purple,
+                (0..=31, _) => [0.03; 3],
+                (60..=79, 14..=33) => purple,
+                (60.., _) => [y; 3],
+                _ => [0.8; 3],
+            })
+            .collect::<Vec<_>>();
+        let chroma = |v: &[[f32; 4]], x: u32, yy: u32| {
+            let p = v[(yy * w + x) as usize];
+            ((p[0] - p[1]).powi(2) + (p[2] - p[1]).powi(2)).sqrt()
+        };
+        let before = field(&gpu, w, h, px.clone(), Detail::default());
+        let after = field(&gpu, w, h, px, Detail { defringe: 100.0, ..Detail::default() });
+        assert!(
+            chroma(&after, 31, 24) <= 0.3 * chroma(&before, 31, 24),
+            "fringe {} vs {}",
+            chroma(&after, 31, 24),
+            chroma(&before, 31, 24)
+        );
+        assert!(
+            chroma(&after, 70, 24) >= 0.95 * chroma(&before, 70, 24),
+            "patch {} vs {}",
+            chroma(&after, 70, 24),
+            chroma(&before, 70, 24)
+        );
     }
 
     /// On a real file (RAWVALLEY_RAW): the estimated noise model, and what

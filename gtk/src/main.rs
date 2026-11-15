@@ -1612,7 +1612,8 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
 
     let mut detail = Vec::new();
     let mut detail_slider = |bx: &gtk::Box, label: &str, range: (f64, f64), default: f64, field: DetailField| {
-        let s = Slider::new(label, range.0, range.1, default, 0, None);
+        let digits = if range.1 - range.0 < 10.0 { 1 } else { 0 };
+        let s = Slider::new(label, range.0, range.1, default, digits, None);
         let (snd, syncing) = (sender.clone(), syncing.clone());
         s.connect(move |v| {
             if !syncing.get() {
@@ -1627,6 +1628,11 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     detail_slider(&nr, &gettext("Detail"), (0.0, 100.0), 0.0, |d| &mut d.nr_detail);
     detail_slider(&nr, &gettext("Chrominance"), (0.0, 100.0), 0.0, |d| &mut d.nr_chroma);
     root.append(&section(&gettext("Noise reduction"), &nr));
+    let sharp = vbox(4);
+    detail_slider(&sharp, &gettext("Sharpening"), (0.0, 100.0), 0.0, |d| &mut d.sharpen);
+    detail_slider(&sharp, &gettext("Radius"), (0.5, 2.0), 0.8, |d| &mut d.sharpen_radius);
+    detail_slider(&sharp, &gettext("Defringe"), (0.0, 100.0), 0.0, |d| &mut d.defringe);
+    root.append(&section(&gettext("Detail"), &sharp));
     let lens = vbox(4);
     detail_slider(&lens, &gettext("Lens vignetting"), (-100.0, 100.0), 0.0, |d| &mut d.lens_vignette);
     root.append(&section(&gettext("Lens"), &lens));

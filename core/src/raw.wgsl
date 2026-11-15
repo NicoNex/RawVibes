@@ -30,13 +30,8 @@ struct RawParams {
 @group(0) @binding(3) var<storage, read_write> partials: array<f32>;
 @group(0) @binding(4) var<storage, read_write> chroma: array<f32>;
 
-const WG: u32 = 256u;
 /// Values at or above this fraction of a colour's clip level are clipped.
 const CLIP_AT: f32 = 0.99;
-
-fn index(wg: vec3<u32>, n: vec3<u32>, lid: u32) -> u32 {
-    return (wg.y * n.x + wg.x) * WG + lid;
-}
 
 fn colour(x: u32, y: u32) -> u32 {
     return p.pattern[(y % p.ph) * p.pw + (x % p.pw)];

@@ -32,15 +32,10 @@ const MIN_SLOPE: f32 = 1.0 / 3.0;
 /// into colour. About a 0.015 OKLab chroma spread.
 const COV_FLOOR: f64 = 2.0e-4;
 
-/// Loads the lightness and/or colour part of `m` into the grade's match slot
-/// at full strength; the part not asked for stays as the grade has it.
-pub fn apply(grade: &mut Grade, m: &Match, lightness: bool, colour: bool) {
-    if lightness {
-        grade.curves[MATCH_L] = m.lightness.clone();
-    }
-    if colour {
-        grade.params.match_ab = m.ab;
-    }
+/// Loads `m` into the grade's match slot at full strength.
+pub fn apply(grade: &mut Grade, m: &Match) {
+    grade.curves[MATCH_L] = m.lightness.clone();
+    grade.params.match_ab = m.ab;
     grade.params.match_amount = 100.0;
 }
 
@@ -187,20 +182,6 @@ mod tests {
                 [l.0 + (l.1 - l.0) * (w * 0.5 + 0.5), a, b]
             })
             .collect()
-    }
-
-    /// Each part goes into its own place; the other one is left alone.
-    #[test]
-    fn apply_loads_only_the_parts_asked() {
-        let m = Match { ab: [0.1, 0.0, 0.0, 0.2, 0.01, -0.02], lightness: vec![(0.0, 0.1), (1.0, 0.9)] };
-        let mut g = Grade::default();
-        let neutral = g.clone();
-        apply(&mut g, &m, true, false);
-        assert_eq!(g.curves[MATCH_L], m.lightness);
-        assert_eq!(g.params.match_ab, neutral.params.match_ab);
-        apply(&mut g, &m, false, true);
-        assert_eq!((g.params.match_ab, g.params.match_amount), (m.ab, 100.0));
-        assert_eq!(g.curves[MATCH_L], m.lightness);
     }
 
     /// Matching a photo to itself changes nothing.

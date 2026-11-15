@@ -27,13 +27,6 @@ struct DetailParams {
 @group(0) @binding(2) var<storage, read_write> sa: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> sb: array<vec4<f32>>;
 
-const WG: u32 = 256u;
-const LUMA: vec3<f32> = vec3<f32>(0.2627, 0.6780, 0.0593);
-
-fn index(wg: vec3<u32>, n: vec3<u32>, lid: u32) -> u32 {
-    return (wg.y * n.x + wg.x) * WG + lid;
-}
-
 fn at(x: i32, y: i32) -> u32 {
     return u32(clamp(y, 0, i32(p.h) - 1)) * p.w + u32(clamp(x, 0, i32(p.w) - 1));
 }

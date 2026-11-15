@@ -27,13 +27,6 @@ struct NrParams {
 @group(0) @binding(2) var<storage, read_write> sa: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> sb: array<vec4<f32>>;
 
-const WG: u32 = 256u;
-const LUMA: vec3<f32> = vec3<f32>(0.2627, 0.6780, 0.0593);
-
-fn index(wg: vec3<u32>, n: vec3<u32>, lid: u32) -> u32 {
-    return (wg.y * n.x + wg.x) * WG + lid;
-}
-
 fn at(x: i32, y: i32) -> u32 {
     return u32(clamp(y, 0, i32(p.h) - 1)) * p.w + u32(clamp(x, 0, i32(p.w) - 1));
 }
@@ -115,8 +108,6 @@ fn nr_chroma_init(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups)
     let y = dot(c, LUMA);
     sa[i] = vec4<f32>(c.z - y, c.x - y, y, 0.0);
 }
-
-const B3: array<f32, 5> = array<f32, 5>(0.0625, 0.25, 0.375, 0.25, 0.0625);
 
 // One à-trous level, `sa` → `sb`, at `step`; weights fall with the luminance
 // difference relative to the pixel's own, so chroma does not bleed across edges.

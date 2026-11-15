@@ -556,6 +556,16 @@ impl App {
         Sidecar { develop: self.develop, grade, crop: self.crop, ratio: self.ratio, looks, look_blend }
     }
 
+    /// Replaces the look stack: a sidecar load still in flight becomes stale.
+    /// Returns the stack it replaced.
+    fn replace_looks(&mut self, looks: Vec<LabLayer>, sender: &ComponentSender<Self>) -> Vec<LabLayer> {
+        self.looks_gen += 1;
+        self.looks_loading = false;
+        let old = std::mem::replace(&mut self.looks, looks);
+        self.layers_changed(Layers::Look, true, sender);
+        old
+    }
+
     /// Saves the sidecar a second after the last edit.
     fn schedule_save(&mut self) {
         if self.saved.is_none() {
@@ -594,24 +604,22 @@ impl App {
             })
             .unwrap_or(0);
         self.restore_crop(sc.crop, sc.ratio, row as u32);
-        {
-            self.apply_grade(sc.grade);
-            self.ui.sidebar.look_blend_toggle.set_active_name(Some(if sc.look_blend == Blend::Mix {
-                "mix"
-            } else {
-                "chain"
-            }));
-            if !sc.looks.is_empty() {
-                self.looks_loading = true;
-                let (s, refs, generation) = (sender.input_sender().clone(), sc.looks, self.looks_gen);
-                std::thread::spawn(move || {
-                    let loaded = refs.into_iter().map(|r| {
-                        let lut = Lut3d::load(&r.path).map(Arc::new);
-                        (r, lut)
-                    });
-                    s.emit(Msg::SidecarLooks(generation, loaded.collect()));
+        self.apply_grade(sc.grade);
+        self.ui.sidebar.look_blend_toggle.set_active_name(Some(if sc.look_blend == Blend::Mix {
+            "mix"
+        } else {
+            "chain"
+        }));
+        if !sc.looks.is_empty() {
+            self.looks_loading = true;
+            let (s, refs, generation) = (sender.input_sender().clone(), sc.looks, self.looks_gen);
+            std::thread::spawn(move || {
+                let loaded = refs.into_iter().map(|r| {
+                    let lut = Lut3d::load(&r.path).map(Arc::new);
+                    (r, lut)
                 });
-            }
+                s.emit(Msg::SidecarLooks(generation, loaded.collect()));
+            });
         }
     }
 
@@ -1014,15 +1022,10 @@ impl App {
         ui.tint.adj.set_value(t as f64);
         ui.exposure.adj.set_value(self.develop.exposure as f64);
         let mut d = self.develop.detail;
-        let nr_luma = d.nr_luma > 0.0;
         for (s, field) in &ui.detail {
-            let v = field(&mut d);
-            s.adj.set_value(*v as f64);
-            // NR detail only restores what luminance NR removed: idle without it.
-            if std::ptr::eq(v, &d.nr_detail) {
-                s.root.set_sensitive(nr_luma);
-            }
+            s.adj.set_value(*field(&mut d) as f64);
         }
+        ui.nr_detail.root.set_sensitive(d.nr_luma > 0.0);
         ui.preset.set_selected(preset);
         ui.syncing.set(false);
     }
@@ -1039,7 +1042,7 @@ impl App {
 
     /// Loads parts of `m` into the grade and shows the match panel as set.
     fn apply_match(&mut self, m: &Match) {
-        matching::apply(&mut self.grade, m, true, true);
+        matching::apply(&mut self.grade, m);
         let ui = &self.ui.sidebar.matching;
         ui.amount.adj.set_value(100.0);
         ui.stack.set_visible_child_name("set");
@@ -1551,6 +1554,8 @@ struct DevelopUi {
     picker: gtk::ToggleButton,
     exposure: Slider,
     detail: Vec<(Slider, DetailField)>,
+    /// Idle without luminance NR: it only restores what that removed.
+    nr_detail: Slider,
 }
 
 /// Index of "Custom" in the white-balance preset dropdown (after As shot and the presets).
@@ -1624,8 +1629,9 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     root.append(&section_with(&gettext("Exposure"), &exp, &[cam_ev.upcast()], true));
 
     let mut detail = Vec::new();
-    let mut detail_slider = |bx: &gtk::Box, label: &str, range: (f64, f64), default: f64, field: DetailField| {
+    let mut detail_slider = |bx: &gtk::Box, label: &str, range: (f64, f64), field: DetailField| {
         let digits = if range.1 - range.0 < 10.0 { 1 } else { 0 };
+        let default = *field(&mut Detail::default()) as f64;
         let s = Slider::new(label, range.0, range.1, default, digits, None);
         let (snd, syncing) = (sender.clone(), syncing.clone());
         s.connect(move |v| {
@@ -1634,27 +1640,28 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
             }
         });
         bx.append(&s.root);
-        detail.push((s, field));
+        detail.push((s.clone(), field));
+        s
     };
     let nr = vbox(4);
-    detail_slider(&nr, &gettext("Luminance"), (0.0, 100.0), 0.0, |d| &mut d.nr_luma);
-    detail_slider(&nr, &gettext("Detail"), (0.0, 100.0), 0.0, |d| &mut d.nr_detail);
-    detail_slider(&nr, &gettext("Chrominance"), (0.0, 100.0), 0.0, |d| &mut d.nr_chroma);
+    detail_slider(&nr, &gettext("Luminance"), (0.0, 100.0), |d| &mut d.nr_luma);
+    let nr_detail = detail_slider(&nr, &gettext("Detail"), (0.0, 100.0), |d| &mut d.nr_detail);
+    detail_slider(&nr, &gettext("Chrominance"), (0.0, 100.0), |d| &mut d.nr_chroma);
     root.append(&section(&gettext("Noise reduction"), &nr));
     let haze = vbox(4);
-    detail_slider(&haze, &gettext("Dehaze"), (-100.0, 100.0), 0.0, |d| &mut d.dehaze);
-    detail_slider(&haze, &gettext("Local contrast"), (0.0, 100.0), 0.0, |d| &mut d.local_contrast);
+    detail_slider(&haze, &gettext("Dehaze"), (-100.0, 100.0), |d| &mut d.dehaze);
+    detail_slider(&haze, &gettext("Local contrast"), (0.0, 100.0), |d| &mut d.local_contrast);
     root.append(&section(&gettext("Presence"), &haze));
     let sharp = vbox(4);
-    detail_slider(&sharp, &gettext("Sharpening"), (0.0, 100.0), 0.0, |d| &mut d.sharpen);
-    detail_slider(&sharp, &gettext("Radius"), (0.5, 2.0), 0.8, |d| &mut d.sharpen_radius);
-    detail_slider(&sharp, &gettext("Defringe"), (0.0, 100.0), 0.0, |d| &mut d.defringe);
+    detail_slider(&sharp, &gettext("Sharpening"), (0.0, 100.0), |d| &mut d.sharpen);
+    detail_slider(&sharp, &gettext("Radius"), (0.5, 2.0), |d| &mut d.sharpen_radius);
+    detail_slider(&sharp, &gettext("Defringe"), (0.0, 100.0), |d| &mut d.defringe);
     root.append(&section(&gettext("Detail"), &sharp));
     let lens = vbox(4);
-    detail_slider(&lens, &gettext("Lens vignetting"), (-100.0, 100.0), 0.0, |d| &mut d.lens_vignette);
+    detail_slider(&lens, &gettext("Lens vignetting"), (-100.0, 100.0), |d| &mut d.lens_vignette);
     root.append(&section(&gettext("Lens"), &lens));
     root.set_visible(false);
-    DevelopUi { syncing, root, preset, kelvin, tint, picker, exposure, detail }
+    DevelopUi { syncing, root, preset, kelvin, tint, picker, exposure, detail, nr_detail }
 }
 
 /// Curve editor with a channel selector and a reset button.
@@ -3083,8 +3090,7 @@ impl SimpleComponent for App {
             Msg::Loaded(_, path, Ok(decoded)) => {
                 self.save_now(); // the previous photo's last edits
                 // Each photo has its own grade and looks: the previous one keeps its frame's.
-                let left = std::mem::take(&mut self.looks);
-                self.looks_gen += 1;
+                let left = self.replace_looks(Vec::new(), &sender);
                 let previous = self.path.as_ref().and_then(|p| self.roll.iter_mut().find(|it| it.path == *p));
                 if let Some(it) = previous {
                     it.grade = self.grade.clone();
@@ -3092,7 +3098,6 @@ impl SimpleComponent for App {
                 }
                 self.apply_grade(Grade::default());
                 self.ui.sidebar.look_blend_toggle.set_active_name(Some("chain"));
-                self.layers_changed(Layers::Look, true, &sender);
                 self.ui.sidebar.develop.picker.set_active(false);
                 self.ui.window.set_title(Some(&format!("{} — RawValley", file_label(&path))));
                 self.zoom = None;
@@ -3101,7 +3106,6 @@ impl SimpleComponent for App {
                 self.path = Some(path);
                 self.develop = Develop::default();
                 self.sync_develop();
-                self.looks_loading = false;
                 let path = self.path.clone().expect("set above");
                 match Sidecar::load(&path) {
                     Ok(Some(sc)) => self.restore_sidecar(sc, &sender),
@@ -3116,10 +3120,7 @@ impl SimpleComponent for App {
                 if let Some(looks) =
                     self.roll.iter().find(|it| it.path == path).map(|it| it.looks.clone()).filter(|l| !l.is_empty())
                 {
-                    self.looks_gen += 1;
-                    self.looks_loading = false;
-                    self.looks = looks;
-                    self.layers_changed(Layers::Look, true, &sender);
+                    self.replace_looks(looks, &sender);
                 }
                 // Nothing is written until something changes from what was just read.
                 self.saved = Some(self.sidecar_state());
@@ -3184,11 +3185,8 @@ impl SimpleComponent for App {
                 self.apply_grade(Grade::default());
                 self.reset_crop();
                 self.crop_changed(&sender);
-                self.looks.clear();
-                self.looks_gen += 1;
-                self.looks_loading = false;
                 self.ui.sidebar.look_blend_toggle.set_active_name(Some("chain"));
-                self.layers_changed(Layers::Look, true, &sender);
+                self.replace_looks(Vec::new(), &sender);
                 self.undo_toast(&gettext("All edits cleared"), move || Msg::RestoreEdits(Box::new(before.clone())));
             }
             Msg::RestoreEdits(edits) => {
@@ -3198,13 +3196,11 @@ impl SimpleComponent for App {
                 self.apply_grade(Grade::default());
                 sc.looks.clear();
                 self.restore_sidecar(sc, &sender);
-                self.looks_gen += 1;
-                self.looks = looks;
+                self.replace_looks(looks, &sender);
                 if self.develop != develop {
                     self.develop_changed(&sender);
                 }
                 self.crop_changed(&sender);
-                self.layers_changed(Layers::Look, true, &sender);
             }
             Msg::RestoreGrade(grade) => self.apply_grade(*grade),
             Msg::MixerMono(on) => {

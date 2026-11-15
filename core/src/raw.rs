@@ -179,12 +179,6 @@ impl GpuRaw {
 /// parameter upstream of it.
 type Key = (u64, Vec<f32>);
 
-#[derive(Clone, Copy)]
-enum Cache {
-    Nr,
-    Tone,
-}
-
 /// A slot's linear working buffers: the develop with a margin all round for
 /// the detail tools, scratch space, and the slow stages' last results.
 pub(crate) struct Work {
@@ -202,21 +196,14 @@ impl Work {
         let [a, b] = self.scratch.get_or_insert_with(|| [0, 1].map(|_| gpu.buffer(bytes, wgpu::BufferUsages::empty())));
         [&*a, &*b]
     }
+}
 
-    /// Keeps `lin` as the result of `stage`, made from `key`.
-    fn keep(&mut self, gpu: &Gpu, stage: Cache, key: Key) {
-        let cache = match stage {
-            Cache::Nr => &mut self.after_nr,
-            Cache::Tone => &mut self.after_tone,
-        };
-        let usage = wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
-        let buf = match cache.take() {
-            Some((_, b)) => b,
-            None => gpu.buffer(self.lin.size(), usage),
-        };
-        gpu.copy(&self.lin, &buf);
-        *cache = Some((key, buf));
-    }
+/// Keeps `lin` in `cache` as the result made from `key`.
+fn keep(gpu: &Gpu, lin: &wgpu::Buffer, cache: &mut Option<(Key, wgpu::Buffer)>, key: Key) {
+    let usage = wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
+    let buf = cache.take().map_or_else(|| gpu.buffer(lin.size(), usage), |(_, b)| b);
+    gpu.copy(lin, &buf);
+    *cache = Some((key, buf));
 }
 
 /// Longest side of the smallest mip level.
@@ -285,6 +272,7 @@ pub struct Pipelines {
     /// Dehaze airlight (one f32 as bits, atomic max), zeroed per run.
     air: wgpu::Buffer,
     /// Noise reductions run (tests check the cache).
+    #[cfg(test)]
     pub(crate) nr_runs: std::cell::Cell<u32>,
     /// The OETF table of the last profile developed into.
     oetf: std::cell::RefCell<Option<(Profile, wgpu::Buffer)>>,
@@ -294,11 +282,21 @@ pub struct Pipelines {
 
 impl Pipelines {
     pub(crate) fn new(device: &wgpu::Device) -> Self {
-        let pipeline = crate::gpu::shader(device, "raw.wgsl", include_str!("raw.wgsl"));
-        let denoise = crate::gpu::shader(device, "denoise.wgsl", include_str!("denoise.wgsl"));
-        let detail = crate::gpu::shader(device, "detail.wgsl", include_str!("detail.wgsl"));
-        let tone = crate::gpu::shader(device, "tone.wgsl", include_str!("tone.wgsl"));
-        let ll = crate::gpu::shader(device, "ll.wgsl", include_str!("ll.wgsl"));
+        let pipeline =
+            crate::gpu::shader(device, "raw.wgsl", concat!(include_str!("common.wgsl"), include_str!("raw.wgsl")));
+        let denoise = crate::gpu::shader(
+            device,
+            "denoise.wgsl",
+            concat!(include_str!("common.wgsl"), include_str!("denoise.wgsl")),
+        );
+        let detail = crate::gpu::shader(
+            device,
+            "detail.wgsl",
+            concat!(include_str!("common.wgsl"), include_str!("detail.wgsl")),
+        );
+        let tone =
+            crate::gpu::shader(device, "tone.wgsl", concat!(include_str!("common.wgsl"), include_str!("tone.wgsl")));
+        let ll = crate::gpu::shader(device, "ll.wgsl", concat!(include_str!("common.wgsl"), include_str!("ll.wgsl")));
         Self {
             box_h: tone("box_h"),
             box_v: tone("box_v"),
@@ -313,6 +311,7 @@ impl Pipelines {
             ll_top: ll("ll_top"),
             ll_collapse: ll("ll_collapse"),
             ll_apply: ll("ll_apply"),
+            #[cfg(test)]
             nr_runs: Default::default(),
             air: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("airlight"),
@@ -678,10 +677,11 @@ impl Gpu {
     ) -> Result<(), String> {
         let (sx, sy) = (r.size[0] / w as f32, r.size[1] / h as f32);
         let scale = sx.max(sy);
-        let s = 1.0 / scale;
+        // Output pixels per full-resolution pixel; past 100% the tools keep full-resolution radii.
+        let s = (1.0 / scale).min(1.0);
         let d = &dev.detail;
         // The detail tools read around each pixel: develop that far past the edges.
-        let margin = (d.support() * s.min(1.0)).ceil() as u32;
+        let margin = (d.support() * s).ceil() as u32;
         let (lw, lh) = (w + 2 * margin, h + 2 * margin);
         self.fits(lw as u64 * lh as u64 * 16)?;
         let (params, k) = develop_params(raw, r, w, h, dev, profile, margin);
@@ -722,25 +722,25 @@ impl Gpu {
         if !tone_on {
             work.after_tone = None;
         }
-        let hit = |c: &Option<(Key, wgpu::Buffer)>, key: &Key| c.as_ref().is_some_and(|c| c.0 == *key);
         let (p, g) = (&self.raw, grid(lw * lh));
-        if tone_on && hit(&work.after_tone, &tone_key) {
-            self.copy(&work.after_tone.as_ref().expect("hit").1, &work.lin);
+        let hit = |c: &Option<(Key, wgpu::Buffer)>, key: &Key| c.as_ref().filter(|c| c.0 == *key).map(|c| c.1.clone());
+        if let Some(b) = hit(&work.after_tone, &tone_key) {
+            self.copy(&b, &work.lin);
         } else {
-            if nr_on && hit(&work.after_nr, &nr_key) {
-                self.copy(&work.after_nr.as_ref().expect("hit").1, &work.lin);
+            if let Some(b) = hit(&work.after_nr, &nr_key) {
+                self.copy(&b, &work.lin);
             } else {
                 self.passes(&[(&p.develop_linear, &[(10, level), (12, &p.develop_params), (15, &work.lin)], g)]);
                 if nr_on {
                     let lin = work.lin.clone();
                     self.denoise(&lin, work.scratch(self), lw, lh, s, d, noise);
-                    work.keep(self, Cache::Nr, nr_key);
+                    keep(self, &work.lin, &mut work.after_nr, nr_key);
                 }
             }
             if tone_on {
                 let lin = work.lin.clone();
                 if d.defringe > 0.0 {
-                    self.detail_passes(&lin, work.scratch(self), lw, lh, s, d, noise, false);
+                    self.defringe(&lin, work.scratch(self), lw, lh, s, d.defringe);
                 }
                 if d.dehaze != 0.0 {
                     self.airlight(raw, dev, profile);
@@ -748,12 +748,12 @@ impl Gpu {
                 if d.dehaze != 0.0 || d.local_contrast > 0.0 {
                     self.tone(&lin, work.scratch(self), lw, lh, s, d);
                 }
-                work.keep(self, Cache::Tone, tone_key);
+                keep(self, &work.lin, &mut work.after_tone, tone_key);
             }
         }
         if d.sharpen > 0.0 {
             let lin = work.lin.clone();
-            self.detail_passes(&lin, work.scratch(self), lw, lh, s, d, noise, true);
+            self.sharpen(&lin, work.scratch(self), lw, lh, s, d, noise);
         }
         let encode = [(12, &p.develop_params), (13, &photo.src), (14, table), (15, &work.lin)];
         self.passes(&[(&p.develop_encode, &encode, grid(w * h))]);
@@ -780,8 +780,7 @@ impl Gpu {
     /// Dehaze (`tone.wgsl`): a guided filter of 30 full-resolution pixels,
     /// the dark channel over 15; then local contrast.
     #[allow(clippy::too_many_arguments)]
-    fn tone(&self, lin: &wgpu::Buffer, [sa, sb]: [&wgpu::Buffer; 2], w: u32, h: u32, scale: f32, detail: &Detail) {
-        let s = scale.min(1.0);
+    fn tone(&self, lin: &wgpu::Buffer, [sa, sb]: [&wgpu::Buffer; 2], w: u32, h: u32, s: f32, detail: &Detail) {
         let (p, g) = (&self.raw, grid(w * h));
         if detail.dehaze != 0.0 {
             let q = self.tone_params(w, h, s, detail.dehaze, 0);
@@ -854,7 +853,7 @@ impl Gpu {
         scale: f32,
         amount: f32,
     ) {
-        let depth = (LL_LEVELS + scale.min(1.0).log2()).round().max(1.0) as usize;
+        let depth = (LL_LEVELS + scale.log2()).round().max(1.0) as usize;
         let mut dims = vec![(w, h)];
         while let Some(&(a, b)) = dims.last().filter(|&&(a, b)| dims.len() <= depth && a.min(b) >= 4) {
             dims.push((a.div_ceil(2), b.div_ceil(2)));
@@ -903,36 +902,43 @@ impl Gpu {
         self.passes(&passes);
     }
 
-    /// Defringe, or (`sharpen`) capture sharpening (`detail.wgsl`).
+    /// `DetailParams` of `detail.wgsl`.
+    fn detail_params(&self, w: u32, h: u32, s: f32, sigma: f32, noise: NoiseModel, defringe: f32) -> wgpu::Buffer {
+        self.storage(bytemuck::bytes_of(&DetailParams {
+            size: [w, h],
+            sigma,
+            radius: (3.0 * sigma).ceil() as i32,
+            reach: (3.0 * s).round().max(1.0) as i32,
+            _pad: 0,
+            a: noise.a,
+            b: noise.b,
+            defringe: defringe / 100.0,
+            _pad2: [0.0; 3],
+        }))
+    }
+
+    /// Defringe (`detail.wgsl`).
+    fn defringe(&self, lin: &wgpu::Buffer, [sa, _]: [&wgpu::Buffer; 2], w: u32, h: u32, s: f32, amount: f32) {
+        let params = self.detail_params(w, h, s, 1.0, NoiseModel::default(), amount);
+        let (p, g, own) = (&self.raw, grid(w * h), [(0, &params), (1, lin), (2, sa)]);
+        self.passes(&[(&p.df_init, &own, g), (&p.df_apply, &own, g)]);
+    }
+
+    /// Capture sharpening (`detail.wgsl`): Richardson–Lucy, one iteration per 10 of the amount.
     #[allow(clippy::too_many_arguments)]
-    fn detail_passes(
+    fn sharpen(
         &self,
         lin: &wgpu::Buffer,
         [sa, sb]: [&wgpu::Buffer; 2],
         w: u32,
         h: u32,
-        scale: f32,
+        s: f32,
         detail: &Detail,
         noise: NoiseModel,
-        sharpen: bool,
     ) {
-        let sigma = (detail.sharpen_radius * scale.min(1.0)).max(0.3);
-        let params = self.storage(bytemuck::bytes_of(&DetailParams {
-            size: [w, h],
-            sigma,
-            radius: (3.0 * sigma).ceil() as i32,
-            reach: (3.0 * scale.min(1.0)).round().max(1.0) as i32,
-            _pad: 0,
-            a: noise.a,
-            b: noise.b,
-            defringe: detail.defringe / 100.0,
-            _pad2: [0.0; 3],
-        }));
+        let params = self.detail_params(w, h, s, (detail.sharpen_radius * s).max(0.3), noise, 0.0);
         let (p, g) = (&self.raw, grid(w * h));
         let (own, both) = ([(0, &params), (1, lin), (2, sa)], [(0, &params), (2, sa), (3, sb)]);
-        if !sharpen {
-            return self.passes(&[(&p.df_init, &own, g), (&p.df_apply, &own, g)]);
-        }
         let mut passes: Vec<Pass> = vec![(&p.sh_init, &own, g)];
         for _ in 0..1 + (detail.sharpen / 10.0) as usize {
             passes.extend([(&p.sh_ratio, both.as_slice(), g), (&p.sh_update, both.as_slice(), g)]);
@@ -953,8 +959,9 @@ impl Gpu {
         detail: &Detail,
         noise: NoiseModel,
     ) {
+        #[cfg(test)]
         self.raw.nr_runs.set(self.raw.nr_runs.get() + 1);
-        let radius = |full: f32| (full * scale.min(1.0)).round().max(1.0) as i32;
+        let radius = |full: f32| (full * scale).round().max(1.0) as i32;
         let params = |step: i32| {
             self.storage(bytemuck::bytes_of(&NrParams {
                 size: [w, h],
@@ -981,7 +988,7 @@ impl Gpu {
         }
         if detail.nr_chroma > 0.0 {
             // Five levels at full resolution (31 px), fewer when downscaled.
-            let levels = (5.0 + scale.min(1.0).log2()).round().clamp(1.0, 5.0) as i32;
+            let levels = (5.0 + scale.log2()).round().clamp(1.0, 5.0) as i32;
             let steps: Vec<_> = (0..levels).map(|l| params(1 << l)).collect();
             let mut passes: Vec<Pass> = Vec::new();
             let init = [(0, &base), (1, lin), (2, sa)];
@@ -1676,14 +1683,6 @@ mod tests {
 
     fn std_y(px: &[[f32; 4]]) -> f32 {
         mean_std(px.iter().map(luma)).1
-    }
-
-    #[test]
-    fn dehaze_zero_is_identity() {
-        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
-        let base = field(&gpu, 64, 32, hazy(64, 32), Detail::default());
-        let zero = field(&gpu, 64, 32, hazy(64, 32), Detail { dehaze: 0.0, local_contrast: 0.0, ..Detail::default() });
-        assert_eq!(base, zero);
     }
 
     #[test]

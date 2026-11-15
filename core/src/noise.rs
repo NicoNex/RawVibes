@@ -36,9 +36,7 @@ fn block(g: impl Fn(usize, usize) -> f32, x0: usize, y0: usize) -> Block {
             }
         }
     }
-    let mid = d.len() / 2;
-    let mad = *d.select_nth_unstable_by(mid, f32::total_cmp).1;
-    let sigma = 1.4826 * mad;
+    let sigma = 1.4826 * median(&mut d);
     let sm = sub.iter().sum::<f32>() / 16.0;
     let texture = sub.iter().map(|s| (s - sm).powi(2)).sum::<f32>() / 16.0;
     Block { mean: sum / (BLOCK * BLOCK) as f32, noise: sigma * sigma, texture }

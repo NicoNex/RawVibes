@@ -40,14 +40,7 @@ struct LlParams {
 @group(0) @binding(2) var<storage, read_write> g: array<f32>;
 @group(0) @binding(3) var<storage, read_write> q: array<vec4<f32>>;
 
-const WG: u32 = 256u;
-const LUMA: vec3<f32> = vec3<f32>(0.2627, 0.6780, 0.0593);
-const K: array<f32, 5> = array<f32, 5>(0.0625, 0.25, 0.375, 0.25, 0.0625);
 const GAMMAS: f32 = 8.0;
-
-fn index(wg: vec3<u32>, n: vec3<u32>, lid: u32) -> u32 {
-    return (wg.y * n.x + wg.x) * WG + lid;
-}
 
 fn lstar(y: f32) -> f32 {
     return select(9.033 * y, 1.16 * pow(max(y, 0.0), 1.0 / 3.0) - 0.16, y > 0.008856);
@@ -95,7 +88,7 @@ fn expand_taps(x: i32, y: i32) -> Taps {
             let dx = x - 2 * i;
             let dy = y - 2 * j;
             var w = 0.0;
-            if abs(dx) <= 2 && abs(dy) <= 2 { w = 4.0 * K[dx + 2] * K[dy + 2]; }
+            if abs(dx) <= 2 && abs(dy) <= 2 { w = 4.0 * B3[dx + 2] * B3[dy + 2]; }
             t.at[n] = coarse_at(i, j);
             t.w[n] = w;
             n++;
@@ -123,7 +116,7 @@ fn ll_reduce_g(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n:
     var s = 0.0;
     for (var dy = -2; dy <= 2; dy++) {
         for (var dx = -2; dx <= 2; dx++) {
-            s += K[dx + 2] * K[dy + 2] * g[p.g_f + fine_at(x + dx, y + dy)];
+            s += B3[dx + 2] * B3[dy + 2] * g[p.g_f + fine_at(x + dx, y + dy)];
         }
     }
     g[p.g_c + i] = s;
@@ -141,7 +134,7 @@ fn ll_reduce_q(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n:
     var b = vec4<f32>(0.0);
     for (var dy = -2; dy <= 2; dy++) {
         for (var dx = -2; dx <= 2; dx++) {
-            let w = K[dx + 2] * K[dy + 2];
+            let w = B3[dx + 2] * B3[dy + 2];
             let f = fine_at(x + dx, y + dy);
             if p.base == 1u {
                 let r = remap(g[p.g_f + f]);

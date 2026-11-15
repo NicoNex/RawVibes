@@ -1687,6 +1687,66 @@ mod tests {
         }
     }
 
+    /// On a real file (RAWVALLEY_RAW), NR 50: a ¼-scale view and a 100% view
+    /// of the same region, box-averaged to ¼, keep the same noise on flat
+    /// patches (within 25%) — the fit predicts the zoom. Also prints the
+    /// Balanced drag-frame time at 2048 px with all tools on.
+    #[test]
+    fn fit_and_zoom_agree_statistically() {
+        let Ok(path) = std::env::var("RAWVALLEY_RAW") else { return eprintln!("no sample, skipped") };
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let raw = gpu.load_raw(&read_raw(Path::new(&path)).unwrap()).unwrap();
+        let (w, h) = raw.oriented_size();
+        let r = Region { center: [w as f32 / 2.0, h as f32 / 2.0], size: [2048.0, 1364.0], angle: 0.0 };
+        let dev = Develop { detail: nr(50.0, 50.0), ..Develop::default() };
+        let zoom = gpu.read_lin(&gpu.develop(&raw, &r, 2048, 1364, &dev, Profile::Standard).unwrap());
+        let fit = gpu.read_lin(&gpu.develop(&raw, &r, 512, 341, &dev, Profile::Standard).unwrap());
+        let down: Vec<f32> = (0..512 * 341)
+            .map(|i| {
+                let (x, y) = (i % 512 * 4, i / 512 * 4);
+                (0..16).map(|k| luma(&zoom[((y + k / 4) * 2048 + x + k % 4) as usize])).sum::<f32>() / 16.0
+            })
+            .collect();
+        let fit: Vec<f32> = fit.iter().map(luma).collect();
+        // 16×16 blocks; relative std (noise grows with signal), flattest by both images.
+        let block = |img: &[f32], bx: u32, by: u32| {
+            let (m, s) = mean_std((0..256).map(|k| img[((by * 16 + k / 16) * 512 + bx * 16 + k % 16) as usize]));
+            s / m.max(1e-4)
+        };
+        let mut blocks: Vec<(f32, f32)> =
+            (0..32 * 21).map(|i| (block(&fit, i % 32, i / 32), block(&down, i % 32, i / 32))).collect();
+        blocks.sort_by(|a, b| (a.0 + a.1).total_cmp(&(b.0 + b.1)));
+        let (f, z) = blocks[..16].iter().fold((0.0, 0.0), |(f, z), b| (f + b.0, z + b.1));
+        eprintln!("flat-patch noise fit {f:.4} vs 100% {z:.4} (sum of 16)");
+        assert!((f / z - 1.0).abs() < 0.25, "fit {f} vs 100% {z}");
+
+        // Balanced drag at 2048 px, all tools on: exposure moves (everything re-runs), then sharpening (cached NR).
+        let fr = whole(w, h);
+        let (pw, ph) = crate::photo::Decoded::fit_size(&fr, 2048);
+        let (bw, bh) = ((pw as f32 * 0.75) as u32, (ph as f32 * 0.75) as u32);
+        let (sw, sh) = crate::photo::Decoded::fit_size(&fr, 512);
+        for (name, edit) in [("exposure", 0), ("sharpen", 1)] {
+            let (mut slot, mut small) = (None, None);
+            let mut t = std::time::Duration::ZERO;
+            for i in 0..11 {
+                let mut d = Develop { detail: all_tools(), ..Develop::default() };
+                if edit == 0 {
+                    d.exposure = i as f32 * 0.05
+                } else {
+                    d.detail.sharpen = 40.0 + i as f32
+                }
+                let t0 = std::time::Instant::now();
+                gpu.develop_into(&mut slot, &raw, &fr, bw, bh, &d, Profile::Standard).unwrap();
+                gpu.develop_into(&mut small, &raw, &fr, sw, sh, &d, Profile::Standard).unwrap();
+                gpu.read_photo(small.as_ref().unwrap());
+                if i > 0 {
+                    t += t0.elapsed()
+                } // first frame warms pipelines and caches
+            }
+            eprintln!("drag {name} {bw}×{bh}: {:?}", t / 10);
+        }
+    }
+
     /// The picker reads the pixel shown at a point, whatever the orientation.
     #[test]
     fn sample_follows_orientation() {

@@ -11,7 +11,7 @@ use rawler::imgop::xyz::Illuminant;
 use rawler::rawimage::RawPhotometricInterpretation;
 use wgpu::util::DeviceExt;
 
-use crate::develop::{Camera, Develop};
+use crate::develop::{Camera, Detail, Develop};
 use crate::gpu::{Gpu, GpuPhoto, WORKGROUP};
 use crate::photo::{Photo, RAW_TO_SCENE};
 use crate::profiles::{Profile, rec2020_to_rec709};
@@ -206,7 +206,8 @@ pub struct Pipelines {
     rcd_pack: wgpu::ComputePipeline,
     rgb_pack: wgpu::ComputePipeline,
     mip: wgpu::ComputePipeline,
-    develop: wgpu::ComputePipeline,
+    develop_linear: wgpu::ComputePipeline,
+    develop_encode: wgpu::ComputePipeline,
     /// The OETF table of the last profile developed into.
     oetf: std::cell::RefCell<Option<(Profile, wgpu::Buffer)>>,
     /// `DevelopParams`, rewritten per frame.
@@ -230,7 +231,8 @@ impl Pipelines {
             rcd_pack: pipeline("rcd_pack"),
             rgb_pack: pipeline("rgb_pack"),
             mip: pipeline("mip"),
-            develop: pipeline("develop"),
+            develop_linear: pipeline("develop_linear"),
+            develop_encode: pipeline("develop_encode"),
             oetf: Default::default(),
             develop_params: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("develop params"),
@@ -461,11 +463,19 @@ impl Gpu {
             *oetf = Some((profile, self.storage(bytemuck::cast_slice(&oetf_table(profile)))));
         }
         let table = &oetf.as_ref().expect("set above").1;
-        let src = &self.photo_slot(slot, w, h).src;
-        let p = &self.raw;
-        self.passes(&[(&p.develop, &[(10, level), (12, &p.develop_params), (13, src), (14, table)], grid(w * h))]);
+        let photo = self.photo_slot(slot, w, h);
+        let lin = photo.lin.get_or_init(|| self.buffer(w as u64 * h as u64 * 16, wgpu::BufferUsages::empty()));
+        let (p, g) = (&self.raw, grid(w * h));
+        self.passes(&[(&p.develop_linear, &[(10, level), (12, &p.develop_params), (15, lin)], g)]);
+        self.stages(lin, w, h, 1.0 / scale, &dev.detail);
+        self.passes(&[(&p.develop_encode, &[(12, &p.develop_params), (13, &photo.src), (14, table), (15, lin)], g)]);
         Ok(())
     }
+
+    /// The detail tools on `lin` (`w` × `h` linear Rec.2020), in the spec's
+    /// order; only those whose amount is not zero run. `scale`: output
+    /// pixels per full-resolution pixel, by which radii shrink.
+    fn stages(&self, _lin: &wgpu::Buffer, _w: u32, _h: u32, _scale: f32, _detail: &Detail) {}
 
     /// The developed pixels back on the CPU.
     pub fn read_photo(&self, p: &GpuPhoto) -> Photo {
@@ -818,7 +828,7 @@ mod tests {
         let patches = [[0.02, 0.03, 0.025], [0.2, 0.3, 0.25], [0.5, 0.4, 0.2], [0.05, 0.3, 0.6], [0.9, 0.95, 0.9]];
         let raw = rgb_raw(&gpu, 5, 1, patches.to_vec(), 1, camera.clone());
         for profile in [Profile::Standard, Profile::VLog, Profile::SLog3, Profile::LogC4] {
-            for dev in [Develop::default(), Develop { wb: Some([3200.0, 10.0]), exposure: 0.7 }] {
+            for dev in [Develop::default(), Develop { wb: Some([3200.0, 10.0]), exposure: 0.7, ..Default::default() }] {
                 let out = gpu.read_photo(&gpu.develop(&raw, &whole(5, 1), 5, 1, &dev, profile).unwrap());
                 for (c, got) in patches.iter().zip(&out.pixels) {
                     let want = crate::develop::develop_pixel(*c, &camera, &dev, profile);
@@ -829,6 +839,22 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Detail tools at zero run nothing: the photo is bit-exact whatever
+    /// their other settings (a radius alone changes nothing).
+    #[test]
+    fn neutral_detail_is_identity() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (16, 8);
+        let px = (0..w * h).map(|i| [(i % w) as f32 / 16.0, (i / w) as f32 / 8.0, 0.3]).collect();
+        let raw = rgb_raw(&gpu, w, h, px, 1, Camera::neutral());
+        let plain = Develop::default();
+        let idle = Develop { detail: Detail { sharpen_radius: 2.0, ..Detail::default() }, ..plain };
+        for profile in [Profile::Standard, Profile::VLog] {
+            let run = |dev: &Develop| gpu.read_photo(&gpu.develop(&raw, &whole(w, h), w, h, dev, profile).unwrap());
+            assert_eq!(run(&plain).pixels, run(&idle).pixels, "{profile:?}");
         }
     }
 

@@ -39,6 +39,8 @@ pub struct GpuPhoto {
     pub(crate) src: wgpu::Buffer,
     pub(crate) out: wgpu::Buffer,
     pub(crate) staging: wgpu::Buffer,
+    /// Linear Rec.2020 working copy of a developed RAW (detail stages), made on first develop.
+    pub(crate) lin: std::cell::OnceCell<wgpu::Buffer>,
     pub(crate) width: u32,
     pub(crate) height: u32,
 }
@@ -171,7 +173,7 @@ impl Gpu {
             let n = w as u64 * h as u64;
             let src = self.buffer(n * 16, wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC);
             let (out, staging) = self.output(n * 4);
-            *slot = Some(GpuPhoto { src, out, staging, width: w, height: h });
+            *slot = Some(GpuPhoto { src, out, staging, lin: Default::default(), width: w, height: h });
         }
         slot.as_ref().expect("set above")
     }

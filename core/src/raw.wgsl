@@ -454,9 +454,11 @@ fn mip(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u3
 }
 
 // ------------------------------------------------------------------ develop
-// A region of the camera-RGB mip chain → the profile's signal at output size:
-// orientation, bilinear sampling, WB gains, camera matrix to linear
-// Rec.2020, exposure, gamut, encode. Mirrors `develop::develop_pixel`.
+// A region of the camera-RGB mip chain → the profile's signal at output size,
+// in two passes around the detail stages (detail.rs): `develop_linear`
+// (orientation, bilinear sampling, WB gains, camera matrix to linear
+// Rec.2020, exposure) into `lin`, then `develop_encode` (gamut, encode).
+// Together they mirror `develop::develop_pixel`.
 
 struct DevelopParams {
     out_w: u32,
@@ -482,6 +484,7 @@ struct DevelopParams {
 @group(0) @binding(12) var<storage, read> d: DevelopParams;
 @group(0) @binding(13) var<storage, read_write> photo: array<vec4<f32>>;
 @group(0) @binding(14) var<storage, read> oetf: array<f32>;
+@group(0) @binding(15) var<storage, read_write> lin: array<vec4<f32>>;
 
 /// Exposed scene value mapped to display white, and the view exposure (photo.rs).
 const VIEW_EXPOSURE: f32 = 1.25;
@@ -548,8 +551,8 @@ fn gamut_compress(c: vec3<f32>) -> vec3<f32> {
 }
 
 @compute @workgroup_size(256)
-fn develop(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
-           @builtin(local_invocation_index) lid: u32) {
+fn develop_linear(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
+                  @builtin(local_invocation_index) lid: u32) {
     let i = index(wg, n, lid);
     if i >= d.out_w * d.out_h { return; }
     let dd = (vec2<f32>(f32(i % d.out_w), f32(i / d.out_w)) + 0.5 - 0.5 * vec2<f32>(f32(d.out_w), f32(d.out_h))) * d.region.zw;
@@ -561,7 +564,15 @@ fn develop(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec
     let x = i32(b.x);
     let y = i32(b.y);
     let cam = mix(mix(texel(x, y), texel(x + 1, y), f.x), mix(texel(x, y + 1), texel(x + 1, y + 1), f.x), f.y);
-    let wide = (cam * d.gains.xyz) * d.cam * d.k;
+    lin[i] = vec4<f32>((cam * d.gains.xyz) * d.cam * d.k, 1.0);
+}
+
+@compute @workgroup_size(256)
+fn develop_encode(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
+                  @builtin(local_invocation_index) lid: u32) {
+    let i = index(wg, n, lid);
+    if i >= d.out_w * d.out_h { return; }
+    let wide = lin[i].xyz;
     var out: vec3<f32>;
     if d.log == 1u {
         let c = wide * d.to_out;

@@ -2987,7 +2987,7 @@ impl SimpleComponent for App {
                 // The source is the photo as the camera shot it, before any edit.
                 let (w, h) = d.size();
                 let whole = Region { center: [w as f32 / 2.0, h as f32 / 2.0], size: [w as f32, h as f32], angle: 0.0 };
-                let as_shot = Develop { wb: None, exposure: cam.baseline_ev };
+                let as_shot = Develop { wb: None, exposure: cam.baseline_ev, ..self.develop };
                 let source = d.encode_fit(&whole, 1024, self.profile, &as_shot);
                 let m = &self.ui.sidebar.matching;
                 m.pic.set_paintable(Some(&texture(reference.width, reference.height, rgba8(&reference.pixels))));

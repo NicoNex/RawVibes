@@ -19,6 +19,74 @@ pub struct Develop {
     pub wb: Option<[f32; 2]>,
     /// RAW exposure in EV.
     pub exposure: f32,
+    /// Spatial detail tools (absent in phase 2 sidecars: neutral).
+    #[serde(default)]
+    pub detail: Detail,
+}
+
+/// The spatial tools of the linear working space. Amounts 0–100 (dehaze
+/// −100…100); every amount at 0 leaves the photo bit-exact.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Detail {
+    pub nr_luma: f32,
+    pub nr_chroma: f32,
+    pub nr_detail: f32,
+    pub sharpen: f32,
+    /// Capture sharpening PSF radius, 0.5–2.0 full-resolution pixels.
+    pub sharpen_radius: f32,
+    pub defringe: f32,
+    pub dehaze: f32,
+    pub local_contrast: f32,
+    /// Lens vignetting compensation, −100…100.
+    pub lens_vignette: f32,
+}
+
+impl Detail {
+    /// How far, in full-resolution pixels, the active tools read around a
+    /// pixel: a zoomed view develops this margin and crops it after.
+    pub fn support(&self) -> f32 {
+        0.0
+    }
+
+    /// Within the sliders' ranges; `None` when a value is not a number.
+    pub fn clamped(self) -> Option<Self> {
+        let d = self;
+        let all = [d.nr_luma, d.nr_chroma, d.nr_detail, d.sharpen, d.sharpen_radius];
+        let all = [all.as_slice(), &[d.defringe, d.dehaze, d.local_contrast, d.lens_vignette]].concat();
+        if all.iter().any(|v| !v.is_finite()) {
+            return None;
+        }
+        let amount = |v: f32| v.clamp(0.0, 100.0);
+        let signed = |v: f32| v.clamp(-100.0, 100.0);
+        Some(Self {
+            nr_luma: amount(d.nr_luma),
+            nr_chroma: amount(d.nr_chroma),
+            nr_detail: amount(d.nr_detail),
+            sharpen: amount(d.sharpen),
+            sharpen_radius: d.sharpen_radius.clamp(0.5, 2.0),
+            defringe: amount(d.defringe),
+            dehaze: signed(d.dehaze),
+            local_contrast: amount(d.local_contrast),
+            lens_vignette: signed(d.lens_vignette),
+        })
+    }
+}
+
+impl Default for Detail {
+    fn default() -> Self {
+        Self {
+            nr_luma: 0.0,
+            nr_chroma: 0.0,
+            nr_detail: 0.0,
+            sharpen: 0.0,
+            sharpen_radius: 0.8,
+            defringe: 0.0,
+            dehaze: 0.0,
+            local_contrast: 0.0,
+            lens_vignette: 0.0,
+        }
+    }
 }
 
 /// White-balance presets: name, Kelvin, tint.

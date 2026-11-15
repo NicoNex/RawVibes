@@ -2,8 +2,8 @@
 //! development, grade, crop and looks.
 //!
 //! ```json
-//! { "format": "rawvalley-sidecar", "version": 1,
-//!   "develop": { "wb": [3200.0, 5.0], "exposure": 0.3 },
+//! { "format": "rawvalley-sidecar", "version": 2,
+//!   "develop": { "wb": [3200.0, 5.0], "exposure": 0.3, "detail": { "nr_luma": 20.0, … } },
 //!   "params": { … }, "curves": { … },
 //!   "crop": { "rect": [0, 0, 1, 1], "angle": 0 }, "ratio": "Free",
 //!   "looks": [{ "path": "/luts/Kodak.cube", "intensity": 0.8, "input": "Standard", "on": true }],
@@ -22,7 +22,7 @@ use crate::preset::{Curves, grade_from};
 use crate::profiles::Profile;
 
 const FORMAT: &str = "rawvalley-sidecar";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Sidecar {
@@ -116,12 +116,14 @@ impl Sidecar {
         // Out-of-range development values are brought into the sliders' range
         // (a whole sidecar is not worth losing over them); non-numbers are not.
         let d = f.develop;
-        if !d.exposure.is_finite() || d.wb.is_some_and(|wb| wb.iter().any(|v| !v.is_finite())) {
+        let detail = d.detail.clamped();
+        if !d.exposure.is_finite() || d.wb.is_some_and(|wb| wb.iter().any(|v| !v.is_finite())) || detail.is_none() {
             return Err("invalid development values".into());
         }
         let d = Develop {
             wb: d.wb.map(|[k, t]| [k.clamp(KELVIN[0], KELVIN[1]), t.clamp(-TINT, TINT)]),
             exposure: d.exposure.clamp(-EXPOSURE, EXPOSURE),
+            detail: detail.expect("checked above"),
         };
         let c = f.crop;
         let [x, y, w, h] = c.rect;
@@ -160,7 +162,11 @@ mod tests {
         let mut grade = Grade::default();
         grade.params.exposure = 0.4;
         Sidecar {
-            develop: Develop { wb: Some([3200.0, 5.0]), exposure: 0.3 },
+            develop: Develop {
+                wb: Some([3200.0, 5.0]),
+                exposure: 0.3,
+                detail: crate::develop::Detail { nr_luma: 20.0, dehaze: -15.0, ..Default::default() },
+            },
             grade,
             crop: Crop { rect: [0.1, 0.1, 0.8, 0.7], angle: 2.0 },
             ratio: Ratio::Fixed(3.0, 2.0),
@@ -193,7 +199,7 @@ mod tests {
     #[test]
     fn corrupt_or_newer_sidecar_is_an_error() {
         assert!(Sidecar::from_json("{").is_err());
-        let newer = sample().to_json().replace("\"version\": 1", "\"version\": 99");
+        let newer = sample().to_json().replace("\"version\": 2", "\"version\": 99");
         assert!(Sidecar::from_json(&newer).unwrap_err().contains("newer"));
     }
 
@@ -207,9 +213,21 @@ mod tests {
     #[test]
     fn out_of_range_development_is_clamped() {
         let mut s = sample();
-        s.develop = Develop { wb: Some([30000.0, 300.0]), exposure: 50.0 };
+        s.develop = Develop { wb: Some([30000.0, 300.0]), exposure: 50.0, ..Default::default() };
+        s.develop.detail.dehaze = -400.0;
         let back = Sidecar::from_json(&s.to_json()).unwrap();
-        assert_eq!(back.develop, Develop { wb: Some([KELVIN[1], TINT]), exposure: EXPOSURE });
+        assert_eq!(back.develop.wb, Some([KELVIN[1], TINT]));
+        assert_eq!((back.develop.exposure, back.develop.detail.dehaze), (EXPOSURE, -100.0));
+    }
+
+    /// Phase 2 sidecars (version 1) have no detail tools: they load neutral.
+    #[test]
+    fn sidecar_v1_loads_with_neutral_detail() {
+        let v1 = r#"{ "format": "rawvalley-sidecar", "version": 1,
+            "develop": { "wb": [3200.0, 5.0], "exposure": 0.3 } }"#;
+        let s = Sidecar::from_json(v1).unwrap();
+        assert_eq!(s.develop.detail, crate::develop::Detail::default());
+        assert_eq!(s.develop.exposure, 0.3);
     }
 
     #[test]

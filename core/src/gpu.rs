@@ -509,8 +509,11 @@ struct Ai {
     generation: u64,
     data: Option<Arc<RawData>>,
     run: Option<crate::ai::AiRun>,
-    /// Why this RAW cannot be denoised: not retried until another loads.
-    failed: bool,
+    /// Why this RAW cannot be denoised: not retried until another loads,
+    /// only said again each time AI is picked again.
+    failed: Option<String>,
+    /// AI was asked for by the last develop.
+    on: bool,
 }
 
 /// Longest side of the CPU copy of each developed RAW frame.
@@ -558,12 +561,17 @@ impl Worker {
     #[cfg(feature = "ai")]
     fn ai_begin(&mut self, gpu: &Gpu, on: bool, notify: &impl Fn(Done)) {
         let ai = &mut self.ai;
+        let was_on = std::mem::replace(&mut ai.on, on);
+        let picked = on && !was_on;
         if !on {
             ai.run = None;
             return;
         }
+        if let Some(e) = ai.failed.clone().filter(|_| picked) {
+            notify(Done::AiFailed(ai.generation, e));
+        }
         let (Some(raw), Some(data)) = (&self.raw, &ai.data) else { return };
-        if raw.ai.is_some() || ai.run.is_some() || ai.failed {
+        if raw.ai.is_some() || ai.run.is_some() || ai.failed.is_some() {
             return;
         }
         let variant = crate::ai::variant(data);
@@ -578,7 +586,7 @@ impl Worker {
                 notify(Done::AiProgress(ai.generation, 0.0));
             }
             Err(e) => {
-                ai.failed = true;
+                ai.failed = Some(e.clone());
                 notify(Done::AiFailed(ai.generation, e));
             }
         }
@@ -592,7 +600,7 @@ impl Worker {
             let (Some(run), Some(raw), Some(data)) = (&mut ai.run, &mut self.raw, &ai.data) else { return false };
             let Some(Ok(net)) = &ai.nets[run.variant as usize] else { return false };
             if let Err(e) = gpu.ai_step(run, net) {
-                (ai.run, ai.failed) = (None, true);
+                (ai.run, ai.failed) = (None, Some(e.clone()));
                 notify(Done::AiFailed(ai.generation, e));
                 return false;
             }
@@ -637,7 +645,12 @@ impl Worker {
                     self.raw = Some(raw);
                     #[cfg(feature = "ai")]
                     {
-                        self.ai = Ai { nets: std::mem::take(&mut self.ai.nets), generation, data: Some(data.clone()), ..Ai::default() };
+                        self.ai = Ai {
+                            nets: std::mem::take(&mut self.ai.nets),
+                            generation,
+                            data: Some(data.clone()),
+                            ..Ai::default()
+                        };
                     }
                     // The CPU copy only serves a CA reload: none kept when CA cannot apply.
                     let data = crate::ca::applies(&data).then_some(data);
@@ -663,7 +676,7 @@ impl Worker {
                         // The AI result was made from the other mosaic: denoise this one.
                         #[cfg(feature = "ai")]
                         {
-                            (self.ai.data, self.ai.run, self.ai.failed) = (Some(data), None, false);
+                            (self.ai.data, self.ai.run, self.ai.failed) = (Some(data), None, None);
                         }
                     }
                 }
@@ -929,8 +942,57 @@ mod tests {
         worker.handle(&gpu, job(2), &notify);
         while worker.ai_step(&gpu, &notify) {}
         assert!(worker.raw.as_ref().unwrap().ai.is_some());
-        let ready: Vec<u64> = done.borrow().iter().filter_map(|d| if let Done::AiReady(g) = d { Some(*g) } else { None }).collect();
+        let ready: Vec<u64> =
+            done.borrow().iter().filter_map(|d| if let Done::AiReady(g) = d { Some(*g) } else { None }).collect();
         assert_eq!(ready, [2]);
+    }
+
+    /// A RAW the AI cannot denoise says why each time AI is picked again,
+    /// not only the first time.
+    #[cfg(feature = "ai")]
+    #[test]
+    fn ai_failure_is_reported_again() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        // A 2×2 pattern without R and B in RGGB order: no net takes it (nor do missing models).
+        let mut pattern = [1; 36];
+        pattern[0] = 0;
+        let data = Arc::new(RawData {
+            pixels: crate::raw::Pixels::Bayer(vec![0.2; 64 * 64]),
+            width: 64,
+            height: 64,
+            pattern,
+            pattern_size: [2, 2],
+            crop: [0, 0, 64, 64],
+            orientation: 1,
+            camera: crate::develop::Camera::neutral(),
+        });
+        let done = std::cell::RefCell::new(Vec::new());
+        let notify = |d: Done| done.borrow_mut().push(d);
+        let mut worker = Worker::default();
+        worker.handle(&gpu, Job::LoadRaw(1, PathBuf::new(), data), &notify);
+        let mut develop = |ai: bool| {
+            let mut develop = Develop::default();
+            develop.detail.nr_ai = ai;
+            let region = Region { center: [32.0, 32.0], size: [64.0, 64.0], angle: 0.0 };
+            let job = Job::DevelopRaw {
+                generation: 1,
+                region,
+                width: 64,
+                height: 64,
+                develop,
+                profile: Profile::Standard,
+                view: false,
+            };
+            worker.handle(&gpu, job, &notify);
+        };
+        let failures = || done.borrow().iter().filter(|d| matches!(d, Done::AiFailed(1, _))).count();
+        develop(true);
+        assert_eq!(failures(), 1);
+        develop(true);
+        assert_eq!(failures(), 1, "not repeated on every develop");
+        develop(false);
+        develop(true);
+        assert_eq!(failures(), 2);
     }
 
     /// The RAW renders at the size it was developed at, from the GPU; the

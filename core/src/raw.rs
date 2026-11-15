@@ -301,8 +301,8 @@ pub struct Pipelines {
     develop_params: wgpu::Buffer,
     /// Open while a develop records: its passes and copies go out in one submission.
     pub(crate) batch: std::cell::RefCell<Option<wgpu::CommandEncoder>>,
-    /// What the airlight in `air` was measured from (photo, gains, exposure, lens).
-    air_key: std::cell::RefCell<Option<(u64, [f32; 5])>>,
+    /// What the airlight in `air` was measured from (photo, gains, exposure, lens, AI blend).
+    air_key: std::cell::RefCell<Option<(u64, [f32; 6])>>,
 }
 
 impl Pipelines {
@@ -903,17 +903,17 @@ impl Gpu {
     }
 
     /// Sets the dehaze airlight from the whole frame developed at `AIR_SIZE`
-    /// (kept while photo, white balance, exposure and lens stay).
+    /// (kept while photo, white balance, exposure, lens and AI blend stay).
     fn airlight(&self, raw: &GpuRaw, dev: &Develop, profile: Profile) {
-        let gains = raw.camera.gains_for(dev);
-        let key = (raw.id, [gains[0], gains[1], gains[2], dev.exposure, dev.detail.lens_vignette]);
-        if self.raw.air_key.replace(Some(key)) == Some(key) {
-            return;
-        }
         let (fw, fh) = raw.oriented_size();
         let whole = Region { center: [fw as f32 / 2.0, fh as f32 / 2.0], size: [fw as f32, fh as f32], angle: 0.0 };
         let (w, h) = crate::photo::Decoded::fit_size(&whole, AIR_SIZE);
         let (params, k) = develop_params(raw, &whole, w, h, dev, profile, 0);
+        let g = params.gains;
+        let key = (raw.id, [g[0], g[1], g[2], dev.exposure, dev.detail.lens_vignette, params.ai]);
+        if self.raw.air_key.replace(Some(key)) == Some(key) {
+            return;
+        }
         let (params, lin) = (
             self.storage(bytemuck::bytes_of(&params)),
             self.buffer(w as u64 * h as u64 * 16, wgpu::BufferUsages::empty()),
@@ -1232,7 +1232,11 @@ impl Gpu {
 
     /// [`Gpu::reconstruct`], also handing back the uploaded mosaic's buffer
     /// (free once it ran) for the next passes to reuse.
-    pub(crate) fn reconstruct_keep(&self, raw: &RawData, mosaic: &[f32]) -> Result<(wgpu::Buffer, wgpu::Buffer), String> {
+    pub(crate) fn reconstruct_keep(
+        &self,
+        raw: &RawData,
+        mosaic: &[f32],
+    ) -> Result<(wgpu::Buffer, wgpu::Buffer), String> {
         let n = raw.width * raw.height;
         let bytes = n as u64 * 4;
         self.fits(bytes)?;
@@ -1547,7 +1551,10 @@ mod tests {
     }
 
     fn ai(on: bool, strength: f32) -> Develop {
-        Develop { detail: Detail { nr_ai: on, nr_ai_strength: strength, nr_luma: 40.0, ..Detail::default() }, ..Develop::default() }
+        Develop {
+            detail: Detail { nr_ai: on, nr_ai_strength: strength, nr_luma: 40.0, ..Detail::default() },
+            ..Develop::default()
+        }
     }
 
     /// AI off develops as if it never ran; classic luminance NR applies.
@@ -1570,10 +1577,28 @@ mod tests {
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
         let (w, h) = (64, 32);
         let raw = with_ai_chain(&gpu, w, h);
-        let run = |dev: &Develop| gpu.read_photo(&gpu.develop(&raw, &whole(w, h), w, h, dev, Profile::Standard).unwrap()).pixels;
+        let run = |dev: &Develop| {
+            gpu.read_photo(&gpu.develop(&raw, &whole(w, h), w, h, dev, Profile::Standard).unwrap()).pixels
+        };
         let classic = Develop::default();
         assert_eq!(run(&ai(true, 0.0)), run(&classic));
         assert_ne!(run(&ai(true, 100.0)), run(&classic));
+    }
+
+    /// The dehaze airlight follows the AI blend: AI on dehazes the same
+    /// whether or not the classic develop ran first.
+    #[test]
+    fn dehaze_airlight_follows_ai() {
+        let (Ok(a), Ok(b)) = (Gpu::new(), Gpu::new()) else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (64, 32);
+        let hazy = |on| Develop { detail: Detail { dehaze: 60.0, ..ai(on, 100.0).detail }, ..Develop::default() };
+        let run = |gpu: &Gpu, raw: &GpuRaw, dev: &Develop| {
+            gpu.read_photo(&gpu.develop(raw, &whole(w, h), w, h, dev, Profile::Standard).unwrap()).pixels
+        };
+        let raw_a = with_ai_chain(&a, w, h);
+        run(&a, &raw_a, &hazy(false));
+        let after_classic = run(&a, &raw_a, &hazy(true));
+        assert_eq!(after_classic, run(&b, &with_ai_chain(&b, w, h), &hazy(true)));
     }
 
     fn flat_lens(gpu: &Gpu, amount: f32) -> Vec<[f32; 4]> {

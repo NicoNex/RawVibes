@@ -34,9 +34,11 @@ struct AiParams {
 }
 
 /// The largest tile edge (packed pixels) whose biggest UtNet2 buffer, the
-/// first decoder concat (64 channels × T² f32), the GPU can bind.
+/// first decoder concat (64 channels × T² f32), the GPU can bind. At most
+/// 512: a tile's activations take ~1132·T² bytes (300 MB), which a 2 GB GPU
+/// holds next to the photo, and a tile keeps the worker busy for ~60 ms.
 pub(crate) fn tile_edge(max_binding: u64) -> Result<u32, String> {
-    [1024, 512, 256]
+    [512, 256]
         .into_iter()
         .find(|&t| 64 * 4 * (t as u64).pow(2) <= max_binding)
         .ok_or_else(|| "GPU too small for AI denoise".to_string())
@@ -51,7 +53,9 @@ pub(crate) fn variant(raw: &RawData) -> Variant {
 fn rggb_origin(raw: &RawData) -> Option<(u32, u32)> {
     let colour = |x: u32, y: u32| raw.pattern[(y % 2 * raw.pattern_size[0] + x % 2) as usize];
     (raw.pattern_size == [2, 2])
-        .then(|| [(0, 0), (1, 0), (0, 1), (1, 1)].into_iter().find(|&(x, y)| colour(x, y) == 0 && colour(x + 1, y + 1) == 2))
+        .then(|| {
+            [(0, 0), (1, 0), (0, 1), (1, 1)].into_iter().find(|&(x, y)| colour(x, y) == 0 && colour(x + 1, y + 1) == 2)
+        })
         .flatten()
 }
 
@@ -252,7 +256,10 @@ mod tests {
     fn run(gpu: &Gpu, net: &UNet, raw: &RawData, t: u32) -> Vec<[f32; 3]> {
         let buf = gpu.ai_denoise_tiled(raw, net, t, &AtomicBool::new(false), &|_| {}).unwrap().unwrap();
         let words: Vec<u32> = bytemuck::cast_slice(&gpu.read_f32(&buf)).to_vec();
-        words.chunks_exact(2).map(|w| [w[0] & 0xffff, w[0] >> 16, w[1] & 0xffff].map(|h| f16_to_f32(h as u16))).collect()
+        words
+            .chunks_exact(2)
+            .map(|w| [w[0] & 0xffff, w[0] >> 16, w[1] & 0xffff].map(|h| f16_to_f32(h as u16)))
+            .collect()
     }
 
     /// Deterministic noise in −1..1 (a hash).
@@ -272,8 +279,8 @@ mod tests {
 
     #[test]
     fn small_gpu_limit_uses_small_tiles() {
-        assert_eq!(tile_edge(256 << 20), Ok(1024));
-        assert_eq!(tile_edge(255 << 20), Ok(512));
+        assert_eq!(tile_edge(u64::MAX), Ok(512));
+        assert_eq!(tile_edge(64 << 20), Ok(512));
         assert_eq!(tile_edge(63 << 20), Ok(256));
         assert!(tile_edge(1 << 20).is_err());
     }
@@ -281,7 +288,9 @@ mod tests {
     #[test]
     fn rggb_origin_finds_every_phase() {
         let mut raw = bayer(4, 4, [1.0; 3], |_, _| 0.0);
-        for (cells, origin) in [([0, 1, 1, 2], (0, 0)), ([1, 0, 2, 1], (1, 0)), ([1, 2, 0, 1], (0, 1)), ([2, 1, 1, 0], (1, 1))] {
+        for (cells, origin) in
+            [([0, 1, 1, 2], (0, 0)), ([1, 0, 2, 1], (1, 0)), ([1, 2, 0, 1], (0, 1)), ([2, 1, 1, 0], (1, 1))]
+        {
             raw.pattern[..4].copy_from_slice(&cells);
             assert_eq!(rggb_origin(&raw), Some(origin));
         }
@@ -348,7 +357,8 @@ mod tests {
         let Some((gpu, net)) = setup_for(Variant::Linear) else { return };
         let (w, h) = (512u32, 384u32);
         let grey = [0.25, 0.2, 0.15];
-        let px: Vec<[f32; 3]> = (0..w * h).map(|i| grey.map(|v| v + 0.03 * noise(i % w, i / w + 7 * (v * 100.0) as u32))).collect();
+        let px: Vec<[f32; 3]> =
+            (0..w * h).map(|i| grey.map(|v| v + 0.03 * noise(i % w, i / w + 7 * (v * 100.0) as u32))).collect();
         let mut camera = Camera::neutral();
         camera.as_shot = [2.0, 1.0, 1.5];
         let raw = RawData {

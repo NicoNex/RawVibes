@@ -22,6 +22,7 @@ MOS     := $(foreach l,$(LINGUAS),target/locale/$(l)/LC_MESSAGES/$(BIN).mo)
 MODELS_URL := https://github.com/darktable-org/darktable-ai/releases/download/release-5.6.0/rawdenoise-nind.dtmodel
 MODELS_SHA := d71b5f1e727c85a359e6f74dca9e2016c9d8fc3e2f7ac3e9b347d80ceca969af
 MODELS     := $(foreach v,bayer linear,models/rawnind/$(v).bin models/rawnind/$(v).json)
+DTMODEL    := target/models/rawdenoise-nind.dtmodel
 
 .PHONY: all build run release run-release test check fmt clean install uninstall arch dmg pot locale models
 
@@ -66,12 +67,16 @@ target/release/$(BIN):
 
 models: $(MODELS)
 
-# One run writes every file; a failed one leaves none behind to look done.
-$(MODELS) &:
+# Downloaded unless already there (the PKGBUILD puts makepkg's copy there).
+$(DTMODEL):
 	mkdir -p target/models
-	curl -L --fail -o target/models/rawdenoise-nind.dtmodel $(MODELS_URL)
-	echo "$(MODELS_SHA)  target/models/rawdenoise-nind.dtmodel" | sha256sum -c
-	unzip -o -q target/models/rawdenoise-nind.dtmodel -d target/models
+	curl -L --fail -o $@.part $(MODELS_URL)
+	mv $@.part $@
+
+# One run writes every file; a failed one leaves none behind to look done.
+$(MODELS) &: $(DTMODEL)
+	echo "$(MODELS_SHA)  $(DTMODEL)" | sha256sum -c
+	unzip -o -q $(DTMODEL) -d target/models
 	python3 tools/convert_rawnind.py target/models/rawdenoise-nind models/rawnind || { rm -rf models/rawnind; exit 1; }
 
 # Installs the AI models when `make models` fetched them (no network here: packagers run it first).
@@ -103,10 +108,12 @@ arch:
 # Adwaita icon theme, schemas) still comes from Homebrew. Switch to gtk-mac-bundler if the
 # .app must run on Macs without Homebrew GTK.
 APP := target/RawValley.app
-dmg: release
+dmg: release models
 	rm -rf $(APP) target/$(BIN)-$(VERSION).dmg
 	install -d $(APP)/Contents/MacOS $(APP)/Contents/libs
 	install -m755 target/release/$(BIN) $(APP)/Contents/MacOS/$(BIN)
+	for f in $(MODELS) models/README.md; do install -d $(APP)/Contents/share/$(BIN)/$$(dirname $$f) && \
+	  install -m644 $$f $(APP)/Contents/share/$(BIN)/$$f; done
 	for l in $(LINGUAS); do install -d $(APP)/Contents/share/locale/$$l/LC_MESSAGES && \
 	  install -m644 target/locale/$$l/LC_MESSAGES/$(BIN).mo $(APP)/Contents/share/locale/$$l/LC_MESSAGES/; done
 	printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \

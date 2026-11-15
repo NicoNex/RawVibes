@@ -1678,8 +1678,12 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     detail_slider(&haze, &gettext("Local contrast"), (0.0, 100.0), |d| &mut d.local_contrast);
     root.append(&section(&gettext("Presence"), &haze));
     let sharp = vbox(4);
-    detail_slider(&sharp, &gettext("Sharpening"), (0.0, 100.0), |d| &mut d.sharpen);
-    detail_slider(&sharp, &gettext("Radius"), (0.5, 2.0), |d| &mut d.sharpen_radius);
+    // Capture restores the lens's softness; output sharpening is the visible, creative kind.
+    detail_slider(&sharp, &gettext("Capture sharpening"), (0.0, 100.0), |d| &mut d.sharpen);
+    detail_slider(&sharp, &gettext("Capture radius"), (0.5, 2.0), |d| &mut d.sharpen_radius);
+    detail_slider(&sharp, &gettext("Sharpening"), (0.0, 100.0), |d| &mut d.usm);
+    detail_slider(&sharp, &gettext("Sharpening radius"), (0.5, 3.0), |d| &mut d.usm_radius);
+    detail_slider(&sharp, &gettext("Sharpening threshold"), (0.0, 100.0), |d| &mut d.usm_threshold);
     detail_slider(&sharp, &gettext("Defringe"), (0.0, 100.0), |d| &mut d.defringe);
     root.append(&section(&gettext("Detail"), &sharp));
     let lens = vbox(4);

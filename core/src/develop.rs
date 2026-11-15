@@ -36,6 +36,11 @@ pub struct Detail {
     /// Capture sharpening PSF radius, 0.5–2.0 full-resolution pixels.
     pub sharpen_radius: f32,
     pub defringe: f32,
+    /// Output sharpening (unsharp mask on luminance): amount, radius 0.5–3.0
+    /// full-resolution pixels, threshold 0–100.
+    pub usm: f32,
+    pub usm_radius: f32,
+    pub usm_threshold: f32,
     pub dehaze: f32,
     pub local_contrast: f32,
     /// Lens vignetting compensation, −100…100.
@@ -57,13 +62,16 @@ impl Detail {
             + on(d.local_contrast, 256.0)
             // The most iterations at the largest radius, so neither amount nor radius moves the margin (or the caches).
             + on(d.sharpen, 11.0 * 2.0 * 6.0)
+            // Two separable blurs at the largest radius (3σ of 3 px).
+            + on(d.usm, 9.0)
     }
 
     /// Within the sliders' ranges; `None` when a value is not a number.
     pub fn clamped(self) -> Option<Self> {
         let d = self;
         let all = [d.nr_luma, d.nr_chroma, d.nr_detail, d.sharpen, d.sharpen_radius];
-        let all = [all.as_slice(), &[d.defringe, d.dehaze, d.local_contrast, d.lens_vignette]].concat();
+        let all = [all.as_slice(), &[d.defringe, d.usm, d.usm_radius, d.usm_threshold]].concat();
+        let all = [all.as_slice(), &[d.dehaze, d.local_contrast, d.lens_vignette]].concat();
         if all.iter().any(|v| !v.is_finite()) {
             return None;
         }
@@ -76,6 +84,9 @@ impl Detail {
             sharpen: amount(d.sharpen),
             sharpen_radius: d.sharpen_radius.clamp(0.5, 2.0),
             defringe: amount(d.defringe),
+            usm: amount(d.usm),
+            usm_radius: d.usm_radius.clamp(0.5, 3.0),
+            usm_threshold: amount(d.usm_threshold),
             dehaze: signed(d.dehaze),
             local_contrast: amount(d.local_contrast),
             lens_vignette: signed(d.lens_vignette),
@@ -92,6 +103,9 @@ impl Default for Detail {
             sharpen: 0.0,
             sharpen_radius: 0.8,
             defringe: 0.0,
+            usm: 0.0,
+            usm_radius: 1.0,
+            usm_threshold: 0.0,
             dehaze: 0.0,
             local_contrast: 0.0,
             lens_vignette: 0.0,

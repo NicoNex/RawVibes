@@ -3,6 +3,8 @@
 // PSF, kept within each pixel's 3×3 range (no halos) and blended in only
 // where a detail mask finds edges above the noise. Defringe: purple/green
 // hues near luminance edges move towards the chroma of their neighbours.
+// Output sharpening: unsharp mask of perceptual lightness L = Y^(1/3) (as
+// darktable's sharpen works on Lab L), with a soft threshold for fine noise.
 
 struct DetailParams {
     w: u32,
@@ -17,8 +19,9 @@ struct DetailParams {
     a: f32,
     b: f32,
     defringe: f32,
-    _pad2: f32,
-    _pad3: f32,
+    // Output sharpening: gain on L − blur(L); threshold on |L − blur(L)|.
+    usm: f32,
+    usm_threshold: f32,
     _pad4: f32,
 }
 
@@ -201,4 +204,65 @@ fn df_apply(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: ve
     let r = ch.y + l;
     let b = ch.x + l;
     lin[i] = vec4<f32>(r, (l - LUMA.x * r - LUMA.z * b) / LUMA.y, b, c.w);
+}
+
+// ----------------------------------------------------- output sharpening
+
+// sa.x = L; sb.x = L blurred along x; sa.y = blurred along both.
+@compute @workgroup_size(256)
+fn us_init(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
+           @builtin(local_invocation_index) lid: u32) {
+    let i = index(wg, n, lid);
+    if i >= p.w * p.h { return; }
+    sa[i].x = pow(max(dot(lin[i].xyz, LUMA), 0.0), 1.0 / 3.0);
+}
+
+@compute @workgroup_size(256)
+fn us_blur_h(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
+             @builtin(local_invocation_index) lid: u32) {
+    let i = index(wg, n, lid);
+    if i >= p.w * p.h { return; }
+    let x = i32(i % p.w);
+    let y = i32(i / p.w);
+    var sum = 0.0;
+    var total = 0.0;
+    for (var d = -p.radius; d <= p.radius; d++) {
+        let k = gauss(f32(d));
+        sum += k * sa[at(x + d, y)].x;
+        total += k;
+    }
+    sb[i].x = sum / total;
+}
+
+@compute @workgroup_size(256)
+fn us_blur_v(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
+             @builtin(local_invocation_index) lid: u32) {
+    let i = index(wg, n, lid);
+    if i >= p.w * p.h { return; }
+    let x = i32(i % p.w);
+    let y = i32(i / p.w);
+    var sum = 0.0;
+    var total = 0.0;
+    for (var d = -p.radius; d <= p.radius; d++) {
+        let k = gauss(f32(d));
+        sum += k * sb[at(x, y + d)].x;
+        total += k;
+    }
+    sa[i].y = sum / total;
+}
+
+@compute @workgroup_size(256)
+fn us_apply(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
+            @builtin(local_invocation_index) lid: u32) {
+    let i = index(wg, n, lid);
+    if i >= p.w * p.h { return; }
+    let l = sa[i].x;
+    let d = l - sa[i].y;
+    // Below the threshold the detail is taken for noise and left alone.
+    let keep = select(1.0, smoothstep(p.usm_threshold, 2.0 * p.usm_threshold, abs(d)), p.usm_threshold > 0.0);
+    let sharp = max(l + p.usm * d * keep, 0.0);
+    if l > 1e-6 {
+        let r = sharp / l;
+        lin[i] = vec4<f32>(lin[i].xyz * (r * r * r), lin[i].w);
+    }
 }

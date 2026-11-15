@@ -254,6 +254,10 @@ pub struct Pipelines {
     sh_ratio: wgpu::ComputePipeline,
     sh_update: wgpu::ComputePipeline,
     sh_apply: wgpu::ComputePipeline,
+    us_init: wgpu::ComputePipeline,
+    us_blur_h: wgpu::ComputePipeline,
+    us_blur_v: wgpu::ComputePipeline,
+    us_apply: wgpu::ComputePipeline,
     df_init: wgpu::ComputePipeline,
     df_apply: wgpu::ComputePipeline,
     box_h: wgpu::ComputePipeline,
@@ -327,6 +331,10 @@ impl Pipelines {
             sh_ratio: detail("sh_ratio"),
             sh_update: detail("sh_update"),
             sh_apply: detail("sh_apply"),
+            us_init: detail("us_init"),
+            us_blur_h: detail("us_blur_h"),
+            us_blur_v: detail("us_blur_v"),
+            us_apply: detail("us_apply"),
             df_init: detail("df_init"),
             df_apply: detail("df_apply"),
             nr_gat: denoise("nr_gat"),
@@ -505,7 +513,9 @@ struct DetailParams {
     a: f32,
     b: f32,
     defringe: f32,
-    _pad2: [f32; 3],
+    usm: f32,
+    usm_threshold: f32,
+    _pad2: f32,
 }
 
 /// Rows of a row-major 3×3 matrix, padded as WGSL lays out `mat3x3` columns
@@ -774,6 +784,10 @@ impl Gpu {
             let lin = work.lin.clone();
             self.sharpen(&lin, work.scratch(self), lw, lh, s, d, noise);
         }
+        if d.usm > 0.0 {
+            let lin = work.lin.clone();
+            self.output_sharpen(&lin, work.scratch(self), lw, lh, s, d);
+        }
         let encode = [(12, &p.develop_params), (13, &photo.src), (14, table), (15, &work.lin)];
         self.passes(&[(&p.develop_encode, &encode, grid(w * h))]);
         let enc = self.raw.batch.take().expect("opened above");
@@ -938,7 +952,9 @@ impl Gpu {
             a: noise.a,
             b: noise.b,
             defringe: defringe / 100.0,
-            _pad2: [0.0; 3],
+            usm: 0.0,
+            usm_threshold: 0.0,
+            _pad2: 0.0,
         }))
     }
 
@@ -970,6 +986,42 @@ impl Gpu {
         }
         passes.push((&p.sh_apply, &own, g));
         self.passes(&passes);
+    }
+
+    /// Output sharpening (`detail.wgsl`): unsharp mask of L = Y^(1/3), up to 2× the detail at 100.
+    #[allow(clippy::too_many_arguments)]
+    fn output_sharpen(
+        &self,
+        lin: &wgpu::Buffer,
+        [sa, sb]: [&wgpu::Buffer; 2],
+        w: u32,
+        h: u32,
+        s: f32,
+        detail: &Detail,
+    ) {
+        let sigma = (detail.usm_radius * s).max(0.3);
+        let params = self.storage(bytemuck::bytes_of(&DetailParams {
+            size: [w, h],
+            sigma,
+            radius: (3.0 * sigma).ceil() as i32,
+            reach: 0,
+            _pad: 0,
+            a: 0.0,
+            b: 0.0,
+            defringe: 0.0,
+            usm: 2.0 * detail.usm / 100.0,
+            // 0..100 → up to 0.02 of L (about 5% of a mid-grey's lightness).
+            usm_threshold: detail.usm_threshold / 100.0 * 0.02,
+            _pad2: 0.0,
+        }));
+        let (p, g) = (&self.raw, grid(w * h));
+        let (own, both) = ([(0, &params), (1, lin), (2, sa)], [(0, &params), (2, sa), (3, sb)]);
+        self.passes(&[
+            (&p.us_init, &own, g),
+            (&p.us_blur_h, &both, g),
+            (&p.us_blur_v, &both, g),
+            (&p.us_apply, &own, g),
+        ]);
     }
 
     /// Classic noise reduction (`denoise.wgsl`); radii shrink with `scale`.
@@ -1629,6 +1681,45 @@ mod tests {
 
     fn sharp(amount: f32) -> Detail {
         Detail { sharpen: amount, ..Detail::default() }
+    }
+
+    fn usm(amount: f32, threshold: f32) -> Detail {
+        Detail { usm: amount, usm_threshold: threshold, ..Detail::default() }
+    }
+
+    /// Output sharpening steepens a soft edge visibly (10–90% rise ≥ 30% shorter at 100).
+    #[test]
+    fn output_sharpening_steepens_a_soft_edge() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let before = rise(&field(&gpu, 64, 16, soft_step(64, 16), usm(0.0, 0.0)), 64);
+        let after = rise(&field(&gpu, 64, 16, soft_step(64, 16), usm(100.0, 0.0)), 64);
+        assert!(after < 0.7 * before, "rise {after} vs {before}");
+    }
+
+    /// A flat field stays flat, and its mean stays put on a step.
+    #[test]
+    fn output_sharpening_keeps_flat_areas_and_the_mean() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let flat = field(&gpu, 32, 16, vec![[0.3; 3]; 32 * 16], usm(100.0, 0.0));
+        assert!(flat.iter().all(|p| (p[1] - flat[0][1]).abs() < 1e-5));
+        let m = |px: &[[f32; 4]]| px.iter().map(luma).sum::<f32>() / px.len() as f32;
+        let (a, b) = (
+            m(&field(&gpu, 64, 16, soft_step(64, 16), usm(0.0, 0.0))),
+            m(&field(&gpu, 64, 16, soft_step(64, 16), usm(100.0, 0.0))),
+        );
+        assert!((a - b).abs() < 0.01 * a, "mean {b} vs {a}");
+    }
+
+    /// The threshold leaves fine noise alone: with it, a noisy flat field barely changes.
+    #[test]
+    fn output_sharpening_threshold_spares_noise() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let mut n = crate::noise::tests::normals(3);
+        let px: Vec<[f32; 3]> = (0..64 * 64).map(|_| [0.3 + 0.003 * n(); 3]).collect();
+        let std = |d| mean_std(field(&gpu, 64, 64, px.clone(), d).iter().map(luma)).1;
+        let (base, raw_usm, held) = (std(usm(0.0, 0.0)), std(usm(100.0, 0.0)), std(usm(100.0, 50.0)));
+        assert!(raw_usm > 1.3 * base, "unthresholded {raw_usm} vs {base}");
+        assert!(held < 1.05 * base, "thresholded {held} vs {base}");
     }
 
     #[test]

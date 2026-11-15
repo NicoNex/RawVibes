@@ -213,17 +213,14 @@ struct RollItem {
     encoded: Option<(Profile, Arc<Photo>)>,
 }
 
-/// What an "As in camera" button sets from the camera JPEG and metadata.
+/// What an "As in camera" button sets.
 #[derive(Debug, Clone, Copy)]
 enum CameraPart {
-    /// Tone: the lightness part of the match.
-    Tone,
-    /// Reference match: the whole match.
+    /// Reference match: the whole match to the camera JPEG.
     Match,
-    /// Every section: white balance, exposure and tones. Colours stay the
-    /// camera matrix's, as RawTherapee's auto-matched tone curve: a JPEG's
-    /// colours carry its Photo Style or in-camera LUT, which an a/b
-    /// transfer would spread over the whole photo.
+    /// The photo as the camera shot it, from the RAW metadata only: white
+    /// balance and exposure. Nothing from the JPEG: on the S9 it often
+    /// carries an in-camera LUT, and the RAW holds no tone curve.
     All,
 }
 
@@ -437,10 +434,6 @@ struct App {
     camera_match: Option<(PathBuf, Match)>,
     /// The match in flight is the camera's, for this file.
     camera_job: Option<PathBuf>,
-    /// Which parts (lightness, colour) the match in flight loads.
-    match_parts: (bool, bool),
-    /// The grade before a section's "As in camera", for the Undo toast.
-    match_undo: Option<Grade>,
     /// The open photo's edits as last read from or written to its sidecar.
     saved: Option<Sidecar>,
     save_tick: u64,
@@ -701,7 +694,7 @@ impl App {
             (_, Some((photo, _))) => photo.clone(),
             (_, None) => return self.toast(&no_photo_to_match()),
         };
-        (self.match_parts, self.camera_job) = ((true, true), None);
+        self.camera_job = None;
         self.match_gen += 1;
         self.ui.sidebar.matching.stack.set_visible_child_name("busy");
         self.send(Job::Match { generation: self.match_gen, source, reference, input: self.grade.neutralized() });
@@ -990,7 +983,6 @@ impl App {
         let raw = self.camera().is_some();
         self.ui.camera_btn.set_sensitive(raw);
         self.ui.sidebar.matching.camera.set_visible(raw);
-        self.ui.sidebar.camera_btn.set_sensitive(raw);
         let ui = &self.ui.sidebar.develop;
         ui.root.set_visible(raw);
         let Some(cam) = self.camera() else { return };
@@ -1018,36 +1010,24 @@ impl App {
     }
 
     /// Loads parts of `m` into the grade and shows the match panel as set.
-    fn apply_match(&mut self, m: &Match, (lightness, colour): (bool, bool)) {
-        matching::apply(&mut self.grade, m, lightness, colour);
-        // The match lives in the collapsed Reference match section: undo it from here.
-        if let Some(before) = self.match_undo.take() {
-            self.undo_toast(&gettext("Camera tones applied"), move || Msg::RestoreGrade(Box::new(before.clone())));
-        }
+    fn apply_match(&mut self, m: &Match) {
+        matching::apply(&mut self.grade, m, true, true);
         let ui = &self.ui.sidebar.matching;
         ui.amount.adj.set_value(100.0);
         ui.stack.set_visible_child_name("set");
         self.render();
     }
 
-    /// "As in camera": WB and exposure from the metadata (`All`), tones (and
-    /// for `Match` colours) from a match to the camera JPEG, computed once per file.
+    /// "As in camera": WB and exposure from the metadata (`All`), or the
+    /// match to the camera JPEG (`Match`), computed once per file.
     fn as_in_camera(&mut self, part: CameraPart, sender: &ComponentSender<Self>) {
         let (Some(path), true) = (self.path.clone(), self.camera().is_some()) else { return };
         if matches!(part, CameraPart::All) {
             self.edit_develop(DevelopEdit::AsShot, sender);
-            self.edit_develop(DevelopEdit::CameraExposure, sender);
-            // A colour match left from before would survive a tones-only load.
-            self.grade.params.match_ab = Params::default().match_ab;
+            return self.edit_develop(DevelopEdit::CameraExposure, sender);
         }
-        // Not for `All`, which also runs on every RAW opened as in camera.
-        self.match_undo = matches!(part, CameraPart::Tone).then(|| self.grade.clone());
-        let parts = match part {
-            CameraPart::Tone | CameraPart::All => (true, false),
-            CameraPart::Match => (true, true),
-        };
         if let Some((_, m)) = self.camera_match.clone().filter(|c| c.0 == path) {
-            return self.apply_match(&m, parts);
+            return self.apply_match(&m);
         }
         self.ui.sidebar.matching.stack.set_visible_child_name("busy");
         let s = sender.input_sender().clone();
@@ -1055,7 +1035,6 @@ impl App {
             let r = rawvalley_core::photo::embedded_preview(&path).map(Arc::new);
             s.emit(Msg::CameraJpeg(path, r));
         });
-        self.match_parts = parts;
     }
 
     /// `size` at the draft scale while a development control moves.
@@ -1531,8 +1510,6 @@ struct Sidebar {
     browse: gtk::Revealer,
     browse_btn: gtk::ToggleButton,
     develop: DevelopUi,
-    /// The Tone "As in camera" button (RAWs only).
-    camera_btn: gtk::Button,
 }
 
 /// The Develop group (RAWs only).
@@ -1906,16 +1883,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     add(&tone, &gettext("Shadows"), -100.0, 100.0, 0, None, |p| &mut p.shadows);
     add(&tone, &gettext("Whites"), -100.0, 100.0, 0, None, |p| &mut p.whites);
     add(&tone, &gettext("Blacks"), -100.0, 100.0, 0, None, |p| &mut p.blacks);
-    let tone_cam =
-        camera_button(&gettext("As in camera: the camera's tones"), || Msg::AsInCamera(CameraPart::Tone), sender);
-    panel.append(&bypassable_with(
-        &gettext("Tone"),
-        &tone,
-        Some(Stage::Tone),
-        true,
-        &[tone_cam.clone().upcast()],
-        sender,
-    ));
+    panel.append(&bypassable(&gettext("Tone"), &tone, Some(Stage::Tone), true, sender));
 
     let (mixer_box, mixer) = build_mixer(sender);
     panel.append(&bypassable(&gettext("Channel mixer"), &mixer_box, Some(Stage::Mixer), false, sender));
@@ -2124,7 +2092,6 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         browse,
         browse_btn,
         develop,
-        camera_btn: tone_cam,
         look_blend_toggle,
     }
 }
@@ -2431,7 +2398,7 @@ impl SimpleComponent for App {
         header.pack_start(&presets.button);
         let camera_btn = gtk::Button::builder()
             .icon_name("camera-photo-symbolic")
-            .tooltip_text(gettext("As in camera: white balance, exposure and tones from the camera"))
+            .tooltip_text(gettext("As in camera: white balance and exposure as shot"))
             .sensitive(false)
             .build();
         let snd = sender.clone();
@@ -2624,9 +2591,7 @@ impl SimpleComponent for App {
         view_group.add(&quality_row);
         let camera_row = adw::SwitchRow::builder()
             .title(gettext("Open RAWs as in camera"))
-            .subtitle(gettext(
-                "A RAW you have not edited yet starts from the camera's white balance, exposure and look.",
-            ))
+            .subtitle(gettext("A RAW you have not edited yet starts from the camera's white balance and exposure."))
             .active(settings::value(settings::AS_IN_CAMERA).as_deref() == Some("1"))
             .build();
         let snd = sender.clone();
@@ -2789,8 +2754,6 @@ impl SimpleComponent for App {
             develop_tick: 0,
             camera_match: None,
             camera_job: None,
-            match_parts: (true, true),
-            match_undo: None,
             saved: None,
             save_tick: 0,
             looks_loading: false,
@@ -3979,8 +3942,7 @@ impl App {
                 if let Some(path) = self.camera_job.take() {
                     self.camera_match = Some((path, m.clone()));
                 }
-                let parts = std::mem::replace(&mut self.match_parts, (true, true));
-                self.apply_match(&m, parts);
+                self.apply_match(&m);
             }
         }
     }

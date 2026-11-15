@@ -10,7 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::{UNet, Variant};
 use crate::gpu::Gpu;
-use crate::raw::{Pixels, RawData, grid};
+use crate::raw::{Pixels, RawData, grid, rows};
+use rawler::imgop::matrix::{multiply_row1, pseudo_inverse};
 
 /// Tile pixels (packed for Bayer) each tile reads beyond its core on every side.
 const OVERLAP: u32 = 32;
@@ -30,6 +31,7 @@ struct AiParams {
     s: u32,
     _pad: [u32; 3],
     core: [u32; 4],
+    rect: [u32; 4],
     to_cam: [[f32; 4]; 3],
 }
 
@@ -73,7 +75,8 @@ pub(crate) struct AiRun {
     gain: wgpu::Buffer,
     /// Alignment and tile size; the position is set per tile.
     tile: AiParams,
-    pixels: u32,
+    /// The visible area of the sensor.
+    crop: [u32; 4],
     /// Tiles across and down, their cores' size, and the next tile.
     tiles: (u32, u32),
     core: (u32, u32),
@@ -136,7 +139,7 @@ impl Gpu {
         let [_, _, cw, ch] = raw.crop;
         self.fits(cw as u64 * ch as u64 * 8)?;
         let g = raw.camera.as_shot;
-        let diag = |m: [[f32; 3]; 3]| std::array::from_fn(|r| [m[r][0] * g[r], m[r][1] * g[r], m[r][2] * g[r], 0.0]);
+        let diag = |m: [[f32; 3]; 3]| rows(std::array::from_fn(|r| m[r].map(|v| v * g[r])));
         let (source, ox, oy, s, to_cam) = match &raw.pixels {
             Pixels::Bayer(mosaic) => {
                 let (ox, oy) = rggb_origin(raw).ok_or("AI denoise needs an RGGB-type Bayer sensor")?;
@@ -151,10 +154,10 @@ impl Gpu {
                     .par_iter()
                     .map(|p| {
                         let c = [p[0] / g[0], p[1] / g[1], p[2] / g[2]];
-                        m.map(|r| r[0] * c[0] + r[1] * c[1] + r[2] * c[2])
+                        multiply_row1(&m, &c)
                     })
                     .collect();
-                let back = rawler::imgop::matrix::pseudo_inverse(m);
+                let back = pseudo_inverse(m);
                 (self.storage(bytemuck::cast_slice(&lin)), 0, 0, 1, diag(back))
             }
         };
@@ -174,8 +177,22 @@ impl Gpu {
             params: self.raw_params(raw, [0; 4]),
             tensor: self.buffer(channels * tw as u64 * th as u64 * 4, wgpu::BufferUsages::empty()),
             gain: self.buffer(4, wgpu::BufferUsages::empty()),
-            tile: AiParams { ox, oy, pw, ph, tx: 0, ty: 0, tw, th, s, _pad: [0; 3], core: [0; 4], to_cam },
-            pixels: cw * ch,
+            tile: AiParams {
+                ox,
+                oy,
+                pw,
+                ph,
+                tx: 0,
+                ty: 0,
+                tw,
+                th,
+                s,
+                _pad: [0; 3],
+                core: [0; 4],
+                rect: [0; 4],
+                to_cam,
+            },
+            crop: raw.crop,
             tiles: (nx, ny),
             core: (cx, cy),
             next: 0,
@@ -185,15 +202,24 @@ impl Gpu {
     /// Runs the next tile of `run` and waits for it.
     pub(crate) fn ai_step(&self, run: &mut AiRun, net: &UNet) -> Result<(), String> {
         debug_assert!(self.raw.batch.borrow().is_none(), "AI denoise waits per tile: no batch may be open");
-        let AiParams { pw, ph, tw, th, .. } = run.tile;
+        let AiParams { ox, oy, pw, ph, tw, th, s, .. } = run.tile;
         let (sx, sy) = run.core;
         let (cx, cy) = (run.next % run.tiles.0 * sx, run.next / run.tiles.0 * sy);
-        let tile = AiParams {
-            tx: cx as i32 - OVERLAP as i32,
-            ty: cy as i32 - OVERLAP as i32,
-            core: [cx, cy, (cx + sx).min(pw), (cy + sy).min(ph)],
-            ..run.tile
+        let core = [cx, cy, (cx + sx).min(pw), (cy + sy).min(ph)];
+        // The core in visible-area pixels; edge tiles also take what lies outside the aligned area.
+        let [x, y, w, h] = run.crop;
+        let at = |c: u32, o: u32, crop: u32, end: u32, n: u32| match c {
+            0 => 0,
+            c if c == n => end,
+            c => (o + s * c).saturating_sub(crop).min(end),
         };
+        let rect = [
+            at(core[0], ox, x, w, pw),
+            at(core[1], oy, y, h, ph),
+            at(core[2], ox, x, w, pw),
+            at(core[3], oy, y, h, ph),
+        ];
+        let tile = AiParams { tx: cx as i32 - OVERLAP as i32, ty: cy as i32 - OVERLAP as i32, core, rect, ..run.tile };
         let ai = self.storage(bytemuck::bytes_of(&tile));
         let (p, r) = (&self.raw, &*run);
         let n = (r.tensor.size() / 4) as u32;
@@ -201,7 +227,11 @@ impl Gpu {
         let out = net.run(self, &r.tensor, tw, th);
         self.passes(&[
             (&p.ai_gain, &[(12, &ai), (13, &r.tensor), (14, &out), (15, &r.gain)], (1, 1)),
-            (&p.ai_unpack, &[(0, &r.params), (10, &r.level0), (12, &ai), (14, &out), (15, &r.gain)], grid(r.pixels)),
+            (
+                &p.ai_unpack,
+                &[(0, &r.params), (10, &r.level0), (12, &ai), (14, &out), (15, &r.gain)],
+                grid((rect[2] - rect[0]) * (rect[3] - rect[1])),
+            ),
         ]);
         // Also frees this tile's activations before the next allocates its own.
         self.device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| format!("GPU lost: {e}"))?;
@@ -215,7 +245,7 @@ mod tests {
     use super::*;
     use crate::ai::{Weights, models_dir};
     use crate::develop::Camera;
-    use crate::raw::f16_to_f32;
+    use crate::raw::unpack;
 
     fn bayer(w: u32, h: u32, as_shot: [f32; 3], f: impl Fn(u32, u32) -> f32) -> RawData {
         let mut pattern = [0; 36];
@@ -256,10 +286,7 @@ mod tests {
     fn run(gpu: &Gpu, net: &UNet, raw: &RawData, t: u32) -> Vec<[f32; 3]> {
         let buf = gpu.ai_denoise_tiled(raw, net, t, &AtomicBool::new(false), &|_| {}).unwrap().unwrap();
         let words: Vec<u32> = bytemuck::cast_slice(&gpu.read_f32(&buf)).to_vec();
-        words
-            .chunks_exact(2)
-            .map(|w| [w[0] & 0xffff, w[0] >> 16, w[1] & 0xffff].map(|h| f16_to_f32(h as u16)))
-            .collect()
+        words.chunks_exact(2).map(unpack).collect()
     }
 
     /// Deterministic noise in −1..1 (a hash).

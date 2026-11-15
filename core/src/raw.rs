@@ -171,6 +171,11 @@ impl GpuRaw {
         (self.levels[0].1, self.levels[0].2)
     }
 
+    /// `d` asks for the AI and it ran: its chain blends in, classic luminance NR is off.
+    fn ai_active(&self, d: &Detail) -> bool {
+        d.nr_ai && self.ai.is_some()
+    }
+
     /// Level `k` of the AI chain, or of the classic one before the AI ran.
     fn ai_level(&self, k: usize) -> &wgpu::Buffer {
         &self.ai.as_ref().unwrap_or(&self.levels)[k].0
@@ -470,7 +475,7 @@ fn develop_params(
         lens: dev.detail.lens_vignette / 100.0,
         margin,
         lin_w: w + 2 * margin,
-        ai: if dev.detail.nr_ai && raw.ai.is_some() { dev.detail.nr_ai_strength / 100.0 } else { 0.0 },
+        ai: if raw.ai_active(&dev.detail) { dev.detail.nr_ai_strength / 100.0 } else { 0.0 },
         _pad: [0; 3],
     };
     (params, k)
@@ -564,7 +569,7 @@ struct FringeParams {
 
 /// Rows of a row-major 3×3 matrix, padded as WGSL lays out `mat3x3` columns
 /// (the shader multiplies `v * m`, i.e. by the rows).
-fn rows(m: [[f32; 3]; 3]) -> [[f32; 4]; 3] {
+pub(crate) fn rows(m: [[f32; 3]; 3]) -> [[f32; 4]; 3] {
     m.map(|r| [r[0], r[1], r[2], 0.0])
 }
 
@@ -757,8 +762,7 @@ impl Gpu {
         // Output pixels per full-resolution pixel; past 100% the tools keep full-resolution radii.
         let s = (1.0 / scale).min(1.0);
         // The AI, once it ran, replaces the classic luminance NR (whose slider it hides).
-        let ai = dev.detail.nr_ai && raw.ai.is_some();
-        let d = &Detail { nr_luma: if ai { 0.0 } else { dev.detail.nr_luma }, ..dev.detail };
+        let d = &Detail { nr_luma: if raw.ai_active(&dev.detail) { 0.0 } else { dev.detail.nr_luma }, ..dev.detail };
         // The detail tools read around each pixel: develop that far past the edges.
         let margin = (d.support() * s).ceil() as u32;
         let (lw, lh) = (w + 2 * margin, h + 2 * margin);
@@ -1278,7 +1282,7 @@ fn sensor_point([x, y]: [f32; 2], orientation: u16, w: u32, h: u32) -> [f32; 2] 
 }
 
 /// A packed level pixel (two words of f16, as `pack` in `raw.wgsl` writes them) as RGB.
-fn unpack(w: &[u32]) -> [f32; 3] {
+pub(crate) fn unpack(w: &[u32]) -> [f32; 3] {
     [f16_to_f32(w[0] as u16), f16_to_f32((w[0] >> 16) as u16), f16_to_f32(w[1] as u16)]
 }
 

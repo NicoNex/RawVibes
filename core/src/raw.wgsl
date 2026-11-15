@@ -474,6 +474,8 @@ struct AiParams {
     _pad2: u32,
     // The tile's core in tile pixels: x0, y0, x1, y1 (exclusive).
     core: vec4<u32>,
+    // What `ai_unpack` writes: the core in visible-area pixels, edges included.
+    rect: vec4<u32>,
     // The net's output → balanced camera RGB (rows).
     to_cam: mat3x3<f32>,
 }
@@ -542,11 +544,15 @@ fn ai_gain(@builtin(local_invocation_index) lid: u32) {
 @compute @workgroup_size(256)
 fn ai_unpack(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
              @builtin(local_invocation_index) lid: u32) {
-    let i = index(wg, n, lid);
-    if i >= p.crop.z * p.crop.w { return; }
+    let k = index(wg, n, lid);
+    let rw = ai.rect.z - ai.rect.x;
+    if k >= rw * (ai.rect.w - ai.rect.y) { return; }
+    let vx = ai.rect.x + k % rw;
+    let vy = ai.rect.y + k / rw;
+    let i = vy * p.crop.z + vx;
     // Full-resolution position in the aligned area (Bayer: the odd edge row/column repeats).
-    let qx = u32(clamp(i32(p.crop.x + i % p.crop.z) - i32(ai.ox), 0, i32(ai.s * ai.pw) - 1));
-    let qy = u32(clamp(i32(p.crop.y + i / p.crop.z) - i32(ai.oy), 0, i32(ai.s * ai.ph) - 1));
+    let qx = u32(clamp(i32(p.crop.x + vx) - i32(ai.ox), 0, i32(ai.s * ai.pw) - 1));
+    let qy = u32(clamp(i32(p.crop.y + vy) - i32(ai.oy), 0, i32(ai.s * ai.ph) - 1));
     let tx = qx / ai.s;
     let ty = qy / ai.s;
     if tx < ai.core.x || tx >= ai.core.z || ty < ai.core.y || ty >= ai.core.w { return; }

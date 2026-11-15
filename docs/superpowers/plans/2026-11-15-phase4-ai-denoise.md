@@ -60,31 +60,32 @@
 
 **Interfaces:**
 - Produces: `pub fn Gpu::ai_denoise(&self, raw: &RawData, net: &UNet, cancel: &AtomicBool, progress: &dyn Fn(f32)) -> Result<Option<wgpu::Buffer>, String>` — `Ok(None)` when cancelled; tile edge picked as the largest of 1024/512/256 packed px whose activations pass `fits()`; output clamped ≥ 0.
-- [ ] **Step 1: Failing tests** `tiles_have_no_seams` (ramp mosaic over 3×3 tiles at forced 256-px tiles: max jump across a tile border ≤ 1% of the local value), `ai_keeps_the_mean` (flat noisy mosaic: mean within 1%), `ai_reduces_noise` (synthetic Poisson–Gaussian flat: std ≥ 3× lower), `dark_input_stays_finite` (all-black and 1e-4 mosaics: finite, ≥ 0), `cancel_returns_none`, `small_gpu_limit_uses_small_tiles`.
-- [ ] **Step 2:** implement; PASS; sample test `ai_on_sample` (RAWVALLEY_RAW) prints time for a 24 MP RW2; commit `Tiled AI denoise of a RAW`.
+- [x] **Step 1: Failing tests** `tiles_have_no_seams` (ramp mosaic over 3×3 tiles at forced 256-px tiles: max jump across a tile border ≤ 1% of the local value), `ai_keeps_the_mean` (flat noisy mosaic: mean within 1%), `ai_reduces_noise` (synthetic Poisson–Gaussian flat: std ≥ 3× lower), `dark_input_stays_finite` (all-black and 1e-4 mosaics: finite, ≥ 0), `cancel_returns_none`, `small_gpu_limit_uses_small_tiles`.
+- [x] **Step 2:** implement; PASS; sample test `ai_on_sample` (RAWVALLEY_RAW) prints time for a 24 MP RW2; commit `Tiled AI denoise of a RAW`.
 
 ### Task 4: AI noise reduction in the editor
 
 **Files:** `core/src/develop.rs` (`Detail { nr_ai: bool, nr_ai_strength: f32 }`, default false / 100; support unchanged), `core/src/gpu.rs` (worker keeps the RAW's `RawData` and a `Job::AiDenoise { generation }`; result stored as the `GpuRaw`'s alternate level chain; `Done::AiProgress(f32)`, `Done::AiReady(generation)`), `core/src/raw.rs` (`develop_into` samples the AI chain blended with RCD by strength when `nr_ai`), `gtk/src/main.rs`, `po/`.
 
 - UI (Noise reduction section): a two-way toggle "Classic | AI" at the top; AI shows "Strength" and hides Luminance/Detail (chrominance stays: AI leaves some colour noise); while running, an inline progress bar with a cancel button in the section; preview keeps the classic result until AI is ready; a failed or missing model shows an inline message with the reason.
-- [ ] **Step 1: Failing tests** `ai_off_is_bit_exact`, `ai_strength_zero_equals_rcd`, `sidecar_without_ai_fields_is_classic`, `stale_ai_result_is_dropped` (generation).
-- [ ] **Step 2:** implement; PASS; Italian strings; commit `AI noise reduction in the editor`.
+- [x] **Step 1: Failing tests** `ai_off_is_bit_exact`, `ai_strength_zero_equals_rcd`, `sidecar_without_ai_fields_is_classic`, `stale_ai_result_is_dropped` (generation).
+- [x] **Step 2:** implement; PASS; Italian strings; commit `AI noise reduction in the editor`.
 
 ### Task 5: Linear variant for other sensors
 
 **Files:** `core/src/ai/tile.rs`, `core/src/raw.rs`
 - X-Trans / RGB raws: demosaiced camera RGB → linear Rec.2020 (no WB) → linear model → back to camera RGB → level 0.
-- [ ] **Step 1: Failing test** `linear_variant_reduces_noise_on_rgb_raw` (an `rgb_raw` test photo).
-- [ ] **Step 2:** implement; PASS; commit `AI denoise for non-Bayer sensors`.
+- [x] **Step 1: Failing test** `linear_variant_reduces_noise_on_rgb_raw` (an `rgb_raw` test photo).
+- [x] **Step 2:** implement; PASS; commit `AI denoise for non-Bayer sensors`.
 
 ### Task 6: Speed
 
 **Files:** `core/src/ai/unet.wgsl`, `core/src/ai/unet.rs`
 - Tuned conv: implicit GEMM with register blocking (each invocation 4×4 pixels × 8 channels), shared input tiles; subgroup ops where the adapter has them (`Features::SUBGROUP`), plain path otherwise.
-- [ ] **Step 1:** `unet_matches_onnx_reference` still passes; sample timing target on the RTX 4070 Ti SUPER: 24 MP RW2 ≤ 2.5 s (burn baseline 6–7 s).
-- [ ] **Step 2:** commit `Faster UtNet2 convolutions`.
+- [x] **Step 1:** `unet_matches_onnx_reference` still passes; sample timing target on the RTX 4070 Ti SUPER: 24 MP RW2 ≤ 2.5 s (burn baseline 6–7 s).
+- [x] **Step 2:** commit `Faster UtNet2 convolutions`.
 
 ### Phase close
 
-- [ ] `/code-review high` then `/simplify` on the phase diff, fix, `make check`, commit; merge after the author's GUI check.
+- [x] `/code-review high` then `/simplify` on the phase diff, fix, `make check`, commit.
+- [ ] Merge after the author's GUI check.

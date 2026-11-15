@@ -461,8 +461,8 @@ struct RollFrame {
 struct Worker {
     /// The RAW being edited, at full resolution.
     raw: Option<GpuRaw>,
-    /// Its CPU data, kept to reload it when `Detail::ca_correct` flips, and
-    /// whether `raw` was loaded CA-corrected (the last flag asked for).
+    /// Its CPU data, kept to reload it when `Detail::ca_correct` flips and
+    /// for the AI, and whether `raw` was loaded CA-corrected (the last flag asked for).
     raw_data: Option<Arc<RawData>>,
     raw_ca: bool,
     /// The CA-corrected data, computed once per photo (`None` inside: not a Bayer RAW).
@@ -505,9 +505,8 @@ struct Worker {
 struct Ai {
     /// The Bayer and linear networks, each loaded on first use (or why it could not be).
     nets: [Option<Result<crate::ai::UNet, String>>; 2],
-    /// The loaded RAW's load generation and CPU data.
+    /// The loaded RAW's load generation.
     generation: u64,
-    data: Option<Arc<RawData>>,
     run: Option<crate::ai::AiRun>,
     /// Why this RAW cannot be denoised: not retried until another loads,
     /// only said again each time AI is picked again.
@@ -557,9 +556,16 @@ impl Worker {
         lut
     }
 
+    /// The CPU data `raw` was loaded from: CA-corrected or not.
+    #[cfg(feature = "ai")]
+    fn loaded(&self) -> Option<Arc<RawData>> {
+        self.ca_data.clone().flatten().filter(|_| self.raw_ca).or_else(|| self.raw_data.clone())
+    }
+
     /// Starts denoising the loaded RAW when `on` and it was not yet; stops when not `on`.
     #[cfg(feature = "ai")]
     fn ai_begin(&mut self, gpu: &Gpu, on: bool, notify: &impl Fn(Done)) {
+        let data = self.loaded();
         let ai = &mut self.ai;
         let was_on = std::mem::replace(&mut ai.on, on);
         let picked = on && !was_on;
@@ -570,7 +576,7 @@ impl Worker {
         if let Some(e) = ai.failed.clone().filter(|_| picked) {
             notify(Done::AiFailed(ai.generation, e));
         }
-        let (Some(raw), Some(data)) = (&self.raw, &ai.data) else { return };
+        let (Some(raw), Some(data)) = (&self.raw, &data) else { return };
         if raw.ai.is_some() || ai.run.is_some() || ai.failed.is_some() {
             return;
         }
@@ -596,8 +602,9 @@ impl Worker {
     fn ai_step(&mut self, gpu: &Gpu, notify: &impl Fn(Done)) -> bool {
         #[cfg(feature = "ai")]
         {
+            let data = self.loaded();
             let ai = &mut self.ai;
-            let (Some(run), Some(raw), Some(data)) = (&mut ai.run, &mut self.raw, &ai.data) else { return false };
+            let (Some(run), Some(raw), Some(data)) = (&mut ai.run, &mut self.raw, &data) else { return false };
             let Some(Ok(net)) = &ai.nets[run.variant as usize] else { return false };
             if let Err(e) = gpu.ai_step(run, net) {
                 (ai.run, ai.failed) = (None, Some(e.clone()));
@@ -645,16 +652,9 @@ impl Worker {
                     self.raw = Some(raw);
                     #[cfg(feature = "ai")]
                     {
-                        self.ai = Ai {
-                            nets: std::mem::take(&mut self.ai.nets),
-                            generation,
-                            data: Some(data.clone()),
-                            ..Ai::default()
-                        };
+                        self.ai = Ai { nets: std::mem::take(&mut self.ai.nets), generation, ..Ai::default() };
                     }
-                    // The CPU copy only serves a CA reload: none kept when CA cannot apply.
-                    let data = crate::ca::applies(&data).then_some(data);
-                    (self.raw_data, self.raw_ca, self.ca_data) = (data, false, None);
+                    (self.raw_data, self.raw_ca, self.ca_data) = (Some(data), false, None);
                     decoded
                 });
                 notify(Done::RawLoaded(generation, path, loaded));
@@ -662,7 +662,7 @@ impl Worker {
             Job::DevelopRaw { generation, region, width, height, develop, profile, view } => {
                 let ca = develop.detail.ca_correct;
                 if ca != self.raw_ca
-                    && let Some(data) = self.raw_data.clone()
+                    && let Some(data) = self.raw_data.clone().filter(|d| crate::ca::applies(d))
                 {
                     // Set even if the reload fails: a slider drag must not retry it every frame.
                     self.raw_ca = ca;
@@ -676,7 +676,7 @@ impl Worker {
                         // The AI result was made from the other mosaic: denoise this one.
                         #[cfg(feature = "ai")]
                         {
-                            (self.ai.data, self.ai.run, self.ai.failed) = (Some(data), None, None);
+                            (self.ai.run, self.ai.failed) = (None, None);
                         }
                     }
                 }

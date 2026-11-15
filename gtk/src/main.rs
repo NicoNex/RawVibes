@@ -82,7 +82,8 @@ enum Msg {
     /// The window is closing: write pending edits, then close.
     Close,
     /// Look LUTs named by a sidecar, read.
-    SidecarLooks(Option<PathBuf>, Vec<(LookRef, Result<Arc<Lut3d>, String>)>),
+    /// A sidecar's LUTs, loaded for `looks_gen`.
+    SidecarLooks(u64, Vec<(LookRef, Result<Arc<Lut3d>, String>)>),
     /// A click on the canvas, in canvas device pixels.
     CanvasClick([f32; 2]),
     /// No development change for `DEVELOP_SETTLE` since tick `u64`: full quality.
@@ -175,7 +176,8 @@ enum Msg {
     /// Undo of a preset load: the grade before it.
     RestoreGrade(Box<Grade>),
     /// Undo of Reset all: every edit of the photo before it.
-    RestoreEdits(Box<Sidecar>),
+    /// Edits and the full look stack (path-less layers are not in the sidecar).
+    RestoreEdits(Box<(Sidecar, Vec<LabLayer>)>),
     /// Filmstrip: add photos, a photo decoded small (already encoded for
     /// `Profile`), re-encoded for a new profile, pick or drop one, grid view.
     RollAddPaths(Vec<PathBuf>),
@@ -209,6 +211,8 @@ struct RollItem {
     path: PathBuf,
     /// The photo's own grade (its sidecar's), for its filmstrip frame.
     grade: Grade,
+    /// Its look layers when last left this session: the sidecar keeps only those with a file.
+    looks: Vec<LabLayer>,
     small: Option<Decoded>,
     encoded: Option<(Profile, Arc<Photo>)>,
 }
@@ -444,6 +448,8 @@ struct App {
     save_tick: u64,
     /// Sidecar looks still loading: nothing is saved meanwhile.
     looks_loading: bool,
+    /// Bumped whenever the looks are replaced: a sidecar load started before is stale.
+    looks_gen: u64,
     /// A sidecar write failed this session (reported once).
     save_failed: bool,
     encode_again: bool,
@@ -597,13 +603,13 @@ impl App {
             }));
             if !sc.looks.is_empty() {
                 self.looks_loading = true;
-                let (s, refs, path) = (sender.input_sender().clone(), sc.looks, self.path.clone());
+                let (s, refs, generation) = (sender.input_sender().clone(), sc.looks, self.looks_gen);
                 std::thread::spawn(move || {
                     let loaded = refs.into_iter().map(|r| {
                         let lut = Lut3d::load(&r.path).map(Arc::new);
                         (r, lut)
                     });
-                    s.emit(Msg::SidecarLooks(path, loaded.collect()));
+                    s.emit(Msg::SidecarLooks(generation, loaded.collect()));
                 });
             }
         }
@@ -1008,12 +1014,13 @@ impl App {
         ui.tint.adj.set_value(t as f64);
         ui.exposure.adj.set_value(self.develop.exposure as f64);
         let mut d = self.develop.detail;
+        let nr_luma = d.nr_luma > 0.0;
         for (s, field) in &ui.detail {
-            let v: *const f32 = field(&mut d);
-            s.adj.set_value(unsafe { *v } as f64);
+            let v = field(&mut d);
+            s.adj.set_value(*v as f64);
             // NR detail only restores what luminance NR removed: idle without it.
             if std::ptr::eq(v, &d.nr_detail) {
-                s.root.set_sensitive(d.nr_luma > 0.0);
+                s.root.set_sensitive(nr_luma);
             }
         }
         ui.preset.set_selected(preset);
@@ -2821,6 +2828,7 @@ impl SimpleComponent for App {
             saved: None,
             save_tick: 0,
             looks_loading: false,
+            looks_gen: 0,
             save_failed: false,
             encode_again: false,
             encoded: None,
@@ -2890,7 +2898,13 @@ impl SimpleComponent for App {
                             show = show.or(Some(self.roll.len()));
                             // shortcut: sidecars read on the main thread, small JSON; move to the loader if it shows.
                             let grade = Sidecar::load(&p).ok().flatten().map(|sc| sc.grade).unwrap_or_default();
-                            self.roll.push(RollItem { path: p.clone(), grade, small: None, encoded: None });
+                            self.roll.push(RollItem {
+                                path: p.clone(),
+                                grade,
+                                looks: Vec::new(),
+                                small: None,
+                                encoded: None,
+                            });
                             fresh.push(p);
                         }
                         None => {
@@ -2985,8 +2999,8 @@ impl SimpleComponent for App {
                 self.save_now();
                 self.ui.window.destroy();
             }
-            // Another photo was opened meanwhile: these looks are not its own.
-            Msg::SidecarLooks(path, _) if path != self.path => {}
+            // Another photo was opened, or the looks reset, meanwhile.
+            Msg::SidecarLooks(generation, _) if generation != self.looks_gen => {}
             Msg::SidecarLooks(_, loaded) => {
                 let missing = loaded.iter().filter(|(_, l)| l.is_err()).count();
                 for (r, lut) in loaded {
@@ -3069,12 +3083,14 @@ impl SimpleComponent for App {
             Msg::Loaded(_, path, Ok(decoded)) => {
                 self.save_now(); // the previous photo's last edits
                 // Each photo has its own grade and looks: the previous one keeps its frame's.
+                let left = std::mem::take(&mut self.looks);
+                self.looks_gen += 1;
                 let previous = self.path.as_ref().and_then(|p| self.roll.iter_mut().find(|it| it.path == *p));
                 if let Some(it) = previous {
                     it.grade = self.grade.clone();
+                    it.looks = left;
                 }
                 self.apply_grade(Grade::default());
-                self.looks.clear();
                 self.ui.sidebar.look_blend_toggle.set_active_name(Some("chain"));
                 self.layers_changed(Layers::Look, true, &sender);
                 self.ui.sidebar.develop.picker.set_active(false);
@@ -3095,6 +3111,15 @@ impl SimpleComponent for App {
                         }
                     }
                     Err(e) => self.toast(&gettext!("Cannot read the edits saved for {}: {}", file_label(&path), e)),
+                }
+                // Left earlier this session: that stack is newer than the sidecar's and keeps path-less layers.
+                if let Some(looks) =
+                    self.roll.iter().find(|it| it.path == path).map(|it| it.looks.clone()).filter(|l| !l.is_empty())
+                {
+                    self.looks_gen += 1;
+                    self.looks_loading = false;
+                    self.looks = looks;
+                    self.layers_changed(Layers::Look, true, &sender);
                 }
                 // Nothing is written until something changes from what was just read.
                 self.saved = Some(self.sidecar_state());
@@ -3150,7 +3175,7 @@ impl SimpleComponent for App {
                 self.render();
             }
             Msg::ResetAll => {
-                let before = self.sidecar_state();
+                let before = (self.sidecar_state(), self.looks.clone());
                 if self.develop != Develop::default() {
                     self.develop = Develop::default();
                     self.sync_develop();
@@ -3160,16 +3185,21 @@ impl SimpleComponent for App {
                 self.reset_crop();
                 self.crop_changed(&sender);
                 self.looks.clear();
+                self.looks_gen += 1;
+                self.looks_loading = false;
                 self.ui.sidebar.look_blend_toggle.set_active_name(Some("chain"));
                 self.layers_changed(Layers::Look, true, &sender);
                 self.undo_toast(&gettext("All edits cleared"), move || Msg::RestoreEdits(Box::new(before.clone())));
             }
-            Msg::RestoreEdits(sc) => {
+            Msg::RestoreEdits(edits) => {
+                let (mut sc, looks) = *edits;
                 let develop = self.develop;
                 // Only onto a cleared photo, so its grade and looks come back too.
                 self.apply_grade(Grade::default());
-                self.looks.clear();
-                self.restore_sidecar(*sc, &sender);
+                sc.looks.clear();
+                self.restore_sidecar(sc, &sender);
+                self.looks_gen += 1;
+                self.looks = looks;
                 if self.develop != develop {
                     self.develop_changed(&sender);
                 }
@@ -3885,6 +3915,9 @@ impl App {
             return;
         };
         let (r, w, h) = z.view(&crop, self.canvas);
+        // Past 100% the canvas upsamples a 1:1 develop, so detail radii keep their full-resolution meaning (as darktable does).
+        let k = (r.size[0] / w as f32).min(r.size[1] / h as f32).min(1.0);
+        let (w, h) = (((w as f32 * k).round() as u32).max(1), ((h as f32 * k).round() as u32).max(1));
         self.view_gen += 1;
         let (s, generation, profile) = (self.input.clone(), self.view_gen, self.profile);
         if d.is_raw() {

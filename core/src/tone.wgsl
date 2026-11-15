@@ -1,7 +1,9 @@
 // Dehaze on the linear Rec.2020 develop buffer (local contrast: ll.wgsl).
 // Dehaze: dark channel prior (He et al. 2009) with the transmission refined
 // by a guided filter on Y (He et al. 2010); the airlight is the brightest
-// dark-channel value (a grey haze). Negative amounts blend towards it.
+// dark-channel value (a grey haze) of the whole frame, so every view of the
+// photo agrees (darktable takes it from its preview pipe). Negative amounts
+// add haze through the same model (transmission above 1), as darktable does.
 
 struct ToneParams {
     w: u32,
@@ -10,9 +12,10 @@ struct ToneParams {
     radius: i32,
     window: i32,
     eps: f32,
-    // Dehaze: haze removed (0..0.95) or, negative, haze added (0..−0.5).
+    // Dehaze: haze removed (0..0.95) or, negative, haze added (0..−0.95).
     omega: f32,
-    _boost: f32,
+    // 1: dh_min_v takes the airlight from these pixels (the whole-frame pass).
+    seed: u32,
     _pad: f32,
 }
 
@@ -99,8 +102,10 @@ fn dh_min_v(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: ve
     for (var d = -p.window; d <= p.window; d++) { m = min(m, sb[at(x, y + d)].x); }
     m = max(m, 0.0);
     sa[i].x = m;
-    // Non-negative floats order like their bits.
-    atomicMax(&air[0], bitcast<u32>(m));
+    if p.seed == 1u {
+        // Non-negative floats order like their bits.
+        atomicMax(&air[0], bitcast<u32>(m));
+    }
 }
 
 fn airlight() -> f32 {
@@ -112,7 +117,7 @@ fn dh_prep(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec
            @builtin(local_invocation_index) lid: u32) {
     let i = index(wg, n, lid);
     if i >= p.w * p.h { return; }
-    let t = 1.0 - max(p.omega, 0.0) * sa[i].x / airlight();
+    let t = 1.0 - p.omega * sa[i].x / airlight();
     let g = dot(lin[i].xyz, LUMA);
     sa[i] = vec4<f32>(g, t, g * t, g * g);
 }
@@ -124,13 +129,8 @@ fn dh_apply(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: ve
     if i >= p.w * p.h { return; }
     let c = lin[i].xyz;
     let a = airlight();
-    var out: vec3<f32>;
-    if p.omega > 0.0 {
-        let t = clamp(sa[i].x * dot(c, LUMA) + sa[i].y, 0.1, 1.0);
-        out = (c - a) / t + a;
-    } else {
-        out = mix(c, vec3<f32>(a), -p.omega);
-    }
+    let t = max(sa[i].x * dot(c, LUMA) + sa[i].y, 0.1);
+    let out = (c - a) / t + a;
     lin[i] = vec4<f32>(max(out, vec3<f32>(0.0)), lin[i].w);
 }
 

@@ -571,10 +571,12 @@ fn develop_linear(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups)
     let x = i32(b.x);
     let y = i32(b.y);
     let cam = mix(mix(texel(x, y), texel(x + 1, y), f.x), mix(texel(x, y + 1), texel(x + 1, y + 1), f.x), f.y);
-    // Lens vignetting: radial gain 1 + a·r²·(1 + r²), r = 1 at the sensor's corners.
+    // Lens vignetting: radial gain 1 + a·r²·(1 + r²), r = 1 at the sensor's corners;
+    // negative amounts divide by the mirrored gain, so corners darken without reaching zero.
     let half = 0.5 * vec2<f32>(f32(d.fw), f32(d.fh));
     let r2 = dot(s - half, s - half) / dot(half, half);
-    let lens = 1.0 + d.lens * r2 * (1.0 + r2);
+    let v = abs(d.lens) * r2 * (1.0 + r2);
+    let lens = select(1.0 / (1.0 + v), 1.0 + v, d.lens >= 0.0);
     lin[i] = vec4<f32>((cam * d.gains.xyz) * d.cam * (d.k * lens), 1.0);
 }
 

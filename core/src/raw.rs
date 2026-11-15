@@ -393,6 +393,39 @@ struct DevelopParams {
     lin_w: u32,
 }
 
+/// `DevelopParams` of `r` at `w` × `h` with `margin`, and the mip level it samples:
+/// the finest level at least as coarse as one output pixel, as `Pyramid::resample` picks.
+#[allow(clippy::too_many_arguments)]
+fn develop_params(
+    raw: &GpuRaw,
+    r: &Region,
+    w: u32,
+    h: u32,
+    dev: &Develop,
+    profile: Profile,
+    margin: u32,
+) -> (DevelopParams, usize) {
+    let (sx, sy) = (r.size[0] / w as f32, r.size[1] / h as f32);
+    let (sin, cos) = r.angle.to_radians().sin_cos();
+    let k = (sx.max(sy).max(1.0).log2().floor() as usize).min(raw.levels.len() - 1);
+    let ((_, kw, kh), (fw, fh)) = (&raw.levels[k], raw.size());
+    let target = if profile.is_log() { profile.from_rec2020() } else { rec2020_to_rec709() };
+    let gains = raw.camera.gains_for(dev);
+    let params = DevelopParams {
+        sizes: [w, h, *kw, *kh, fw, fh, raw.orientation as u32, profile.is_log() as u32],
+        region: [r.center[0], r.center[1], sx, sy],
+        rotation: [sin, cos, 0.0, 0.0],
+        gains: [gains[0], gains[1], gains[2], 0.0],
+        cam: rows(raw.camera.cam2rec2020),
+        target: rows(target),
+        k: RAW_TO_SCENE * dev.exposure.exp2(),
+        lens: dev.detail.lens_vignette / 100.0,
+        margin,
+        lin_w: w + 2 * margin,
+    };
+    (params, k)
+}
+
 fn next_id() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -424,7 +457,7 @@ struct ToneParams {
     window: i32,
     eps: f32,
     omega: f32,
-    _boost: f32,
+    seed: u32,
     _pad: f32,
 }
 
@@ -448,6 +481,9 @@ struct LlParams {
     clarity: f32,
     _pad2: [f32; 2],
 }
+
+/// Longer side of the whole-frame develop the dehaze airlight comes from.
+const AIR_SIZE: u32 = 256;
 
 /// Pyramid levels of local contrast at full resolution (features up to 64 px).
 const LL_LEVELS: f32 = 6.0;
@@ -640,7 +676,6 @@ impl Gpu {
         dev: &Develop,
         profile: Profile,
     ) -> Result<(), String> {
-        // The finest level at least as coarse as one output pixel, as `Pyramid::resample` picks.
         let (sx, sy) = (r.size[0] / w as f32, r.size[1] / h as f32);
         let scale = sx.max(sy);
         let s = 1.0 / scale;
@@ -649,24 +684,8 @@ impl Gpu {
         let margin = (d.support() * s.min(1.0)).ceil() as u32;
         let (lw, lh) = (w + 2 * margin, h + 2 * margin);
         self.fits(lw as u64 * lh as u64 * 16)?;
-        let (sin, cos) = r.angle.to_radians().sin_cos();
-        let k = (scale.max(1.0).log2().floor() as usize).min(raw.levels.len() - 1);
-        let ((level, kw, kh), (fw, fh)) = (&raw.levels[k], raw.size());
-        let target = if profile.is_log() { profile.from_rec2020() } else { rec2020_to_rec709() };
-        let gains = raw.camera.gains_for(dev);
-        let exposure = RAW_TO_SCENE * dev.exposure.exp2();
-        let params = DevelopParams {
-            sizes: [w, h, *kw, *kh, fw, fh, raw.orientation as u32, profile.is_log() as u32],
-            region: [r.center[0], r.center[1], sx, sy],
-            rotation: [sin, cos, 0.0, 0.0],
-            gains: [gains[0], gains[1], gains[2], 0.0],
-            cam: rows(raw.camera.cam2rec2020),
-            target: rows(target),
-            k: exposure,
-            lens: d.lens_vignette / 100.0,
-            margin,
-            lin_w: lw,
-        };
+        let (params, k) = develop_params(raw, r, w, h, dev, profile, margin);
+        let (level, gains, exposure) = (&raw.levels[k].0, params.gains, params.k);
         self.queue.write_buffer(&self.raw.develop_params, 0, bytemuck::bytes_of(&params));
         let mut oetf = self.raw.oetf.borrow_mut();
         if oetf.as_ref().is_none_or(|(p, _)| *p != profile) {
@@ -696,6 +715,13 @@ impl Gpu {
         let tone_key = (raw.id, key);
         let nr_on = d.nr_luma > 0.0 || d.nr_chroma > 0.0;
         let tone_on = d.defringe > 0.0 || d.dehaze != 0.0 || d.local_contrast > 0.0;
+        // A tool turned off frees its cache (a 100% view's is ~100 MB).
+        if !nr_on {
+            work.after_nr = None;
+        }
+        if !tone_on {
+            work.after_tone = None;
+        }
         let hit = |c: &Option<(Key, wgpu::Buffer)>, key: &Key| c.as_ref().is_some_and(|c| c.0 == *key);
         let (p, g) = (&self.raw, grid(lw * lh));
         if tone_on && hit(&work.after_tone, &tone_key) {
@@ -715,6 +741,9 @@ impl Gpu {
                 let lin = work.lin.clone();
                 if d.defringe > 0.0 {
                     self.detail_passes(&lin, work.scratch(self), lw, lh, s, d, noise, false);
+                }
+                if d.dehaze != 0.0 {
+                    self.airlight(raw, dev, profile);
                 }
                 if d.dehaze != 0.0 || d.local_contrast > 0.0 {
                     self.tone(&lin, work.scratch(self), lw, lh, s, d);
@@ -753,21 +782,9 @@ impl Gpu {
     #[allow(clippy::too_many_arguments)]
     fn tone(&self, lin: &wgpu::Buffer, [sa, sb]: [&wgpu::Buffer; 2], w: u32, h: u32, scale: f32, detail: &Detail) {
         let s = scale.min(1.0);
-        let params = |radius: f32, eps: f32| {
-            self.storage(bytemuck::bytes_of(&ToneParams {
-                size: [w, h],
-                radius: (radius * s).round().max(2.0) as i32,
-                window: (7.0 * s).round().max(1.0) as i32,
-                eps,
-                omega: if detail.dehaze > 0.0 { 0.95 * detail.dehaze / 100.0 } else { 0.5 * detail.dehaze / 100.0 },
-                _boost: 0.0,
-                _pad: 0.0,
-            }))
-        };
         let (p, g) = (&self.raw, grid(w * h));
         if detail.dehaze != 0.0 {
-            let q = params(30.0, 1e-3);
-            self.queue.write_buffer(&p.air, 0, &[0; 16]);
+            let q = self.tone_params(w, h, s, detail.dehaze, 0);
             let (boxes, ab, air) =
                 ([(0, &q), (2, sa), (3, sb)], [(0, &q), (2, sa)], [(0, &q), (1, lin), (2, sa), (4, &p.air)]);
             self.passes(&[
@@ -785,6 +802,43 @@ impl Gpu {
         if detail.local_contrast > 0.0 {
             self.local_laplacian(lin, [sa, sb], w, h, s, detail.local_contrast);
         }
+    }
+
+    /// `ToneParams` for a `w` × `h` buffer at `s` output pixels per full-resolution pixel (≤ 1).
+    fn tone_params(&self, w: u32, h: u32, s: f32, dehaze: f32, seed: u32) -> wgpu::Buffer {
+        self.storage(bytemuck::bytes_of(&ToneParams {
+            size: [w, h],
+            radius: (30.0 * s).round().max(2.0) as i32,
+            window: (7.0 * s).round().max(1.0) as i32,
+            eps: 1e-3,
+            omega: 0.95 * dehaze / 100.0,
+            seed,
+            _pad: 0.0,
+        }))
+    }
+
+    /// Sets the dehaze airlight from the whole frame developed at `AIR_SIZE`.
+    fn airlight(&self, raw: &GpuRaw, dev: &Develop, profile: Profile) {
+        let (fw, fh) = raw.oriented_size();
+        let whole = Region { center: [fw as f32 / 2.0, fh as f32 / 2.0], size: [fw as f32, fh as f32], angle: 0.0 };
+        let (w, h) = crate::photo::Decoded::fit_size(&whole, AIR_SIZE);
+        let (params, k) = develop_params(raw, &whole, w, h, dev, profile, 0);
+        let (params, lin) = (
+            self.storage(bytemuck::bytes_of(&params)),
+            self.buffer(w as u64 * h as u64 * 16, wgpu::BufferUsages::empty()),
+        );
+        let (sa, sb) = (
+            self.buffer(w as u64 * h as u64 * 16, wgpu::BufferUsages::empty()),
+            self.buffer(w as u64 * h as u64 * 16, wgpu::BufferUsages::empty()),
+        );
+        let q = self.tone_params(w, h, w as f32 / fw as f32, dev.detail.dehaze, 1);
+        let (p, g) = (&self.raw, grid(w * h));
+        self.queue.write_buffer(&p.air, 0, &[0; 16]);
+        self.passes(&[
+            (&p.develop_linear, &[(10, &raw.levels[k].0), (12, &params), (15, &lin)], g),
+            (&p.dh_min_h, &[(0, &q), (1, &lin), (3, &sb)], g),
+            (&p.dh_min_v, &[(0, &q), (2, &sa), (3, &sb), (4, &p.air)], g),
+        ]);
     }
 
     /// Local contrast (`ll.wgsl`): darktable's local Laplacian, `LL_LEVELS`
@@ -1360,6 +1414,8 @@ mod tests {
             assert!(mirrored.iter().all(|v| (v - at(&up, x, y)).abs() < 1e-5), "({x}, {y}): {mirrored:?}");
         }
         assert!(at(&flat_lens(&gpu, -50.0), 0, 0) < centre - 0.01);
+        // V-Log encodes linear 0 as 0.125: the strongest darkening keeps the corners above black.
+        assert!(at(&flat_lens(&gpu, -100.0), 0, 0) > 0.13);
     }
 
     const NOISE: crate::noise::NoiseModel = crate::noise::NoiseModel { a: 0.002, b: 0.0002 };
@@ -1716,6 +1772,18 @@ mod tests {
     /// detail tools see past the view's edges (no seams when zoomed).
     #[test]
     fn view_matches_fit_crop() {
+        view_vs_fit(all_tools(), 50);
+    }
+
+    /// The dehaze airlight is the whole frame's: a view without the bright
+    /// side dehazes like the fit view.
+    #[test]
+    fn dehaze_view_matches_fit() {
+        view_vs_fit(Detail { dehaze: 60.0, ..Detail::default() }, 5);
+    }
+
+    /// A 1:1 view at `x0` (the bright side starts at 70) equals the fit develop cropped.
+    fn view_vs_fit(detail: Detail, x0: u32) {
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
         let (w, h) = (160, 120);
         let mut n = crate::noise::tests::normals(5);
@@ -1729,9 +1797,9 @@ mod tests {
             .collect();
         let mut raw = rgb_raw(&gpu, w, h, px, 1, Camera::neutral());
         raw.noise = NOISE;
-        let dev = Develop { detail: all_tools(), ..Develop::default() };
+        let dev = Develop { detail, ..Develop::default() };
         let full = gpu.read_photo(&gpu.develop(&raw, &whole(w, h), w, h, &dev, Profile::Standard).unwrap());
-        let (x0, y0, vw, vh) = (50u32, 30u32, 48u32, 40u32);
+        let (y0, vw, vh) = (30u32, 48u32, 40u32);
         let view = Region {
             center: [x0 as f32 + vw as f32 / 2.0, y0 as f32 + vh as f32 / 2.0],
             size: [vw as f32, vh as f32],

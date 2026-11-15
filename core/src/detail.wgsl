@@ -62,7 +62,8 @@ fn sh_init(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec
     let x = i32(i % p.w);
     let y = i32(i / p.w);
     let l = dot(lin[i].xyz, LUMA);
-    let sigma = sqrt(max(p.a * l + p.b, 0.0));
+    // A floor keeps smoothstep's edges apart (equal edges are undefined: NaN).
+    let sigma = max(sqrt(max(p.a * l + p.b, 0.0)), 1e-6);
     let mask = smoothstep(2.0 * sigma, 4.0 * sigma, gradient(x, y));
     sa[i] = vec4<f32>(l, l, mask, 0.0);
 }

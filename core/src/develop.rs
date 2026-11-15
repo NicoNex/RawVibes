@@ -55,8 +55,8 @@ impl Detail {
             + on(d.defringe, 5.0)
             + on(d.dehaze, 67.0)
             + on(d.local_contrast, 256.0)
-            // The most iterations, so the amount alone never moves the margin (or the caches).
-            + on(d.sharpen, 11.0 * 2.0 * (3.0 * d.sharpen_radius).ceil())
+            // The most iterations at the largest radius, so neither amount nor radius moves the margin (or the caches).
+            + on(d.sharpen, 11.0 * 2.0 * 6.0)
     }
 
     /// Within the sliders' ranges; `None` when a value is not a number.

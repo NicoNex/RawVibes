@@ -10,7 +10,7 @@ struct Params {
     hue_shift: array<f32, 8>, hue_sat: array<f32, 8>, hue_lum: array<f32, 8>,
     mixer: array<f32, 9>, mixer_mono: f32, mono_mix: array<f32, 3>, mixer_free: f32,
     film_sat: f32, film_density: f32,
-    match_amount: f32, match_ab: array<f32, 6>,
+    match_amount: f32, match_ab: array<f32, 6>, soft_light: f32,
     vignette: f32, vignette_mid: f32, vignette_round: f32, vignette_feather: f32,
     input: u32, gamut: array<f32, 9>, split: f32, width: u32, height: u32, lut_size: u32, overlay: u32,
     vignette_view: array<f32, 4>, vignette_aspect: f32,
@@ -350,6 +350,18 @@ fn curve(i: u32, v: f32) -> f32 {
     return mix(curves[base + k], curves[base + k + 1u], x - f32(k));
 }
 
+// RawTherapee's soft light (rtengine/improcfun, "sl"): Pegtop's soft light of
+// each sRGB-encoded channel with itself, 3v² − 2v³, blended in linear light;
+// out-of-range values are left alone.
+fn soft_light(d: vec3<f32>) -> vec3<f32> {
+    let k = p.soft_light * 0.01;
+    if k == 0.0 { return d; }
+    let s = d * d * (3.0 - 2.0 * d);
+    let inside = d >= vec3(0.0) & d <= vec3(1.0);
+    let blended = lin_to_srgb(mix(srgb_to_lin(d), srgb_to_lin(s), k));
+    return select(d, blended, inside);
+}
+
 // The grade before its final clamp, so the preview can see what clips.
 fn grade_unclamped(input: vec3<f32>) -> vec3<f32> {
     var c = srgb_to_lin(to_display(input));
@@ -360,7 +372,7 @@ fn grade_unclamped(input: vec3<f32>) -> vec3<f32> {
     c = tone(c);
     c = color(c);
     c = film_density(film_saturation(c));
-    var d = lin_to_srgb(fit_gamut(c));
+    var d = soft_light(lin_to_srgb(fit_gamut(c)));
 
     // Levels: whites/blacks move the end points.
     let bp = -p.blacks * 0.0008;

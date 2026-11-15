@@ -73,6 +73,8 @@ pub struct Params {
     /// delta from the identity: [m00, m01, m10, m11, t0, t1].
     pub match_amount: f32,
     pub match_ab: [f32; 6],
+    /// RawTherapee's soft light (0..100; RT's default is 30): per pixel, so in LUTs.
+    pub soft_light: f32,
     /// Creative vignette (finish, not in LUTs): amount (−100 darkens … 100
     /// lightens), midpoint, roundness (−100 rectangle, 0 frame-shaped
     /// ellipse, 100 circle) and feather, all −100..100 around their defaults.
@@ -218,7 +220,7 @@ impl Grade {
             Stage::Mixer => {
                 (p.mixer, p.mixer_mono, p.mono_mix, p.mixer_free) = (d.mixer, d.mixer_mono, d.mono_mix, d.mixer_free)
             }
-            Stage::Film => (p.film_sat, p.film_density) = (d.film_sat, d.film_density),
+            Stage::Film => (p.film_sat, p.film_density, p.soft_light) = (d.film_sat, d.film_density, d.soft_light),
             Stage::Vignette => {
                 (p.vignette, p.vignette_mid) = (d.vignette, d.vignette_mid);
                 (p.vignette_round, p.vignette_feather) = (d.vignette_round, d.vignette_feather);
@@ -330,9 +332,9 @@ mod tests {
     #[test]
     fn params_layout_matches_wgsl() {
         // 12 scalars + 4×4 wheels + 3×8 hue + mixer 9+1+3+1 + film 2 + match 1+6
-        // + vignette 4 + input + 3×3 gamut + split,width,height,lut_size,overlay
+        // + soft light + vignette 4 + input + 3×3 gamut + split,width,height,lut_size,overlay
         // + vignette view 4 + aspect
-        assert_eq!(std::mem::size_of::<Params>(), (12 + 16 + 24 + 14 + 2 + 7 + 4 + 1 + 9 + 5 + 5) * 4);
+        assert_eq!(std::mem::size_of::<Params>(), (12 + 16 + 24 + 14 + 2 + 7 + 1 + 4 + 1 + 9 + 5 + 5) * 4);
     }
 
     #[test]

@@ -816,6 +816,36 @@ mod tests {
         Photo { width: w, height: h, pixels: vec![[0.5, 0.5, 0.5, 1.0]; (w * h) as usize] }
     }
 
+    fn ramp() -> Photo {
+        Photo {
+            width: 64,
+            height: 1,
+            pixels: (0..64).map(|i| [i as f32 / 63.0; 3]).map(|[r, g, b]| [r, g, b, 1.0]).collect(),
+        }
+    }
+
+    #[test]
+    fn soft_light_zero_is_identity() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let mut grade = Grade::default();
+        grade.params.soft_light = 0.0;
+        let p = gpu.upload(&ramp());
+        assert_eq!(gpu.render(&p, &grade, None, 0.0), gpu.render(&p, &Grade::default(), None, 0.0));
+    }
+
+    /// RawTherapee's soft light: darker shadows, brighter highlights, mid grey kept.
+    #[test]
+    fn soft_light_raises_midtone_contrast() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let mut grade = Grade::default();
+        grade.params.soft_light = 100.0;
+        let p = gpu.upload(&ramp());
+        let (plain, soft) = (gpu.render(&p, &Grade::default(), None, 0.0), gpu.render(&p, &grade, None, 0.0));
+        let at = |v: &[u8], i: usize| v[i * 4] as i32;
+        assert!(at(&soft, 16) < at(&plain, 16) - 3 && at(&soft, 48) > at(&plain, 48) + 3);
+        assert!((at(&soft, 63) - at(&plain, 63)).abs() <= 1 && (at(&soft, 0) - at(&plain, 0)).abs() <= 1);
+    }
+
     /// The creative vignette darkens the corners of the photo, not its centre.
     #[test]
     fn creative_vignette_darkens_corners() {

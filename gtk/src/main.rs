@@ -1628,6 +1628,10 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     detail_slider(&nr, &gettext("Detail"), (0.0, 100.0), 0.0, |d| &mut d.nr_detail);
     detail_slider(&nr, &gettext("Chrominance"), (0.0, 100.0), 0.0, |d| &mut d.nr_chroma);
     root.append(&section(&gettext("Noise reduction"), &nr));
+    let haze = vbox(4);
+    detail_slider(&haze, &gettext("Dehaze"), (-100.0, 100.0), 0.0, |d| &mut d.dehaze);
+    detail_slider(&haze, &gettext("Local contrast"), (0.0, 100.0), 0.0, |d| &mut d.local_contrast);
+    root.append(&section(&gettext("Presence"), &haze));
     let sharp = vbox(4);
     detail_slider(&sharp, &gettext("Sharpening"), (0.0, 100.0), 0.0, |d| &mut d.sharpen);
     detail_slider(&sharp, &gettext("Radius"), (0.5, 2.0), 0.8, |d| &mut d.sharpen_radius);
@@ -1943,6 +1947,10 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     add(&film, &gettext("Color density"), 0.0, 100.0, 0, Some("track-film-density"), |p| &mut p.film_density);
     film.append(&caption(&gettext(
         "Film makes colour by adding dye, so richer colours are also deeper. Subtractive saturation saturates the way dye does; density deepens saturated colours. Greys are untouched.",
+    )));
+    add(&film, &gettext("Soft light"), 0.0, 100.0, 0, None, |p| &mut p.soft_light);
+    film.append(&caption(&gettext(
+        "Soft light deepens shadows and lifts highlights, as RawTherapee's; 30 is its default.",
     )));
     panel.append(&bypassable(&gettext("Film color"), &film, Some(Stage::Film), true, sender));
 

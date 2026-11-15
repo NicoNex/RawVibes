@@ -223,6 +223,17 @@ pub struct Pipelines {
     sh_apply: wgpu::ComputePipeline,
     df_init: wgpu::ComputePipeline,
     df_apply: wgpu::ComputePipeline,
+    box_h: wgpu::ComputePipeline,
+    box_v: wgpu::ComputePipeline,
+    gf_ab: wgpu::ComputePipeline,
+    dh_min_h: wgpu::ComputePipeline,
+    dh_min_v: wgpu::ComputePipeline,
+    dh_prep: wgpu::ComputePipeline,
+    dh_apply: wgpu::ComputePipeline,
+    lc_prep: wgpu::ComputePipeline,
+    lc_apply: wgpu::ComputePipeline,
+    /// Dehaze airlight (one f32 as bits, atomic max), zeroed per run.
+    air: wgpu::Buffer,
     /// The OETF table of the last profile developed into.
     oetf: std::cell::RefCell<Option<(Profile, wgpu::Buffer)>>,
     /// `DevelopParams`, rewritten per frame.
@@ -234,7 +245,23 @@ impl Pipelines {
         let pipeline = crate::gpu::shader(device, "raw.wgsl", include_str!("raw.wgsl"));
         let denoise = crate::gpu::shader(device, "denoise.wgsl", include_str!("denoise.wgsl"));
         let detail = crate::gpu::shader(device, "detail.wgsl", include_str!("detail.wgsl"));
+        let tone = crate::gpu::shader(device, "tone.wgsl", include_str!("tone.wgsl"));
         Self {
+            box_h: tone("box_h"),
+            box_v: tone("box_v"),
+            gf_ab: tone("gf_ab"),
+            dh_min_h: tone("dh_min_h"),
+            dh_min_v: tone("dh_min_v"),
+            dh_prep: tone("dh_prep"),
+            dh_apply: tone("dh_apply"),
+            lc_prep: tone("lc_prep"),
+            lc_apply: tone("lc_apply"),
+            air: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("airlight"),
+                size: 16,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
             sh_init: detail("sh_init"),
             sh_ratio: detail("sh_ratio"),
             sh_update: detail("sh_update"),
@@ -322,6 +349,19 @@ struct NrParams {
     detail: f32,
     chroma: f32,
     _pad2: f32,
+}
+
+/// `ToneParams` of `tone.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ToneParams {
+    size: [u32; 2],
+    radius: i32,
+    window: i32,
+    eps: f32,
+    omega: f32,
+    boost: f32,
+    _pad: f32,
 }
 
 /// `DetailParams` of `detail.wgsl`.
@@ -563,35 +603,105 @@ impl Gpu {
             let [sa, sb] = scratch();
             self.denoise(lin, sa, sb, w, h, scale, detail, noise);
         }
-        if detail.defringe > 0.0 || detail.sharpen > 0.0 {
+        if detail.defringe > 0.0 {
             let [sa, sb] = scratch();
-            let sigma = (detail.sharpen_radius * scale.min(1.0)).max(0.3);
-            let params = self.storage(bytemuck::bytes_of(&DetailParams {
-                size: [w, h],
-                sigma,
-                radius: (3.0 * sigma).ceil() as i32,
-                reach: (3.0 * scale.min(1.0)).round().max(1.0) as i32,
-                _pad: 0,
-                a: noise.a,
-                b: noise.b,
-                defringe: detail.defringe / 100.0,
-                _pad2: [0.0; 3],
-            }));
-            let (p, g) = (&self.raw, grid(w * h));
-            let (own, both) = ([(0, &params), (1, lin), (2, sa)], [(0, &params), (2, sa), (3, sb)]);
-            let mut passes: Vec<Pass> = Vec::new();
-            if detail.defringe > 0.0 {
-                passes.extend([(&p.df_init, own.as_slice(), g), (&p.df_apply, own.as_slice(), g)]);
-            }
-            if detail.sharpen > 0.0 {
-                passes.push((&p.sh_init, &own, g));
-                for _ in 0..1 + (detail.sharpen / 10.0) as usize {
-                    passes.extend([(&p.sh_ratio, both.as_slice(), g), (&p.sh_update, both.as_slice(), g)]);
-                }
-                passes.push((&p.sh_apply, &own, g));
-            }
-            self.passes(&passes);
+            self.detail_passes(lin, [sa, sb], w, h, scale, detail, noise, false);
         }
+        if detail.dehaze != 0.0 || detail.local_contrast > 0.0 {
+            let [sa, sb] = scratch();
+            self.tone(lin, [sa, sb], w, h, scale, detail);
+        }
+        if detail.sharpen > 0.0 {
+            let [sa, sb] = scratch();
+            self.detail_passes(lin, [sa, sb], w, h, scale, detail, noise, true);
+        }
+    }
+
+    /// Dehaze and local contrast (`tone.wgsl`): guided filters of 30 and
+    /// 20 full-resolution pixels, the dark channel over 15.
+    #[allow(clippy::too_many_arguments)]
+    fn tone(&self, lin: &wgpu::Buffer, [sa, sb]: [&wgpu::Buffer; 2], w: u32, h: u32, scale: f32, detail: &Detail) {
+        let s = scale.min(1.0);
+        let params = |radius: f32, eps: f32| {
+            self.storage(bytemuck::bytes_of(&ToneParams {
+                size: [w, h],
+                radius: (radius * s).round().max(2.0) as i32,
+                window: (7.0 * s).round().max(1.0) as i32,
+                eps,
+                omega: if detail.dehaze > 0.0 { 0.95 * detail.dehaze / 100.0 } else { 0.5 * detail.dehaze / 100.0 },
+                boost: detail.local_contrast / 100.0,
+                _pad: 0.0,
+            }))
+        };
+        let (p, g) = (&self.raw, grid(w * h));
+        if detail.dehaze != 0.0 {
+            let q = params(30.0, 1e-3);
+            self.queue.write_buffer(&p.air, 0, &[0; 16]);
+            let (boxes, ab, air) =
+                ([(0, &q), (2, sa), (3, sb)], [(0, &q), (2, sa)], [(0, &q), (1, lin), (2, sa), (4, &p.air)]);
+            self.passes(&[
+                (&p.dh_min_h, &[(0, &q), (1, lin), (3, sb)], g),
+                (&p.dh_min_v, &[(0, &q), (2, sa), (3, sb), (4, &p.air)], g),
+                (&p.dh_prep, &air, g),
+                (&p.box_h, &boxes, g),
+                (&p.box_v, &boxes, g),
+                (&p.gf_ab, &ab, g),
+                (&p.box_h, &boxes, g),
+                (&p.box_v, &boxes, g),
+                (&p.dh_apply, &air, g),
+            ]);
+        }
+        if detail.local_contrast > 0.0 {
+            let q = params(20.0, 0.01);
+            let (boxes, ab, own) = ([(0, &q), (2, sa), (3, sb)], [(0, &q), (2, sa)], [(0, &q), (1, lin), (2, sa)]);
+            self.passes(&[
+                (&p.lc_prep, &own, g),
+                (&p.box_h, &boxes, g),
+                (&p.box_v, &boxes, g),
+                (&p.gf_ab, &ab, g),
+                (&p.box_h, &boxes, g),
+                (&p.box_v, &boxes, g),
+                (&p.lc_apply, &own, g),
+            ]);
+        }
+    }
+
+    /// Defringe, or (`sharpen`) capture sharpening (`detail.wgsl`).
+    #[allow(clippy::too_many_arguments)]
+    fn detail_passes(
+        &self,
+        lin: &wgpu::Buffer,
+        [sa, sb]: [&wgpu::Buffer; 2],
+        w: u32,
+        h: u32,
+        scale: f32,
+        detail: &Detail,
+        noise: NoiseModel,
+        sharpen: bool,
+    ) {
+        let sigma = (detail.sharpen_radius * scale.min(1.0)).max(0.3);
+        let params = self.storage(bytemuck::bytes_of(&DetailParams {
+            size: [w, h],
+            sigma,
+            radius: (3.0 * sigma).ceil() as i32,
+            reach: (3.0 * scale.min(1.0)).round().max(1.0) as i32,
+            _pad: 0,
+            a: noise.a,
+            b: noise.b,
+            defringe: detail.defringe / 100.0,
+            _pad2: [0.0; 3],
+        }));
+        let (p, g) = (&self.raw, grid(w * h));
+        let (own, both) = ([(0, &params), (1, lin), (2, sa)], [(0, &params), (2, sa), (3, sb)]);
+        if !sharpen {
+            return self.passes(&[(&p.df_init, &own, g), (&p.df_apply, &own, g)]);
+        }
+        let mut passes: Vec<Pass> = vec![(&p.sh_init, &own, g)];
+        for _ in 0..1 + (detail.sharpen / 10.0) as usize {
+            passes.extend([(&p.sh_ratio, both.as_slice(), g), (&p.sh_update, both.as_slice(), g)]);
+        }
+        passes.push((&p.sh_apply, &own, g));
+        self.passes(&passes);
     }
 
     /// Classic noise reduction (`denoise.wgsl`); radii shrink with `scale`.
@@ -1313,6 +1423,77 @@ mod tests {
             chroma(&after, 70, 24),
             chroma(&before, 70, 24)
         );
+    }
+
+    /// A hazy horizontal gradient: scene 0.05..0.5 seen through haze t = 0.5, airlight 0.8.
+    fn hazy(w: u32, h: u32) -> Vec<[f32; 3]> {
+        (0..w * h)
+            .map(|i| {
+                let j = 0.05 + 0.45 * (i % w) as f32 / w as f32 * (1.0 + 0.3 * ((i / w) as f32 * 0.7).sin());
+                [j * 0.5 + 0.8 * 0.5; 3]
+            })
+            .collect()
+    }
+
+    fn std_y(px: &[[f32; 4]]) -> f32 {
+        mean_std(px.iter().map(luma)).1
+    }
+
+    #[test]
+    fn dehaze_zero_is_identity() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let base = field(&gpu, 64, 32, hazy(64, 32), Detail::default());
+        let zero = field(&gpu, 64, 32, hazy(64, 32), Detail { dehaze: 0.0, local_contrast: 0.0, ..Detail::default() });
+        assert_eq!(base, zero);
+    }
+
+    #[test]
+    fn dehaze_raises_contrast_of_hazy_gradient() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let before = std_y(&field(&gpu, 64, 32, hazy(64, 32), Detail::default()));
+        let after = std_y(&field(&gpu, 64, 32, hazy(64, 32), Detail { dehaze: 100.0, ..Detail::default() }));
+        assert!(after > 1.3 * before, "std {after} vs {before}");
+    }
+
+    #[test]
+    fn negative_dehaze_lowers_contrast() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let before = std_y(&field(&gpu, 64, 32, hazy(64, 32), Detail::default()));
+        let after = std_y(&field(&gpu, 64, 32, hazy(64, 32), Detail { dehaze: -100.0, ..Detail::default() }));
+        assert!(after < 0.8 * before, "std {after} vs {before}");
+    }
+
+    /// Fine texture around 0.2: its mean stays, its contrast grows.
+    fn texture(w: u32, h: u32) -> Vec<[f32; 3]> {
+        (0..w * h)
+            .map(|i| [0.2 * (1.0 + 0.15 * ((i % w) as f32 * 1.3).sin() * ((i / w) as f32 * 0.9).cos()); 3])
+            .collect()
+    }
+
+    #[test]
+    fn local_contrast_keeps_the_mean() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let lc = Detail { local_contrast: 100.0, ..Detail::default() };
+        let (before, after) =
+            (field(&gpu, 64, 64, texture(64, 64), Detail::default()), field(&gpu, 64, 64, texture(64, 64), lc));
+        let (m0, m1) = (mean_std(before.iter().map(luma)).0, mean_std(after.iter().map(luma)).0);
+        assert!((m1 / m0 - 1.0).abs() < 0.01, "mean {m1} vs {m0}");
+        assert!(std_y(&after) > 1.3 * std_y(&before), "texture {} vs {}", std_y(&after), std_y(&before));
+    }
+
+    #[test]
+    fn local_contrast_has_no_halo() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let step = |x: u32| if x < 32 { 0.05 } else { 0.6 };
+        let px: Vec<[f32; 3]> = (0..64 * 16).map(|i| [step(i % 64); 3]).collect();
+        let range = |d: Detail| {
+            let out = field(&gpu, 64, 16, px.clone(), d);
+            out.iter().map(luma).fold((f32::MAX, f32::MIN), |(l, h), v| (l.min(v), h.max(v)))
+        };
+        let ((lo, hi), (a, b)) =
+            (range(Detail::default()), range(Detail { local_contrast: 100.0, ..Detail::default() }));
+        let slack = 0.05 * (hi - lo);
+        assert!(a >= lo - slack && b <= hi + slack, "{a}..{b} for a {lo}..{hi} step");
     }
 
     /// On a real file (RAWVALLEY_RAW): the estimated noise model, and what

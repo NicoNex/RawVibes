@@ -1,10 +1,7 @@
-// Dehaze and local contrast on the linear Rec.2020 develop buffer.
+// Dehaze on the linear Rec.2020 develop buffer (local contrast: ll.wgsl).
 // Dehaze: dark channel prior (He et al. 2009) with the transmission refined
 // by a guided filter on Y (He et al. 2010); the airlight is the brightest
 // dark-channel value (a grey haze). Negative amounts blend towards it.
-// Local contrast: the same guided filter splits log Y into a base and its
-// detail; the detail is boosted, weighted by (1 − ā)² so strong edges (ā near
-// 1 over the filter window, where halos would form) are left alone.
 
 struct ToneParams {
     w: u32,
@@ -15,8 +12,7 @@ struct ToneParams {
     eps: f32,
     // Dehaze: haze removed (0..0.95) or, negative, haze added (0..−0.5).
     omega: f32,
-    // Local contrast: detail gain (0..2).
-    boost: f32,
+    _boost: f32,
     _pad: f32,
 }
 
@@ -138,32 +134,3 @@ fn dh_apply(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: ve
     lin[i] = vec4<f32>(max(out, vec3<f32>(0.0)), lin[i].w);
 }
 
-// --------------------------------------------------------- local contrast
-
-fn log_y(c: vec3<f32>) -> f32 {
-    return log(max(dot(c, LUMA), 1e-4));
-}
-
-@compute @workgroup_size(256)
-fn lc_prep(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
-           @builtin(local_invocation_index) lid: u32) {
-    let i = index(wg, n, lid);
-    if i >= p.w * p.h { return; }
-    let l = log_y(lin[i].xyz);
-    sa[i] = vec4<f32>(l, l, l * l, l * l);
-}
-
-@compute @workgroup_size(256)
-fn lc_apply(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
-            @builtin(local_invocation_index) lid: u32) {
-    let i = index(wg, n, lid);
-    if i >= p.w * p.h { return; }
-    let c = lin[i].xyz;
-    let l = log_y(c);
-    let base = sa[i].x * l + sa[i].y;
-    let flat = 1.0 - clamp(sa[i].x, 0.0, 1.0);
-    let x = clamp((l - base) * p.boost * flat * flat, -1.0, 1.0);
-    // exp(x − x²/2): E ≈ 1 for symmetric detail, so the linear mean holds.
-    let gain = exp(x - 0.5 * x * x);
-    lin[i] = vec4<f32>(c * gain, lin[i].w);
-}

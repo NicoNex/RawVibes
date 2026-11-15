@@ -49,12 +49,12 @@ impl Detail {
         let d = self;
         let on = |v: f32, px: f32| if v != 0.0 { px } else { 0.0 };
         // NLM patch + search; five à-trous levels; Sobel + reach; dark
-        // channel + two guided-filter boxes; two boxes; RL iterations × two blurs.
+        // channel + two guided-filter boxes; six pyramid levels down and up; RL iterations × two blurs.
         on(d.nr_luma, 9.0)
             + on(d.nr_chroma, 62.0)
             + on(d.defringe, 5.0)
             + on(d.dehaze, 67.0)
-            + on(d.local_contrast, 40.0)
+            + on(d.local_contrast, 256.0)
             // The most iterations, so the amount alone never moves the margin (or the caches).
             + on(d.sharpen, 11.0 * 2.0 * (3.0 * d.sharpen_radius).ceil())
     }

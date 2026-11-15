@@ -276,8 +276,12 @@ pub struct Pipelines {
     dh_min_v: wgpu::ComputePipeline,
     dh_prep: wgpu::ComputePipeline,
     dh_apply: wgpu::ComputePipeline,
-    lc_prep: wgpu::ComputePipeline,
-    lc_apply: wgpu::ComputePipeline,
+    ll_prep: wgpu::ComputePipeline,
+    ll_reduce_g: wgpu::ComputePipeline,
+    ll_reduce_q: wgpu::ComputePipeline,
+    ll_top: wgpu::ComputePipeline,
+    ll_collapse: wgpu::ComputePipeline,
+    ll_apply: wgpu::ComputePipeline,
     /// Dehaze airlight (one f32 as bits, atomic max), zeroed per run.
     air: wgpu::Buffer,
     /// Noise reductions run (tests check the cache).
@@ -294,6 +298,7 @@ impl Pipelines {
         let denoise = crate::gpu::shader(device, "denoise.wgsl", include_str!("denoise.wgsl"));
         let detail = crate::gpu::shader(device, "detail.wgsl", include_str!("detail.wgsl"));
         let tone = crate::gpu::shader(device, "tone.wgsl", include_str!("tone.wgsl"));
+        let ll = crate::gpu::shader(device, "ll.wgsl", include_str!("ll.wgsl"));
         Self {
             box_h: tone("box_h"),
             box_v: tone("box_v"),
@@ -302,8 +307,12 @@ impl Pipelines {
             dh_min_v: tone("dh_min_v"),
             dh_prep: tone("dh_prep"),
             dh_apply: tone("dh_apply"),
-            lc_prep: tone("lc_prep"),
-            lc_apply: tone("lc_apply"),
+            ll_prep: ll("ll_prep"),
+            ll_reduce_g: ll("ll_reduce_g"),
+            ll_reduce_q: ll("ll_reduce_q"),
+            ll_top: ll("ll_top"),
+            ll_collapse: ll("ll_collapse"),
+            ll_apply: ll("ll_apply"),
             nr_runs: Default::default(),
             air: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("airlight"),
@@ -415,9 +424,33 @@ struct ToneParams {
     window: i32,
     eps: f32,
     omega: f32,
-    boost: f32,
+    _boost: f32,
     _pad: f32,
 }
+
+/// `LlParams` of `ll.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
+struct LlParams {
+    fw: u32,
+    fh: u32,
+    cw: u32,
+    ch: u32,
+    g_f: u32,
+    g_c: u32,
+    o_f: u32,
+    o_c: u32,
+    q_f: u32,
+    q_c: u32,
+    base: u32,
+    _pad: u32,
+    sigma: f32,
+    clarity: f32,
+    _pad2: [f32; 2],
+}
+
+/// Pyramid levels of local contrast at full resolution (features up to 64 px).
+const LL_LEVELS: f32 = 6.0;
 
 /// `DetailParams` of `detail.wgsl`.
 #[repr(C)]
@@ -715,8 +748,8 @@ impl Gpu {
         (0..h).flat_map(|y| all[(y + m) * lw + m..][..w].to_vec()).collect()
     }
 
-    /// Dehaze and local contrast (`tone.wgsl`): guided filters of 30 and
-    /// 20 full-resolution pixels, the dark channel over 15.
+    /// Dehaze (`tone.wgsl`): a guided filter of 30 full-resolution pixels,
+    /// the dark channel over 15; then local contrast.
     #[allow(clippy::too_many_arguments)]
     fn tone(&self, lin: &wgpu::Buffer, [sa, sb]: [&wgpu::Buffer; 2], w: u32, h: u32, scale: f32, detail: &Detail) {
         let s = scale.min(1.0);
@@ -727,7 +760,7 @@ impl Gpu {
                 window: (7.0 * s).round().max(1.0) as i32,
                 eps,
                 omega: if detail.dehaze > 0.0 { 0.95 * detail.dehaze / 100.0 } else { 0.5 * detail.dehaze / 100.0 },
-                boost: detail.local_contrast / 50.0,
+                _boost: 0.0,
                 _pad: 0.0,
             }))
         };
@@ -750,18 +783,70 @@ impl Gpu {
             ]);
         }
         if detail.local_contrast > 0.0 {
-            let q = params(20.0, 0.25);
-            let (boxes, ab, own) = ([(0, &q), (2, sa), (3, sb)], [(0, &q), (2, sa)], [(0, &q), (1, lin), (2, sa)]);
-            self.passes(&[
-                (&p.lc_prep, &own, g),
-                (&p.box_h, &boxes, g),
-                (&p.box_v, &boxes, g),
-                (&p.gf_ab, &ab, g),
-                (&p.box_h, &boxes, g),
-                (&p.box_v, &boxes, g),
-                (&p.lc_apply, &own, g),
-            ]);
+            self.local_laplacian(lin, [sa, sb], w, h, s, detail.local_contrast);
         }
+    }
+
+    /// Local contrast (`ll.wgsl`): darktable's local Laplacian, `LL_LEVELS`
+    /// at full resolution, fewer when downscaled. The pyramids live in the
+    /// scratch buffers: input and output pyramids (f32) in `sa`, the
+    /// remapped ones from level 1 (8 f32 a pixel) in `sb`.
+    fn local_laplacian(
+        &self,
+        lin: &wgpu::Buffer,
+        [sa, sb]: [&wgpu::Buffer; 2],
+        w: u32,
+        h: u32,
+        scale: f32,
+        amount: f32,
+    ) {
+        let depth = (LL_LEVELS + scale.min(1.0).log2()).round().max(1.0) as usize;
+        let mut dims = vec![(w, h)];
+        while let Some(&(a, b)) = dims.last().filter(|&&(a, b)| dims.len() <= depth && a.min(b) >= 4) {
+            dims.push((a.div_ceil(2), b.div_ceil(2)));
+        }
+        let top = dims.len() - 1;
+        let n: Vec<u32> = dims.iter().map(|&(a, b)| a * b).collect();
+        let total: u32 = n.iter().sum();
+        let offsets = |from: usize| -> Vec<u32> { (0..dims.len()).map(|l| n[from.min(l)..l].iter().sum()).collect() };
+        let (g_off, q_off) = (offsets(0), offsets(1));
+        let params = |l: usize, c: usize| {
+            self.storage(bytemuck::bytes_of(&LlParams {
+                fw: dims[l].0,
+                fh: dims[l].1,
+                cw: dims[c].0,
+                ch: dims[c].1,
+                g_f: g_off[l],
+                g_c: g_off[c],
+                o_f: total + g_off[l],
+                o_c: total + g_off[c],
+                q_f: q_off[l],
+                q_c: q_off[c],
+                base: (l == 0) as u32,
+                sigma: 0.2,
+                clarity: amount / 100.0,
+                ..Default::default()
+            }))
+        };
+        let down: Vec<_> = (0..top).map(|l| params(l, l + 1)).collect();
+        let (first, last) = (params(0, 0), params(top, top));
+        let p = &self.raw;
+        let mut passes: Vec<Pass> = Vec::new();
+        let prep = [(0, &first), (1, lin), (2, sa)];
+        passes.push((&p.ll_prep, &prep, grid(n[0])));
+        let g_binds: Vec<[(u32, &wgpu::Buffer); 2]> = down.iter().map(|q| [(0, q), (2, sa)]).collect();
+        let q_binds: Vec<[(u32, &wgpu::Buffer); 3]> = down.iter().map(|q| [(0, q), (2, sa), (3, sb)]).collect();
+        for l in 0..top {
+            passes.push((&p.ll_reduce_g, &g_binds[l], grid(n[l + 1])));
+            passes.push((&p.ll_reduce_q, &q_binds[l], grid(n[l + 1])));
+        }
+        let top_bind = [(0, &last), (2, sa)];
+        passes.push((&p.ll_top, &top_bind, grid(n[top])));
+        for l in (0..top).rev() {
+            passes.push((&p.ll_collapse, &q_binds[l], grid(n[l])));
+        }
+        passes.push((&p.ll_apply, &prep, grid(n[0])));
+        self.passes(&passes);
     }
 
     /// Defringe, or (`sharpen`) capture sharpening (`detail.wgsl`).
@@ -1579,19 +1664,20 @@ mod tests {
         assert!(std_y(&after) > 1.3 * std_y(&before), "texture {} vs {}", std_y(&after), std_y(&before));
     }
 
+    /// The local Laplacian lifts the bright side of a 12× step a little (it
+    /// is brighter than its 64 px surround, as in darktable), but never
+    /// inverts the edge: at 100 (darktable's detail 200%) within 10%.
     #[test]
     fn local_contrast_has_no_halo() {
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
         let step = |x: u32| if x < 32 { 0.05 } else { 0.6 };
         let px: Vec<[f32; 3]> = (0..64 * 16).map(|i| [step(i % 64); 3]).collect();
-        let range = |d: Detail| {
-            let out = field(&gpu, 64, 16, px.clone(), d);
-            out.iter().map(luma).fold((f32::MAX, f32::MIN), |(l, h), v| (l.min(v), h.max(v)))
-        };
-        let ((lo, hi), (a, b)) =
-            (range(Detail::default()), range(Detail { local_contrast: 100.0, ..Detail::default() }));
-        let slack = 0.05 * (hi - lo);
-        assert!(a >= lo - slack && b <= hi + slack, "{a}..{b} for a {lo}..{hi} step");
+        let row = |d: Detail| field(&gpu, 64, 16, px.clone(), d)[8 * 64..9 * 64].iter().map(luma).collect::<Vec<_>>();
+        let (before, after) = (row(Detail::default()), row(Detail { local_contrast: 100.0, ..Detail::default() }));
+        let (lo, hi) = (before[0], before[63]);
+        let slack = 0.1 * (hi - lo);
+        assert!(after.iter().all(|&v| v >= lo - slack && v <= hi + slack), "{after:?} for a {lo}..{hi} step");
+        assert!(after[..32].iter().all(|&d| after[32..].iter().all(|&b| b > d)), "edge inverted: {after:?}");
     }
 
     fn all_tools() -> Detail {

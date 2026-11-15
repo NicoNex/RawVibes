@@ -56,11 +56,11 @@ impl Detail {
     pub fn support(&self) -> f32 {
         let d = self;
         let on = |v: f32, px: f32| if v != 0.0 { px } else { 0.0 };
-        // NLM patch + search; five à-trous levels; Sobel + reach; dark
+        // NLM patch + search; five à-trous levels; two 3σ blurs of σ 5 px (manifolds, safety blend); dark
         // channel + two guided-filter boxes; six pyramid levels down and up; RL iterations × two blurs.
         on(d.nr_luma, 9.0)
             + on(d.nr_chroma, 62.0)
-            + on(d.defringe, 5.0)
+            + on(d.defringe, 32.0)
             + on(d.dehaze, 67.0)
             + on(d.local_contrast, 256.0)
             // The most iterations at the largest radius, so neither amount nor radius moves the margin (or the caches).

@@ -462,12 +462,16 @@ struct AiParams {
     oy: u32,
     pw: u32,
     ph: u32,
-    // Position of the tile in tile pixels (may be negative), its edge, and
-    // full-resolution pixels per tile pixel (2 Bayer, 1 linear).
+    // Position of the tile in tile pixels (may be negative), and its size.
     tx: i32,
     ty: i32,
-    t: u32,
+    tw: u32,
+    th: u32,
+    // Full-resolution pixels per tile pixel (2 Bayer, 1 linear).
     s: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
     // The tile's core in tile pixels: x0, y0, x1, y1 (exclusive).
     core: vec4<u32>,
     // The net's output → balanced camera RGB (rows).
@@ -495,11 +499,11 @@ fn ai_channels() -> u32 {
 fn ai_pack(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
            @builtin(local_invocation_index) lid: u32) {
     let i = index(wg, n, lid);
-    let tt = ai.t * ai.t;
+    let tt = ai.tw * ai.th;
     if i >= ai_channels() * tt { return; }
     let c = i / tt;
-    let px = mirror(ai.tx + i32(i % ai.t), ai.pw);
-    let py = mirror(ai.ty + i32((i % tt) / ai.t), ai.ph);
+    let px = mirror(ai.tx + i32(i % ai.tw), ai.pw);
+    let py = mirror(ai.ty + i32((i % tt) / ai.tw), ai.ph);
     if ai.s == 1u {
         tensor[i] = out[(py * ai.pw + px) * 3u + c];
         return;
@@ -514,7 +518,7 @@ var<workgroup> sums: array<vec2<f32>, 256>;
 /// gain[0] = mean(input) / mean(output), or 1 when the output's mean is ~0.
 @compute @workgroup_size(256)
 fn ai_gain(@builtin(local_invocation_index) lid: u32) {
-    let tt = ai.t * ai.t;
+    let tt = ai.tw * ai.th;
     let nin = ai_channels() * tt;
     let nout = 3u * tt * ai.s * ai.s;
     var s = vec2<f32>(0.0);
@@ -546,10 +550,11 @@ fn ai_unpack(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: v
     let tx = qx / ai.s;
     let ty = qy / ai.s;
     if tx < ai.core.x || tx >= ai.core.z || ty < ai.core.y || ty >= ai.core.w { return; }
-    let e = ai.s * ai.t;
+    let e = ai.s * ai.tw;
+    let plane = e * ai.s * ai.th;
     let s = i32(ai.s);
     let j = u32(i32(qy) - s * ai.ty) * e + u32(i32(qx) - s * ai.tx);
-    let rgb = (vec3<f32>(net[j], net[e * e + j], net[2u * e * e + j]) * gain[0]) * ai.to_cam;
+    let rgb = (vec3<f32>(net[j], net[plane + j], net[2u * plane + j]) * gain[0]) * ai.to_cam;
     // f16 tops out at 65504; min/max also drop a NaN.
     level[i] = pack(min(rgb, vec3<f32>(65504.0)));
 }

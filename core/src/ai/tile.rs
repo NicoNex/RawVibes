@@ -25,8 +25,10 @@ struct AiParams {
     ph: u32,
     tx: i32,
     ty: i32,
-    t: u32,
+    tw: u32,
+    th: u32,
     s: u32,
+    _pad: [u32; 3],
     core: [u32; 4],
     to_cam: [[f32; 4]; 3],
 }
@@ -65,11 +67,12 @@ pub(crate) struct AiRun {
     params: wgpu::Buffer,
     tensor: wgpu::Buffer,
     gain: wgpu::Buffer,
-    /// Alignment and tile edge; the position is set per tile.
+    /// Alignment and tile size; the position is set per tile.
     tile: AiParams,
     pixels: u32,
-    /// Tiles across, down, and the next one.
+    /// Tiles across and down, their cores' size, and the next tile.
     tiles: (u32, u32),
+    core: (u32, u32),
     next: u32,
 }
 
@@ -124,7 +127,7 @@ impl Gpu {
         }
     }
 
-    /// Uploads what the net reads of `raw` for a run with `t`-pixel tiles.
+    /// Uploads what the net reads of `raw` for a run with tiles of at most `t` pixels.
     pub(crate) fn ai_start(&self, raw: &RawData, t: u32) -> Result<AiRun, String> {
         let [_, _, cw, ch] = raw.crop;
         self.fits(cw as u64 * ch as u64 * 8)?;
@@ -152,18 +155,25 @@ impl Gpu {
             }
         };
         let (pw, ph) = ((raw.width - ox) / s, (raw.height - oy) / s);
-        let step = t - 2 * OVERLAP;
+        // As few tiles as edge `t` allows, then as small as they can be: less overlap to compute.
+        let fit = |n: u32| {
+            let tiles = n.div_ceil(t - 2 * OVERLAP);
+            let core = n.div_ceil(tiles);
+            (tiles, core, (core + 2 * OVERLAP).next_multiple_of(16))
+        };
+        let ((nx, cx, tw), (ny, cy, th)) = (fit(pw), fit(ph));
         let channels = if s == 2 { 4 } else { 3 };
         Ok(AiRun {
             variant: variant(raw),
             level0: self.buffer(cw as u64 * ch as u64 * 8, wgpu::BufferUsages::COPY_SRC),
             source,
             params: self.raw_params(raw, [0; 4]),
-            tensor: self.buffer(channels * t as u64 * t as u64 * 4, wgpu::BufferUsages::empty()),
+            tensor: self.buffer(channels * tw as u64 * th as u64 * 4, wgpu::BufferUsages::empty()),
             gain: self.buffer(4, wgpu::BufferUsages::empty()),
-            tile: AiParams { ox, oy, pw, ph, tx: 0, ty: 0, t, s, core: [0; 4], to_cam },
+            tile: AiParams { ox, oy, pw, ph, tx: 0, ty: 0, tw, th, s, _pad: [0; 3], core: [0; 4], to_cam },
             pixels: cw * ch,
-            tiles: (pw.div_ceil(step), ph.div_ceil(step)),
+            tiles: (nx, ny),
+            core: (cx, cy),
             next: 0,
         })
     }
@@ -171,20 +181,20 @@ impl Gpu {
     /// Runs the next tile of `run` and waits for it.
     pub(crate) fn ai_step(&self, run: &mut AiRun, net: &UNet) -> Result<(), String> {
         debug_assert!(self.raw.batch.borrow().is_none(), "AI denoise waits per tile: no batch may be open");
-        let AiParams { pw, ph, t, .. } = run.tile;
-        let step = t - 2 * OVERLAP;
-        let (cx, cy) = (run.next % run.tiles.0 * step, run.next / run.tiles.0 * step);
+        let AiParams { pw, ph, tw, th, .. } = run.tile;
+        let (sx, sy) = run.core;
+        let (cx, cy) = (run.next % run.tiles.0 * sx, run.next / run.tiles.0 * sy);
         let tile = AiParams {
             tx: cx as i32 - OVERLAP as i32,
             ty: cy as i32 - OVERLAP as i32,
-            core: [cx, cy, (cx + step).min(pw), (cy + step).min(ph)],
+            core: [cx, cy, (cx + sx).min(pw), (cy + sy).min(ph)],
             ..run.tile
         };
         let ai = self.storage(bytemuck::bytes_of(&tile));
         let (p, r) = (&self.raw, &*run);
         let n = (r.tensor.size() / 4) as u32;
         self.passes(&[(&p.ai_pack, &[(0, &r.params), (2, &r.source), (12, &ai), (13, &r.tensor)], grid(n))]);
-        let out = net.run(self, &r.tensor, t, t);
+        let out = net.run(self, &r.tensor, tw, th);
         self.passes(&[
             (&p.ai_gain, &[(12, &ai), (13, &r.tensor), (14, &out), (15, &r.gain)], (1, 1)),
             (&p.ai_unpack, &[(0, &r.params), (10, &r.level0), (12, &ai), (14, &out), (15, &r.gain)], grid(r.pixels)),
@@ -281,14 +291,15 @@ mod tests {
     #[test]
     fn tiles_have_no_seams() {
         let Some((gpu, net)) = setup() else { return };
-        let (w, h) = (1100, 1080);
+        let (w, h) = (1080, 1080);
         let raw = bayer(w, h, [1.0; 3], |x, y| 0.1 + 0.3 * (x + y) as f32 / (w + h) as f32);
         let g = green(&run(&gpu, &net, &raw, 256));
         let at = |x: u32, y: u32| g[(y * w + x) as usize];
-        // Borders between cores, at full resolution: x = 2·192·k.
+        // Borders between cores, at full resolution: three tiles each way, cores fitted to the photo.
+        let core = (w / 2).div_ceil(3);
         let mut worst = 0f32;
         for k in 1..3 {
-            let b = 2 * 192 * k;
+            let b = 2 * core * k;
             for i in (8..h.min(w) - 8).step_by(7) {
                 // A jump beyond the ramp's own slope, both directions.
                 let (jx, sx) = ((at(b, i) - at(b - 1, i)).abs(), (at(b - 1, i) - at(b - 2, i)).abs());

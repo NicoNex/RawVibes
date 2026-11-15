@@ -1058,11 +1058,13 @@ impl Gpu {
         noise: NoiseModel,
     ) {
         let sigma = (detail.sharpen_radius * s).max(0.3);
-        let params = self.storage(bytemuck::bytes_of(&Self::detail_params(w, h, sigma, noise)));
+        // The deconvolution converges in a few iterations: the amount blends it in instead.
+        let params = DetailParams { usm: detail.sharpen / 100.0, ..Self::detail_params(w, h, sigma, noise) };
+        let params = self.storage(bytemuck::bytes_of(&params));
         let (p, g) = (&self.raw, grid(w * h));
         let (own, both) = ([(0, &params), (1, lin), (2, sa)], [(0, &params), (2, sa), (3, sb)]);
         let mut passes: Vec<Pass> = vec![(&p.sh_init, &own, g)];
-        for _ in 0..1 + (detail.sharpen / 10.0) as usize {
+        for _ in 0..10 {
             passes.extend([(&p.sh_ratio, both.as_slice(), g), (&p.sh_update, both.as_slice(), g)]);
         }
         passes.push((&p.sh_apply, &own, g));
@@ -1121,7 +1123,9 @@ impl Gpu {
                 _pad: 0,
                 a: noise.a,
                 b: noise.b,
-                luma: detail.nr_luma / 100.0,
+                // darktable's denoiseprofile strength: NLM as if the noise were ×¼ (amount 0)
+                // to ×4 (100) of the measured one, ×1 at 50.
+                luma: 4f32.powf(2.0 * detail.nr_luma / 100.0 - 1.0),
                 detail: detail.nr_detail / 200.0,
                 chroma: detail.nr_chroma / 100.0,
                 _pad2: 0.0,

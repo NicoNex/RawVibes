@@ -199,7 +199,7 @@ pub(crate) fn to_oklab(c: [f32; 3]) -> [f32; 3] {
 
 /// OKLab → display-encoded sRGB.
 #[allow(clippy::excessive_precision)]
-fn from_oklab([l, a, b]: [f32; 3]) -> [f32; 3] {
+pub(crate) fn from_oklab([l, a, b]: [f32; 3]) -> [f32; 3] {
     let lms = [
         l + 0.3963377774 * a + 0.2158037573 * b,
         l - 0.1055613458 * a - 0.0638541728 * b,

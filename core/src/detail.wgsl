@@ -15,6 +15,7 @@ struct DetailParams {
     a: f32,
     b: f32,
     // Output sharpening: gain on L − blur(L); threshold on |L − blur(L)|.
+    // Capture sharpening: `usm` is the amount, 0..1, the deconvolution is blended in by.
     usm: f32,
     usm_threshold: f32,
 }
@@ -119,7 +120,7 @@ fn sh_apply(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: ve
         }
     }
     let l = sa[i].x;
-    let sharp = mix(l, clamp(sa[i].y, lo, hi), sa[i].z);
+    let sharp = mix(l, clamp(sa[i].y, lo, hi), sa[i].z * p.usm);
     if l > 1e-6 {
         lin[i] = vec4<f32>(lin[i].xyz * (sharp / l), lin[i].w);
     }

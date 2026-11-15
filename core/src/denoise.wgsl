@@ -15,7 +15,7 @@ struct NrParams {
     // Noise model of Y at this buffer's scale: σ² = a·Y + b.
     a: f32,
     b: f32,
-    // 0..1: luminance strength, detail kept back, chrominance strength.
+    // Luminance strength (noise scale ¼…4), detail kept back (0..½), chrominance strength (0..1).
     luma: f32,
     detail: f32,
     chroma: f32,
@@ -75,8 +75,11 @@ fn nr_nlm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) l:
     if x >= i32(p.w) || y >= i32(p.h) { return; }
     let c = vec2<i32>(l.xy) + APRON;
     let area = f32((2 * p.patch_r + 1) * (2 * p.patch_r + 1));
-    // Unit noise: two equal patches differ by 2 per pixel on average.
-    let h2 = max(p.luma * p.luma, 1e-4);
+    // Unit noise: two equal patches differ by 2 per pixel on average. The
+    // strength `k` (`Gpu::denoise`) acts as darktable's: as if the noise
+    // were k times stronger, so more patches count as equal; the transform
+    // itself keeps the measured noise, which keeps it unbiased.
+    let k = p.luma;
     var sum = 0.0;
     var total = 0.0;
     var best = 0.0;
@@ -90,14 +93,16 @@ fn nr_nlm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) l:
                     d2 += e * e;
                 }
             }
-            let wgt = exp(-max(d2 / area - 2.0, 0.0) / h2);
+            let wgt = exp(-max(d2 / area - 2.0 * k, 0.0) / (0.25 * k));
             sum += wgt * t(c.x + dx, c.y + dy);
             total += wgt;
             best = max(best, wgt);
         }
     }
-    // The pixel itself counts as much as its most similar neighbour.
-    best = max(best, 1e-3);
+    // The pixel itself counts as much as its most similar neighbour, and at
+    // least 0.1 (darktable's central pixel weight): at low strengths, where
+    // every weight is small, it then stays mostly itself.
+    best = max(best, 0.1);
     sb[u32(y) * p.w + u32(x)].x = (sum + best * t(c.x, c.y)) / (total + best);
 }
 

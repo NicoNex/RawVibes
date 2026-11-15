@@ -3,6 +3,8 @@
 
 #[cfg(feature = "ai")]
 pub mod ai;
+#[cfg(test)]
+mod audit;
 pub mod ca;
 pub mod chart;
 pub mod crop;

@@ -1448,7 +1448,14 @@ const CSS: &str = r#"
 .section.collapsed { padding-bottom: 4px; }
 .section-header { padding: 6px 6px; margin-bottom: 2px; border-radius: 8px; }
 .slider-row { margin: 2px 4px 0 4px; }
-.slider-value { opacity: 0.8; }
+.slider-value { opacity: 0.8; padding: 0 5px; border-radius: 6px; transition: background-color 120ms ease; }
+.slider-value:hover { opacity: 1; background-color: alpha(currentColor, 0.08); }
+editablelabel.slider-value.editing { opacity: 1;
+  background-color: color-mix(in srgb, var(--accent-bg-color) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 70%, transparent); }
+editablelabel.slider-value text { background: none; box-shadow: none; outline: none; padding: 0; min-height: 0;
+  caret-color: var(--accent-color); }
+editablelabel.slider-value text selection { background-color: color-mix(in srgb, var(--accent-bg-color) 55%, transparent); }
 .slider-reset { min-width: 24px; min-height: 24px; padding: 0; }
 scale.track-temp trough { background-image: linear-gradient(to right, #4f86e8, #e8e8e8, #f2b84b); }
 scale.track-tint trough { background-image: linear-gradient(to right, #4cbf5a, #e8e8e8, #d85bd0); }

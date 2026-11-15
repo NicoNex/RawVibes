@@ -69,13 +69,19 @@ pub fn fit_ratio(ratio: Ratio, img_w: u32, img_h: u32, angle: f32) -> Crop {
 
 /// `c` moved, then if still needed shrunk about its centre (ratio kept),
 /// until no corner falls outside the image.
-/// Largest crop of `ratio` at `c`'s angle; Free keeps `c`'s shape.
+/// Largest crop of `ratio` at `c`'s angle, centred where `c` was (moved
+/// only as far as the image needs); Free keeps `c`'s shape.
 pub fn refit(c: Crop, ratio: Ratio, img_w: u32, img_h: u32) -> Crop {
     let ratio = match ratio {
         Ratio::Free => Ratio::Fixed(aspect(&c, img_w, img_h), 1.0),
         r => r,
     };
-    fit_ratio(ratio, img_w, img_h, c.angle)
+    let fit = fit_ratio(ratio, img_w, img_h, c.angle);
+    let [x, y, w, h] = c.rect;
+    let [_, _, fw, fh] = fit.rect;
+    // Each axis into the frame on its own (`clamp` moves both towards the centre together).
+    let (x, y) = ((x + (w - fw) / 2.0).clamp(0.0, 1.0 - fw), (y + (h - fh) / 2.0).clamp(0.0, 1.0 - fh));
+    clamp(Crop { rect: [x, y, fw, fh], ..fit }, img_w, img_h)
 }
 
 /// The whole straightened frame `c` is cut from.
@@ -253,6 +259,22 @@ pub fn aspect(c: &Crop, img_w: u32, img_h: u32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+
+    /// A new ratio keeps the framing: centred where the crop was, moved only
+    /// as far as the image needs.
+    #[test]
+    fn refit_keeps_the_framing() {
+        let left = Crop { rect: [0.05, 0.1, 0.4, 0.5], angle: 0.0 };
+        let c = refit(left, Ratio::Fixed(1.0, 1.0), 3000, 2000);
+        let centre = |c: &Crop| [c.rect[0] + c.rect[2] / 2.0, c.rect[1] + c.rect[3] / 2.0];
+        // The largest square is 2/3 of the width: as far left as it goes.
+        assert!((c.rect[0]).abs() < 1e-4 && (c.rect[2] - 2.0 / 3.0).abs() < 1e-3, "{:?}", c.rect);
+        let small = Crop { rect: [0.6, 0.6, 0.2, 0.2], angle: 0.0 };
+        let c = refit(small, Ratio::Fixed(3.0, 2.0), 3000, 2000);
+        assert!(c.rect[0] + c.rect[2] <= 1.0 + 1e-4 && c.rect[1] + c.rect[3] <= 1.0 + 1e-4, "{:?}", c.rect);
+        assert!(centre(&c)[0] > 0.5 - 1e-4, "moved to the middle: {:?}", c.rect);
+    }
+
     use super::*;
 
     fn inside(r: &Region, w: f32, h: f32) -> bool {

@@ -456,6 +456,10 @@ struct RollFrame {
 struct Worker {
     /// The RAW being edited, at full resolution.
     raw: Option<GpuRaw>,
+    /// Its CPU data, kept to reload it when `Detail::ca_correct` flips, and
+    /// whether `raw` was loaded CA-corrected (the last flag asked for).
+    raw_data: Option<Arc<RawData>>,
+    raw_ca: bool,
     /// The whole (cropped) uploaded photo — a raster or the test chart — and its pixels.
     fit: Option<GpuPhoto>,
     source: Option<Arc<Photo>>,
@@ -544,16 +548,26 @@ impl Worker {
             }
             Job::LoadRaw(generation, path, data) => {
                 // The previous RAW stays until this one loads: a failed open keeps editing it.
-                let loaded = gpu.load_raw(&data).map(|raw| {
+                // shortcut: loads with the last photo's CA flag; the first develop reloads
+                // it when this photo's differs (one extra load), pass the flag here if that shows.
+                let loaded = load_raw(gpu, &data, self.raw_ca).map(|raw| {
                     let size = raw.oriented_size();
                     let small = gpu.small(&raw, RAW_SMALL);
                     let decoded = Decoded::raw(small, raw.camera.clone(), size);
                     self.raw = Some(raw);
+                    self.raw_data = Some(data);
                     decoded
                 });
                 notify(Done::RawLoaded(generation, path, loaded));
             }
             Job::DevelopRaw { generation, region, width, height, develop, profile, view } => {
+                let ca = develop.detail.ca_correct;
+                if ca != self.raw_ca
+                    && let Some(data) = &self.raw_data
+                    && let Ok(raw) = load_raw(gpu, data, ca)
+                {
+                    (self.raw, self.raw_ca) = (Some(raw), ca);
+                }
                 let Some(raw) = &self.raw else { return };
                 // shortcut: a develop too large for the GPU is skipped (the preview stays); only a huge HiDPI canvas gets there.
                 let slot = if view { &mut self.view } else { &mut self.raw_fit };
@@ -663,6 +677,14 @@ impl Worker {
     }
 }
 
+/// `data` on the GPU, its lateral CA corrected first when `ca` (Bayer only).
+fn load_raw(gpu: &Gpu, data: &RawData, ca: bool) -> Result<GpuRaw, String> {
+    match ca.then(|| crate::ca::corrected(data)).flatten() {
+        Some(corrected) => gpu.load_raw(&corrected),
+        None => gpu.load_raw(data),
+    }
+}
+
 /// Spawns the render thread. Previews and gallery passes are coalesced to
 /// the latest request so slider drags never queue up stale frames.
 pub fn spawn(notify: impl Fn(Done) + Send + 'static) -> mpsc::Sender<Job> {
@@ -709,6 +731,62 @@ pub fn spawn(notify: impl Fn(Done) + Send + 'static) -> mpsc::Sender<Job> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Toggling CA correction reloads the RAW: on changes a fringed mosaic,
+    /// off again is bit-exact with the photo as first loaded.
+    #[test]
+    fn ca_toggle_reloads_and_off_is_exact() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (512u32, 384u32);
+        let scene = |x: f32, y: f32| 0.4 + 0.3 * ((x / 5.0).sin() * (y / 4.0).sin()).tanh();
+        let px = (0..w * h)
+            .map(|i| {
+                let (x, y) = ((i % w) as f32, (i / w) as f32);
+                // RGGB; R magnified 0.5% about the centre.
+                let k = if (i / w) % 2 == 0 && (i % w) % 2 == 0 { 1.005 } else { 1.0 };
+                scene(256.0 + (x - 256.0) * k, 192.0 + (y - 192.0) * k)
+            })
+            .collect();
+        let mut pattern = [0; 36];
+        pattern[..4].copy_from_slice(&[0, 1, 1, 2]);
+        let data = Arc::new(RawData {
+            pixels: crate::raw::Pixels::Bayer(px),
+            width: w,
+            height: h,
+            pattern,
+            pattern_size: [2, 2],
+            crop: [0, 0, w, h],
+            orientation: 1,
+            camera: crate::develop::Camera::neutral(),
+        });
+        let done = std::cell::RefCell::new(Vec::new());
+        let notify = |d: Done| done.borrow_mut().push(d);
+        let mut worker = Worker::default();
+        worker.handle(&gpu, Job::LoadRaw(1, PathBuf::new(), data), &notify);
+        let mut develop_with = |ca: bool| {
+            let mut develop = Develop::default();
+            develop.detail.ca_correct = ca;
+            let region = Region { center: [256.0, 192.0], size: [512.0, 384.0], angle: 0.0 };
+            let job = Job::DevelopRaw {
+                generation: 1,
+                region,
+                width: 512,
+                height: 384,
+                develop,
+                profile: Profile::Standard,
+                view: false,
+            };
+            worker.handle(&gpu, job, &notify);
+            match done.borrow_mut().pop() {
+                Some(Done::Developed { photo: Some(p), .. }) => p.pixels.clone(),
+                _ => panic!("not developed"),
+            }
+        };
+        let off = develop_with(false);
+        let on = develop_with(true);
+        assert_ne!(off, on, "CA correction changed nothing");
+        assert_eq!(off, develop_with(false));
+    }
 
     /// The RAW renders at the size it was developed at, from the GPU; the
     /// small CPU copy it hands back only brings it back (e.g. after the chart).

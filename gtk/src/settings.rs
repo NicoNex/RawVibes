@@ -17,8 +17,11 @@ fn file(name: &str) -> PathBuf {
 /// "1": RAWs without edits open as in camera.
 pub const AS_IN_CAMERA: &str = "as-in-camera";
 
-/// Preview quality while editing: "fast", "balanced" or "best".
+/// Preview quality while editing: "auto", "fast", "balanced" or "best".
 pub const PREVIEW_QUALITY: &str = "preview-quality";
+
+/// "0": no full-quality frame after development controls rest.
+pub const REFINE_IDLE: &str = "refine-idle";
 
 /// The canvas background: "default", "black" or "white".
 pub const BACKGROUND: &str = "background";

@@ -178,6 +178,8 @@ enum Msg {
     /// Undo of Reset all: every edit of the photo before it.
     /// Edits and the full look stack (path-less layers are not in the sidecar).
     RestoreEdits(Box<(Sidecar, Vec<LabLayer>)>),
+    /// Preferences: render the full-quality frame once development controls rest.
+    Refine(bool),
     /// Filmstrip: add photos, a photo decoded small (already encoded for
     /// `Profile`), re-encoded for a new profile, pick or drop one, grid view.
     RollAddPaths(Vec<PathBuf>),
@@ -251,16 +253,20 @@ type DetailField = fn(&mut Detail) -> &mut f32;
 /// control moves; the full-quality frame follows `DEVELOP_SETTLE` later.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum PreviewQuality {
+    /// The draft scale that keeps a frame within `FRAME_BUDGET` on this GPU.
+    Auto,
     Fast,
     Balanced,
     Best,
 }
 
 impl PreviewQuality {
-    const ALL: [PreviewQuality; 3] = [PreviewQuality::Fast, PreviewQuality::Balanced, PreviewQuality::Best];
+    const ALL: [PreviewQuality; 4] =
+        [PreviewQuality::Auto, PreviewQuality::Fast, PreviewQuality::Balanced, PreviewQuality::Best];
 
     fn key(self) -> &'static str {
         match self {
+            PreviewQuality::Auto => "auto",
             PreviewQuality::Fast => "fast",
             PreviewQuality::Balanced => "balanced",
             PreviewQuality::Best => "best",
@@ -269,15 +275,17 @@ impl PreviewQuality {
 
     fn label(self) -> String {
         match self {
+            PreviewQuality::Auto => gettext("Automatic"),
             PreviewQuality::Fast => gettext("Fast"),
             PreviewQuality::Balanced => gettext("Balanced"),
             PreviewQuality::Best => gettext("Best"),
         }
     }
 
-    /// Linear scale of the preview while dragging.
-    fn draft(self) -> f32 {
+    /// Linear scale of the preview while dragging (`auto`: the measured one).
+    fn draft(self, auto: f32) -> f32 {
         match self {
+            PreviewQuality::Auto => auto,
             PreviewQuality::Fast => 0.5,
             PreviewQuality::Balanced => 0.75,
             PreviewQuality::Best => 1.0,
@@ -286,12 +294,23 @@ impl PreviewQuality {
 
     fn stored() -> Self {
         let v = settings::value(settings::PREVIEW_QUALITY);
-        Self::ALL.into_iter().find(|q| v.as_deref() == Some(q.key())).unwrap_or(PreviewQuality::Balanced)
+        Self::ALL.into_iter().find(|q| v.as_deref() == Some(q.key())).unwrap_or(PreviewQuality::Auto)
     }
 }
 
 /// Quiet time after the last edit before the sidecar is written.
 const SAVE_SETTLE: std::time::Duration = std::time::Duration::from_millis(1000);
+
+/// GPU time a draft frame may take under Automatic preview quality: a 60 Hz
+/// frame, less what the grade and the redraw need.
+const FRAME_BUDGET: f32 = 0.012;
+
+/// The linear draft scale whose frame fits `FRAME_BUDGET` at `cost` GPU
+/// seconds per pixel, for a full frame of `pixels`; never below 0.4 (softer
+/// than that hides what the slider does).
+fn auto_draft(cost: f32, pixels: u32) -> f32 {
+    (FRAME_BUDGET / (cost * pixels as f32)).sqrt().clamp(0.4, 1.0)
+}
 
 /// Quiet time after the last development change before the full-quality frame.
 const DEVELOP_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
@@ -438,6 +457,12 @@ struct App {
     quality: PreviewQuality,
     /// A development control is moving: RAW views render at the draft scale.
     drafting: bool,
+    /// Measured GPU seconds per pixel of a fitted develop (0: not yet), and
+    /// the draft scale Automatic quality derives from it.
+    frame_cost: f32,
+    auto_draft: f32,
+    /// Render the full-quality frame once development controls rest.
+    refine: bool,
     develop_tick: u64,
     /// The camera match of a file, once computed.
     camera_match: Option<(PathBuf, Match)>,
@@ -1070,13 +1095,13 @@ impl App {
 
     /// `size` at the draft scale while a development control moves.
     fn draft_size(&self, (w, h): (u32, u32)) -> (u32, u32) {
-        let k = if self.drafting { self.quality.draft() } else { 1.0 };
+        let k = if self.drafting { self.quality.draft(self.auto_draft) } else { 1.0 };
         (((w as f32 * k) as u32).max(1), ((h as f32 * k) as u32).max(1))
     }
 
     /// Re-develops the RAW after a Develop change: a draft now, full quality once it settles.
     fn develop_changed(&mut self, sender: &ComponentSender<Self>) {
-        self.drafting = self.quality != PreviewQuality::Best;
+        self.drafting = self.quality.draft(self.auto_draft) < 1.0;
         self.encode_photo(sender);
         self.request_view();
         self.develop_tick += 1;
@@ -2658,15 +2683,25 @@ impl SimpleComponent for App {
         let quality_row = adw::ComboRow::builder()
             .title(gettext("Preview while editing"))
             .subtitle(gettext(
-                "Faster previews are softer while you drag; the full-quality frame follows when you stop.",
+                "Faster previews are softer while you drag. Automatic measures this computer's graphics card and keeps dragging smooth.",
             ))
             .model(&gtk::StringList::new(&labels))
-            .selected(PreviewQuality::ALL.iter().position(|q| *q == PreviewQuality::stored()).unwrap_or(1) as u32)
+            .selected(PreviewQuality::ALL.iter().position(|q| *q == PreviewQuality::stored()).unwrap_or(0) as u32)
             .build();
         let snd = sender.clone();
         quality_row.connect_selected_notify(move |r| snd.input(Msg::Quality(r.selected())));
         let view_group = adw::PreferencesGroup::builder().title(gettext("RAW development")).build();
         view_group.add(&quality_row);
+        let refine_row = adw::SwitchRow::builder()
+            .title(gettext("Sharpen the preview when you stop"))
+            .subtitle(gettext(
+                "Renders the full-quality frame after each change. Turn off on slower computers to keep editing responsive.",
+            ))
+            .active(settings::value(settings::REFINE_IDLE).as_deref() != Some("0"))
+            .build();
+        let snd = sender.clone();
+        refine_row.connect_active_notify(move |r| snd.input(Msg::Refine(r.is_active())));
+        view_group.add(&refine_row);
         let camera_row = adw::SwitchRow::builder()
             .title(gettext("Open RAWs as in camera"))
             .subtitle(gettext("A RAW you have not edited yet starts from the camera's white balance and exposure."))
@@ -2829,6 +2864,9 @@ impl SimpleComponent for App {
             develop: Develop::default(),
             quality: PreviewQuality::stored(),
             drafting: false,
+            frame_cost: 0.0,
+            auto_draft: 0.75,
+            refine: settings::value(settings::REFINE_IDLE).as_deref() != Some("0"),
             develop_tick: 0,
             camera_match: None,
             camera_job: None,
@@ -3059,14 +3097,24 @@ impl SimpleComponent for App {
                     self.send(Job::SampleRaw { at, radius: 4 });
                 }
             }
-            Msg::DevelopSettled(tick) if tick == self.develop_tick && self.drafting => {
+            Msg::DevelopSettled(tick) if tick == self.develop_tick && self.drafting && self.refine => {
                 self.drafting = false;
                 self.encode_photo(&sender);
                 self.request_view();
             }
             Msg::DevelopSettled(_) => {}
+            Msg::Refine(on) => {
+                self.refine = on;
+                if let Err(e) = settings::set_value(settings::REFINE_IDLE, if on { "1" } else { "0" }) {
+                    self.toast(&gettext!("Cannot save the setting: {}", e));
+                }
+                if on && std::mem::take(&mut self.drafting) {
+                    self.encode_photo(&sender);
+                    self.request_view();
+                }
+            }
             Msg::Quality(i) => {
-                self.quality = PreviewQuality::ALL[i as usize % 3];
+                self.quality = PreviewQuality::ALL[i as usize % PreviewQuality::ALL.len()];
                 if let Err(e) = settings::set_value(settings::PREVIEW_QUALITY, self.quality.key()) {
                     self.toast(&gettext!("Cannot save the setting: {}", e));
                 }
@@ -3105,6 +3153,7 @@ impl SimpleComponent for App {
                 self.decoded = Some(decoded);
                 self.path = Some(path);
                 self.develop = Develop::default();
+                self.drafting = false;
                 self.sync_develop();
                 let path = self.path.clone().expect("set above");
                 match Sidecar::load(&path) {
@@ -4014,7 +4063,13 @@ impl App {
                 self.input.emit(Msg::RollLoaded(path.clone(), small));
                 self.input.emit(Msg::Loaded(generation, path, r));
             }
-            Done::Developed { view: false, profile, photo: Some(photo), .. } => {
+            Done::Developed { view: false, profile, photo: Some(photo), cost, .. } => {
+                // Smoothed: one frame can be slow for reasons that pass (a cache miss, the compositor).
+                self.frame_cost = if self.frame_cost > 0.0 { 0.7 * self.frame_cost + 0.3 * cost } else { cost };
+                if let Some(r) = self.shown_region() {
+                    let (w, h) = Decoded::fit_size(&r, PREVIEW_MAX);
+                    self.auto_draft = auto_draft(self.frame_cost, w * h);
+                }
                 self.input.emit(Msg::Encoded(profile, photo))
             }
             Done::Developed { view: false, .. } => {}
@@ -4226,4 +4281,20 @@ fn no_photo_to_match() -> String {
 /// Display-encoded float pixels as RGBA8, for thumbnails.
 fn rgba8(pixels: &[[f32; 4]]) -> Vec<u8> {
     pixels.iter().flat_map(|p| p.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A frame within budget renders at full size; four times over budget, at half
+    /// size (a quarter of the pixels); hopelessly slow GPUs stop at the floor.
+    #[test]
+    fn auto_draft_fits_the_frame_budget() {
+        let px = 2048 * 1365;
+        let cost = |secs: f32| secs / px as f32;
+        assert_eq!(auto_draft(cost(FRAME_BUDGET * 0.5), px), 1.0);
+        assert!((auto_draft(cost(FRAME_BUDGET * 4.0), px) - 0.5).abs() < 1e-4);
+        assert_eq!(auto_draft(cost(1.0), px), 0.4);
+    }
 }

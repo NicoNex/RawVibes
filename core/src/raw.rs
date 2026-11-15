@@ -278,6 +278,10 @@ pub struct Pipelines {
     oetf: std::cell::RefCell<Option<(Profile, wgpu::Buffer)>>,
     /// `DevelopParams`, rewritten per frame.
     develop_params: wgpu::Buffer,
+    /// Open while a develop records: its passes and copies go out in one submission.
+    batch: std::cell::RefCell<Option<wgpu::CommandEncoder>>,
+    /// What the airlight in `air` was measured from (photo, gains, exposure, lens).
+    air_key: std::cell::RefCell<Option<(u64, [f32; 5])>>,
 }
 
 impl Pipelines {
@@ -347,6 +351,8 @@ impl Pipelines {
             develop_linear: pipeline("develop_linear"),
             develop_encode: pipeline("develop_encode"),
             oetf: Default::default(),
+            batch: Default::default(),
+            air_key: Default::default(),
             develop_params: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("develop params"),
                 size: std::mem::size_of::<DevelopParams>() as u64,
@@ -542,19 +548,30 @@ impl Gpu {
         })
     }
 
-    /// Runs `passes` (pipeline, bindings, grid) in order, in one submission.
+    /// Runs `passes` (pipeline, bindings, grid) in order: in the open batch, or one submission.
     fn passes(&self, passes: &[Pass]) {
         let binds: Vec<_> = passes.iter().map(|(p, b, _)| self.bind(p, b)).collect();
-        let mut enc = self.device.create_command_encoder(&Default::default());
-        {
+        self.record(|enc| {
             let mut pass = enc.begin_compute_pass(&Default::default());
             for ((p, _, (x, y)), bind) in passes.iter().zip(&binds) {
                 pass.set_pipeline(p);
                 pass.set_bind_group(0, bind, &[]);
                 pass.dispatch_workgroups(*x, *y, 1);
             }
+        });
+    }
+
+    /// Records into the open batch, or into an encoder submitted at once.
+    fn record(&self, f: impl FnOnce(&mut wgpu::CommandEncoder)) {
+        let mut batch = self.raw.batch.borrow_mut();
+        match batch.as_mut() {
+            Some(enc) => f(enc),
+            None => {
+                let mut enc = self.device.create_command_encoder(&Default::default());
+                f(&mut enc);
+                self.queue.submit([enc.finish()]);
+            }
         }
-        self.queue.submit([enc.finish()]);
     }
 
     /// Reads a buffer of f32 back to the CPU (tests, samples).
@@ -687,6 +704,8 @@ impl Gpu {
         let (params, k) = develop_params(raw, r, w, h, dev, profile, margin);
         let (level, gains, exposure) = (&raw.levels[k].0, params.gains, params.k);
         self.queue.write_buffer(&self.raw.develop_params, 0, bytemuck::bytes_of(&params));
+        // ~11 stages: one submission instead of one each.
+        *self.raw.batch.borrow_mut() = Some(self.device.create_command_encoder(&Default::default()));
         let mut oetf = self.raw.oetf.borrow_mut();
         if oetf.as_ref().is_none_or(|(p, _)| *p != profile) {
             *oetf = Some((profile, self.storage(bytemuck::cast_slice(&oetf_table(profile)))));
@@ -757,13 +776,13 @@ impl Gpu {
         }
         let encode = [(12, &p.develop_params), (13, &photo.src), (14, table), (15, &work.lin)];
         self.passes(&[(&p.develop_encode, &encode, grid(w * h))]);
+        let enc = self.raw.batch.take().expect("opened above");
+        self.queue.submit([enc.finish()]);
         Ok(())
     }
 
     fn copy(&self, from: &wgpu::Buffer, to: &wgpu::Buffer) {
-        let mut enc = self.device.create_command_encoder(&Default::default());
-        enc.copy_buffer_to_buffer(from, 0, to, 0, from.size());
-        self.queue.submit([enc.finish()]);
+        self.record(|enc| enc.copy_buffer_to_buffer(from, 0, to, 0, from.size()));
     }
 
     /// The linear result of a develop, without its margin (tests).
@@ -816,8 +835,14 @@ impl Gpu {
         }))
     }
 
-    /// Sets the dehaze airlight from the whole frame developed at `AIR_SIZE`.
+    /// Sets the dehaze airlight from the whole frame developed at `AIR_SIZE`
+    /// (kept while photo, white balance, exposure and lens stay).
     fn airlight(&self, raw: &GpuRaw, dev: &Develop, profile: Profile) {
+        let gains = raw.camera.gains_for(dev);
+        let key = (raw.id, [gains[0], gains[1], gains[2], dev.exposure, dev.detail.lens_vignette]);
+        if self.raw.air_key.replace(Some(key)) == Some(key) {
+            return;
+        }
         let (fw, fh) = raw.oriented_size();
         let whole = Region { center: [fw as f32 / 2.0, fh as f32 / 2.0], size: [fw as f32, fh as f32], angle: 0.0 };
         let (w, h) = crate::photo::Decoded::fit_size(&whole, AIR_SIZE);
@@ -982,7 +1007,7 @@ impl Gpu {
             // Each pass binds only what it uses (layouts are derived from the shader).
             self.passes(&[
                 (&p.nr_gat, &[(0, &base), (1, lin), (2, sa)], g),
-                (&p.nr_nlm, &[(0, &base), (2, sa), (3, sb)], g),
+                (&p.nr_nlm, &[(0, &base), (2, sa), (3, sb)], (w.div_ceil(16), h.div_ceil(16))),
                 (&p.nr_luma_apply, &[(0, &base), (1, lin), (3, sb)], g),
             ]);
         }
@@ -1873,20 +1898,20 @@ mod tests {
         eprintln!("flat-patch noise fit {f:.4} vs 100% {z:.4} (sum of 16)");
         assert!((f / z - 1.0).abs() < 0.25, "fit {f} vs 100% {z}");
 
-        // Balanced drag at 2048 px, all tools on: exposure moves (everything re-runs), then sharpening (cached NR).
+        // Balanced drag at 2048 px, all tools on: exposure (everything re-runs), sharpening (cached tone), local contrast.
         let fr = whole(w, h);
         let (pw, ph) = crate::photo::Decoded::fit_size(&fr, 2048);
         let (bw, bh) = ((pw as f32 * 0.75) as u32, (ph as f32 * 0.75) as u32);
         let (sw, sh) = crate::photo::Decoded::fit_size(&fr, 512);
-        for (name, edit) in [("exposure", 0), ("sharpen", 1)] {
+        for (name, edit) in [("exposure", 0), ("sharpen", 1), ("local contrast", 2)] {
             let (mut slot, mut small) = (None, None);
             let mut t = std::time::Duration::ZERO;
             for i in 0..11 {
-                let mut d = Develop { detail: all_tools(), ..Develop::default() };
-                if edit == 0 {
-                    d.exposure = i as f32 * 0.05
-                } else {
-                    d.detail.sharpen = 40.0 + i as f32
+                let mut d = Develop { detail: Detail { dehaze: 30.0, ..all_tools() }, ..Develop::default() };
+                match edit {
+                    0 => d.exposure = i as f32 * 0.05,
+                    1 => d.detail.sharpen = 40.0 + i as f32,
+                    _ => d.detail.local_contrast = 40.0 + i as f32,
                 }
                 let t0 = std::time::Instant::now();
                 gpu.develop_into(&mut slot, &raw, &fr, bw, bh, &d, Profile::Standard).unwrap();
@@ -1897,6 +1922,44 @@ mod tests {
                 } // first frame warms pipelines and caches
             }
             eprintln!("drag {name} {bw}×{bh}: {:?}", t / 10);
+        }
+    }
+
+    /// On a real file (RAWVALLEY_RAW): each detail stage alone, fit at 1536 px
+    /// and a 100% 2048 px view, GPU time per frame (run with --test-threads=1).
+    #[test]
+    fn stage_cost_on_sample() {
+        let Ok(path) = std::env::var("RAWVALLEY_RAW") else { return eprintln!("no sample, skipped") };
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let raw = gpu.load_raw(&read_raw(Path::new(&path)).unwrap()).unwrap();
+        let (w, h) = raw.oriented_size();
+        let fr = whole(w, h);
+        let view = Region { center: fr.center, size: [2048.0, 1365.0], angle: 0.0 };
+        let tools: [(&str, Detail); 8] = [
+            ("none", Detail::default()),
+            ("nr_luma", Detail { nr_luma: 50.0, ..Detail::default() }),
+            ("nr_chroma", Detail { nr_chroma: 50.0, ..Detail::default() }),
+            ("defringe", Detail { defringe: 50.0, ..Detail::default() }),
+            ("dehaze", Detail { dehaze: 30.0, ..Detail::default() }),
+            ("lc", Detail { local_contrast: 50.0, ..Detail::default() }),
+            ("sharpen", Detail { sharpen: 50.0, ..Detail::default() }),
+            ("sharpen100", Detail { sharpen: 100.0, ..Detail::default() }),
+        ];
+        for (vn, r, ow, oh) in [("fit1536", fr, 1536u32, 1023u32), ("100%", view, 2048, 1365)] {
+            for (name, d) in tools {
+                let mut slot = None;
+                let mut t = std::time::Duration::ZERO;
+                for i in 0..6 {
+                    let dev = Develop { detail: d, exposure: i as f32 * 0.01, ..Develop::default() };
+                    let t0 = std::time::Instant::now();
+                    gpu.develop_into(&mut slot, &raw, &r, ow, oh, &dev, Profile::Standard).unwrap();
+                    gpu.read_range(&slot.as_ref().unwrap().src, 0, 16);
+                    if i > 0 {
+                        t += t0.elapsed()
+                    }
+                }
+                eprintln!("{vn} {name}: {:?}", t / 5);
+            }
         }
     }
 

@@ -2,6 +2,8 @@
 //! as-shot camera RGB, estimated per photo from its flattest areas (after
 //! Foi et al., "Practical Poissonian-Gaussian noise modeling", 2008).
 
+use rayon::prelude::*;
+
 /// `σ² = a·x + b` for a camera RGB value `x` (green channel).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct NoiseModel {
@@ -21,9 +23,10 @@ struct Block {
     texture: f32,
 }
 
-fn block(g: impl Fn(usize, usize) -> f32, x0: usize, y0: usize) -> Block {
+fn block(g: impl Fn(usize, usize) -> f32 + Copy, x0: usize, y0: usize) -> Block {
     let mut sum = 0.0;
-    let mut d = Vec::with_capacity((BLOCK - 1) * (BLOCK - 1));
+    let mut d = [0.0f32; (BLOCK - 1) * (BLOCK - 1)];
+    let mut n = 0;
     let mut sub = [0.0f32; 16];
     for y in 0..BLOCK {
         for x in 0..BLOCK {
@@ -32,7 +35,8 @@ fn block(g: impl Fn(usize, usize) -> f32, x0: usize, y0: usize) -> Block {
             sub[(y / 4) * 4 + x / 4] += v / 16.0;
             if x + 1 < BLOCK && y + 1 < BLOCK {
                 // Zero for any plane: only noise is left, with variance 6σ².
-                d.push(((2.0 * v - g(x0 + x + 1, y0 + y) - g(x0 + x, y0 + y + 1)) / 6f32.sqrt()).abs());
+                d[n] = ((2.0 * v - g(x0 + x + 1, y0 + y) - g(x0 + x, y0 + y + 1)) / 6f32.sqrt()).abs();
+                n += 1;
             }
         }
     }
@@ -53,8 +57,10 @@ fn median(v: &mut [f32]) -> f32 {
 pub fn estimate(px: &[[f32; 3]], w: usize, h: usize) -> NoiseModel {
     let g = |x: usize, y: usize| px[y * w + x][1];
     let clipped = |x0: usize, y0: usize| (0..BLOCK).any(|y| (0..BLOCK).any(|x| px[(y0 + y) * w + x0 + x][1] >= 0.95));
+    // Rows of blocks in parallel: ~25k blocks on a 24 MP photo's half-size level.
     let blocks: Vec<Block> = (0..h / BLOCK)
-        .flat_map(|by| (0..w / BLOCK).map(move |bx| (bx * BLOCK, by * BLOCK)))
+        .into_par_iter()
+        .flat_map_iter(|by| (0..w / BLOCK).map(move |bx| (bx * BLOCK, by * BLOCK)))
         .filter(|&(x, y)| !clipped(x, y))
         .map(|(x, y)| block(g, x, y))
         .collect();

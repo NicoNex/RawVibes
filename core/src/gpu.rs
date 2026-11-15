@@ -436,6 +436,9 @@ pub enum Done {
         /// A small CPU copy of the fitted photo, which `SetPhoto` takes back to show it
         /// (`None` for views: nobody reads them back).
         photo: Option<Arc<Photo>>,
+        /// GPU seconds per output pixel of a fitted develop, measured to its
+        /// readback (0 for views): what an adaptive preview sizes drafts by.
+        cost: f32,
     },
     /// What `Job::SampleRaw` read: as-shot-balanced camera RGB.
     Sampled([f32; 3]),
@@ -554,11 +557,12 @@ impl Worker {
                 let Some(raw) = &self.raw else { return };
                 // shortcut: a develop too large for the GPU is skipped (the preview stays); only a huge HiDPI canvas gets there.
                 let slot = if view { &mut self.view } else { &mut self.raw_fit };
+                let start = std::time::Instant::now();
                 if gpu.develop_into(slot, raw, &region, width, height, &develop, profile).is_err() {
                     return;
                 }
                 if view {
-                    return notify(Done::Developed { generation, view, profile, photo: None });
+                    return notify(Done::Developed { generation, view, profile, photo: None, cost: 0.0 });
                 }
                 // The full frame stays on the GPU: reading it back costs ~30 ms per 2048 px
                 // frame. A small copy serves the CPU (match source, thumbnails).
@@ -569,7 +573,9 @@ impl Worker {
                 let photo = Arc::new(gpu.read_photo(self.small_slot.as_ref().expect("developed")));
                 gpu.upload_into(&mut self.thumb, &photo.downscaled(THUMB_MAX));
                 self.raw_small = Some(photo.clone());
-                notify(Done::Developed { generation, view, profile, photo: Some(photo) });
+                // The readback above waited for the GPU: this is the whole frame's time.
+                let cost = start.elapsed().as_secs_f32() / (width * height) as f32;
+                notify(Done::Developed { generation, view, profile, photo: Some(photo), cost });
             }
             Job::SampleRaw { at, radius } => {
                 if let Some(raw) = &self.raw {

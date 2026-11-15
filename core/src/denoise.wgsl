@@ -52,13 +52,28 @@ fn nr_gat(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3
     sa[i].x = gat(dot(lin[i].xyz, LUMA));
 }
 
-@compute @workgroup_size(256)
-fn nr_nlm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
-          @builtin(local_invocation_index) lid: u32) {
-    let i = index(wg, n, lid);
-    if i >= p.w * p.h { return; }
-    let x = i32(i % p.w);
-    let y = i32(i / p.w);
+// NLM tiles: 16 × 16 pixels per workgroup, with an apron of the largest
+// search + patch radius (7 + 2) loaded once into workgroup memory.
+const TILE: i32 = 16;
+const APRON: i32 = 9;
+const SPAN: i32 = 34;
+var<workgroup> tile: array<f32, 1156>;
+
+fn t(x: i32, y: i32) -> f32 {
+    return tile[y * SPAN + x];
+}
+
+@compute @workgroup_size(16, 16)
+fn nr_nlm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) l: vec3<u32>) {
+    let o = vec2<i32>(wg.xy) * TILE - APRON;
+    for (var k = i32(l.y) * TILE + i32(l.x); k < SPAN * SPAN; k += TILE * TILE) {
+        tile[k] = sa[at(o.x + k % SPAN, o.y + k / SPAN)].x;
+    }
+    workgroupBarrier();
+    let x = o.x + APRON + i32(l.x);
+    let y = o.y + APRON + i32(l.y);
+    if x >= i32(p.w) || y >= i32(p.h) { return; }
+    let c = vec2<i32>(l.xy) + APRON;
     let area = f32((2 * p.patch_r + 1) * (2 * p.patch_r + 1));
     // Unit noise: two equal patches differ by 2 per pixel on average.
     let h2 = max(p.luma * p.luma, 1e-4);
@@ -71,19 +86,19 @@ fn nr_nlm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3
             var d2 = 0.0;
             for (var py = -p.patch_r; py <= p.patch_r; py++) {
                 for (var px = -p.patch_r; px <= p.patch_r; px++) {
-                    let e = sa[at(x + px, y + py)].x - sa[at(x + dx + px, y + dy + py)].x;
+                    let e = t(c.x + px, c.y + py) - t(c.x + dx + px, c.y + dy + py);
                     d2 += e * e;
                 }
             }
             let wgt = exp(-max(d2 / area - 2.0, 0.0) / h2);
-            sum += wgt * sa[at(x + dx, y + dy)].x;
+            sum += wgt * t(c.x + dx, c.y + dy);
             total += wgt;
             best = max(best, wgt);
         }
     }
     // The pixel itself counts as much as its most similar neighbour.
     best = max(best, 1e-3);
-    sb[i].x = (sum + best * sa[i].x) / (total + best);
+    sb[u32(y) * p.w + u32(x)].x = (sum + best * t(c.x, c.y)) / (total + best);
 }
 
 @compute @workgroup_size(256)

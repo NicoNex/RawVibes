@@ -221,27 +221,36 @@ impl Gpu {
 
     /// Graded preview as RGBA8, optionally seen through a look LUT.
     pub fn render(&self, photo: &GpuPhoto, grade: &Grade, look: Option<&GpuLut>, split: f32) -> Vec<u8> {
+        self.grade_pass(&self.preview, photo, grade, look, split, &photo.out, &photo.staging)
+    }
+
+    /// The graded photo for export, appended to `into` as 16-bit RGB: as
+    /// [`Gpu::render`] without overlay or split.
+    pub fn render16(&self, photo: &GpuPhoto, grade: &Grade, look: Option<&GpuLut>, into: &mut Vec<u16>) {
+        // shortcut: new output buffers per strip; keep them per export if allocation shows in profiles.
+        let (out, staging) = self.output(photo.width as u64 * photo.height as u64 * 8);
+        let rgba = self.grade_pass(&self.export16, photo, grade, look, 0.0, &out, &staging);
+        // A Vec<u8> may be unaligned for a u16 cast: read the little-endian pairs.
+        into.extend(rgba.chunks_exact(8).flat_map(|p| [0, 2, 4].map(|i| u16::from_le_bytes([p[i], p[i + 1]]))));
+    }
+
+    /// `photo` through the grade and `look` with `pipeline`, read back from `out`.
+    #[allow(clippy::too_many_arguments)]
+    fn grade_pass(
+        &self,
+        pipeline: &wgpu::ComputePipeline,
+        photo: &GpuPhoto,
+        grade: &Grade,
+        look: Option<&GpuLut>,
+        split: f32,
+        out: &wgpu::Buffer,
+        staging: &wgpu::Buffer,
+    ) -> Vec<u8> {
         self.write_params(grade.params, photo.width, photo.height, look.map_or(0, |l| l.size), split);
         self.queue.write_buffer(&self.curves, 0, bytemuck::cast_slice(&grade.curve_samples()));
         let lut = look.map_or(&self.no_lut, |l| &l.buf);
-        let bind = self
-            .bind(&self.preview, &[(0, &self.params), (1, &self.curves), (2, &photo.src), (3, &photo.out), (5, lut)]);
-        self.run(&self.preview, &bind, photo.width * photo.height, &photo.out, &photo.staging)
-    }
-
-    /// The graded photo for export: as [`Gpu::render`] without overlay or
-    /// split, as 16-bit RGB.
-    pub fn render16(&self, photo: &GpuPhoto, grade: &Grade, look: Option<&GpuLut>) -> Vec<u16> {
-        self.write_params(grade.params, photo.width, photo.height, look.map_or(0, |l| l.size), 0.0);
-        self.queue.write_buffer(&self.curves, 0, bytemuck::cast_slice(&grade.curve_samples()));
-        let lut = look.map_or(&self.no_lut, |l| &l.buf);
-        let (out, staging) = self.output(photo.width as u64 * photo.height as u64 * 8);
-        let bind =
-            self.bind(&self.export16, &[(0, &self.params), (1, &self.curves), (2, &photo.src), (3, &out), (5, lut)]);
-        // shortcut: new output buffers per strip; keep them per export if allocation shows in profiles.
-        let rgba = self.run(&self.export16, &bind, photo.width * photo.height, &out, &staging);
-        // A Vec<u8> may be unaligned for a u16 cast: read the little-endian pairs.
-        rgba.chunks_exact(8).flat_map(|p| [0, 2, 4].map(|i| u16::from_le_bytes([p[i], p[i + 1]]))).collect()
+        let bind = self.bind(pipeline, &[(0, &self.params), (1, &self.curves), (2, &photo.src), (3, out), (5, lut)]);
+        self.run(pipeline, &bind, photo.width * photo.height, out, staging)
     }
 
     /// Photo seen through an external LUT (tetrahedral), as RGBA8.
@@ -577,7 +586,12 @@ const EXPORT_LOOK: usize = 65;
 impl Worker {
     /// What renders: the zoomed view, else the whole photo (RAW or uploaded).
     fn shown(&self) -> Option<&GpuPhoto> {
-        self.view.as_ref().or(if self.show_raw { self.raw_fit.as_ref() } else { self.fit.as_ref() })
+        self.view.as_ref().or(self.whole())
+    }
+
+    /// The whole photo shown: the developed RAW or the uploaded one.
+    fn whole(&self) -> Option<&GpuPhoto> {
+        if self.show_raw { self.raw_fit.as_ref() } else { self.fit.as_ref() }
     }
 
     /// Renders the next gallery thumbnail; false once the pass is done.
@@ -740,9 +754,8 @@ impl Worker {
                 );
             }
             let mut grade = e.grade.clone();
-            grade.params.vignette_view = strip.rect_in(&e.crop);
-            grade.params.vignette_aspect = e.crop.size[0] / e.crop.size[1];
-            out.extend(gpu.render16(slot.as_ref().expect("developed above"), &grade, look.as_ref()));
+            grade.params.frame(&strip, &e.crop);
+            gpu.render16(slot.as_ref().expect("developed above"), &grade, look.as_ref(), &mut out);
             notify(Done::ExportProgress(start + (1.0 - start) * y1 as f32 / h as f32));
         }
         Ok(Some((w, h, out)))
@@ -913,8 +926,10 @@ impl Worker {
                 notify(Done::PhotoExported(r));
             }
             Job::ExportFrame(grade) => {
-                let Some(ph) = (if self.show_raw { self.raw_fit.as_ref() } else { self.fit.as_ref() }) else { return };
-                notify(Done::ExportFrame(ph.width, ph.height, gpu.render16(ph, &grade, self.look.as_ref())));
+                let Some(ph) = self.whole() else { return };
+                let mut rgb = Vec::new();
+                gpu.render16(ph, &grade, self.look.as_ref(), &mut rgb);
+                notify(Done::ExportFrame(ph.width, ph.height, rgb));
             }
             Job::Export { grade, look, size, format, title, path } => {
                 let size = format.fixed_size().unwrap_or(size);

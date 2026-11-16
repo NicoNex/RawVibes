@@ -2,7 +2,7 @@
 //! horizontal strips (so any photo fits the GPU's buffer limits), then
 //! encoded as JPEG, 16-bit PNG or 16-bit TIFF (display sRGB).
 
-use std::io::{BufWriter, Cursor};
+use std::io::{BufWriter, Cursor, Write};
 use std::path::Path;
 
 use image::codecs::jpeg::JpegEncoder;
@@ -75,12 +75,7 @@ pub fn save(
     let write = || -> Result<(), String> {
         let mut file = BufWriter::new(std::fs::File::create(&part).map_err(|e| e.to_string())?);
         match format {
-            PhotoFormat::Jpeg => {
-                let px: Vec<u8> = rgb.iter().map(|&v| to_u8(v)).collect();
-                JpegEncoder::new_with_quality(&mut file, quality)
-                    .encode(&px, w, h, ExtendedColorType::Rgb8)
-                    .map_err(|e| e.to_string())?;
-            }
+            PhotoFormat::Jpeg => encode_jpeg(&mut file, &rgb, w, h, quality)?,
             PhotoFormat::Png16 | PhotoFormat::Tiff16 => {
                 let img = ImageBuffer::<Rgb<u16>, _>::from_raw(w, h, rgb).ok_or("export buffer size mismatch")?;
                 let f = if format == PhotoFormat::Png16 { ImageFormat::Png } else { ImageFormat::Tiff };
@@ -105,10 +100,14 @@ pub fn save(
 /// Bytes of a 16-bit RGB image (`w` × `h`) as a JPEG at `quality`: what the
 /// export dialog scales by the pixel-count ratio to estimate the file size.
 pub fn jpeg_size(rgb: &[u16], w: u32, h: u32, quality: u8) -> usize {
-    let px: Vec<u8> = rgb.iter().map(|&v| to_u8(v)).collect();
     let mut out = Cursor::new(Vec::new());
-    let _ = JpegEncoder::new_with_quality(&mut out, quality).encode(&px, w, h, ExtendedColorType::Rgb8);
+    let _ = encode_jpeg(&mut out, rgb, w, h, quality);
     out.into_inner().len()
+}
+
+fn encode_jpeg(to: impl Write, rgb: &[u16], w: u32, h: u32, quality: u8) -> Result<(), String> {
+    let px: Vec<u8> = rgb.iter().map(|&v| to_u8(v)).collect();
+    JpegEncoder::new_with_quality(to, quality).encode(&px, w, h, ExtendedColorType::Rgb8).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

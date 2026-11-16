@@ -180,10 +180,10 @@ enum Msg {
     PresetExportTo(PathBuf),
     /// Opens the Export Photo dialog, on this format if given.
     ExportPhoto(Option<PhotoFormat>),
-    ExportFormat(PhotoFormat),
-    ExportQuality,
-    /// Encodes the JPEG size estimate of this generation, if still current.
-    ExportEstimateRun(u64),
+    /// The dialog's format or quality changed.
+    ExportSettings,
+    /// Encodes the JPEG size estimate of this generation (for `w` × `h`), if still current.
+    ExportEstimateRun(u64, u32, u32),
     /// A JPEG size estimate (estimate generation, bytes).
     ExportEstimate(u64, u64),
     /// The dialog's button: choose the file, or stop the running export.
@@ -581,8 +581,7 @@ impl App {
         // Where the shown image sits in the crop, for the creative vignette.
         if let (Some(shown), Some(crop)) = (self.shown_region(), self.crop_region()) {
             let visible = self.view_zoom().map_or(shown, |z| z.view(&shown, self.canvas).0);
-            grade.params.vignette_view = visible.rect_in(&crop);
-            grade.params.vignette_aspect = crop.size[0] / crop.size[1];
+            grade.params.frame(&visible, &crop);
         }
         let req = Some((grade, self.split_value()));
         if self.has_source() && self.sent != req {
@@ -1288,14 +1287,14 @@ impl App {
         let raw = w as u64 * h as u64 * 6;
         self.export_gen += 1;
         match ui.format() {
-            PhotoFormat::Tiff16 => ui.set_estimate(Some(export_ui::bytes(raw))),
-            PhotoFormat::Png16 => ui.set_estimate(Some(gettext!("up to {}", export_ui::bytes(raw)))),
+            PhotoFormat::Tiff16 => ui.set_estimate(Some(glib::format_size(raw).into())),
+            PhotoFormat::Png16 => ui.set_estimate(Some(gettext!("up to {}", glib::format_size(raw)))),
             PhotoFormat::Jpeg => {
                 ui.set_estimate(None);
                 let (generation, s) = (self.export_gen, sender.input_sender().clone());
                 // A spin held down sends a value per tick: encode only the one it stops on.
                 glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
-                    s.emit(Msg::ExportEstimateRun(generation))
+                    s.emit(Msg::ExportEstimateRun(generation, w, h))
                 });
             }
         }
@@ -3676,13 +3675,12 @@ impl SimpleComponent for App {
                 ui.dialog.present(Some(&self.ui.window));
                 self.export_estimate(&sender);
             }
-            Msg::ExportFormat(f) => {
-                self.ui.export_photo.set_format(f);
+            Msg::ExportSettings => {
+                let ui = &self.ui.export_photo;
+                ui.set_format(ui.format());
                 self.export_estimate(&sender);
             }
-            Msg::ExportQuality => self.export_estimate(&sender),
-            Msg::ExportEstimateRun(generation) if generation == self.export_gen => {
-                let Some((w, h)) = self.crop_region().map(|c| Decoded::fit_size(&c, u32::MAX)) else { return };
+            Msg::ExportEstimateRun(generation, w, h) if generation == self.export_gen => {
                 let Some((fw, fh, px)) = self.export_frame.clone() else { return };
                 let (quality, s) = (self.ui.export_photo.quality(), sender.input_sender().clone());
                 std::thread::spawn(move || {
@@ -3690,9 +3688,9 @@ impl SimpleComponent for App {
                     s.emit(Msg::ExportEstimate(generation, n as u64));
                 });
             }
-            Msg::ExportEstimateRun(_) => {}
+            Msg::ExportEstimateRun(..) => {}
             Msg::ExportEstimate(generation, n) if generation == self.export_gen => {
-                self.ui.export_photo.set_estimate(Some(gettext!("about {}", export_ui::bytes(n))))
+                self.ui.export_photo.set_estimate(Some(gettext!("about {}", glib::format_size(n))))
             }
             Msg::ExportEstimate(..) => {}
             Msg::ExportGo => {
@@ -3700,7 +3698,7 @@ impl SimpleComponent for App {
                     return cancel.store(true, Ordering::Relaxed);
                 }
                 let (Some(path), format) = (&self.path, self.ui.export_photo.format()) else { return };
-                let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                let stem = stem_label(path).unwrap_or_default();
                 let dialog = gtk::FileDialog::builder()
                     .title(gettext("Export Photo"))
                     // Never the original's own name: a JPEG source sits in the same folder.
@@ -4348,7 +4346,7 @@ impl App {
                 match r {
                     Ok(Some(p)) => {
                         self.ui.export_photo.dialog.close();
-                        self.toast(&gettext!("Photo saved: {}", p.file_name().unwrap_or_default().to_string_lossy()));
+                        self.toast(&gettext!("Photo saved: {}", file_label(&p)));
                     }
                     Ok(None) => self.toast(&gettext("Export stopped")),
                     Err(e) => self.toast(&gettext!("Export failed: {}", e)),
@@ -4432,7 +4430,7 @@ fn export_menu(action: &str, header: bool) -> gio::Menu {
     if header {
         let photo = gio::Menu::new();
         for f in PhotoFormat::ALL {
-            photo.append(Some(&export_ui::menu_label(f)), Some(&format!("win.export-photo::{}", f.tag())));
+            photo.append(Some(&(export_ui::format_label(f) + "…")), Some(&format!("win.export-photo::{}", f.tag())));
         }
         menu.append_section(Some(gettext("Photo").as_str()), &photo);
     }

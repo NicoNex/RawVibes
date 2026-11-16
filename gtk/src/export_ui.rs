@@ -4,7 +4,6 @@
 use gettextrs::gettext;
 use rawvalley_core::export::{JPEG_QUALITY, PhotoFormat};
 use relm4::adw::prelude::*;
-use relm4::gtk::glib;
 use relm4::{ComponentSender, adw, gtk};
 
 use crate::{App, Msg, settings, vbox};
@@ -19,17 +18,12 @@ pub struct ExportUi {
     go: gtk::Button,
 }
 
-fn format_label(f: PhotoFormat) -> String {
+pub fn format_label(f: PhotoFormat) -> String {
     match f {
         PhotoFormat::Jpeg => gettext("JPEG · 8-bit, for sharing"),
         PhotoFormat::Png16 => gettext("PNG · 16-bit, lossless"),
         PhotoFormat::Tiff16 => gettext("TIFF · 16-bit, for print and editing"),
     }
-}
-
-/// Menu label of each photo format (header export menu).
-pub fn menu_label(f: PhotoFormat) -> String {
-    format_label(f) + "…"
 }
 
 /// The last format and JPEG quality used.
@@ -43,20 +37,15 @@ pub fn build(sender: &ComponentSender<App>) -> ExportUi {
     let (format, quality) = remembered();
     let names: Vec<String> = PhotoFormat::ALL.into_iter().map(format_label).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
-    let format_row = adw::ComboRow::builder()
-        .title(gettext("Format"))
-        .model(&gtk::StringList::new(&names))
-        .build();
+    let format_row = adw::ComboRow::builder().title(gettext("Format")).model(&gtk::StringList::new(&names)).build();
     let snd = sender.clone();
-    format_row.connect_selected_notify(move |r| {
-        snd.input(Msg::ExportFormat(selected(r)))
-    });
+    format_row.connect_selected_notify(move |_| snd.input(Msg::ExportSettings));
     let quality_row = adw::SpinRow::builder()
         .title(gettext("Quality"))
         .adjustment(&gtk::Adjustment::new(quality as f64, 1.0, 100.0, 1.0, 10.0, 0.0))
         .build();
     let snd = sender.clone();
-    quality_row.connect_value_notify(move |_| snd.input(Msg::ExportQuality));
+    quality_row.connect_value_notify(move |_| snd.input(Msg::ExportSettings));
     let size = adw::ActionRow::builder().title(gettext("Size")).css_classes(["property"]).build();
     let estimate = adw::ActionRow::builder().title(gettext("File size")).css_classes(["property"]).build();
     let group = adw::PreferencesGroup::builder()
@@ -113,9 +102,7 @@ impl ExportUi {
     /// Shows `f`'s controls (quality is JPEG only) and selects it.
     pub fn set_format(&self, f: PhotoFormat) {
         let i = PhotoFormat::ALL.iter().position(|&x| x == f).unwrap_or(0) as u32;
-        if self.format.selected() != i {
-            self.format.set_selected(i);
-        }
+        self.format.set_selected(i);
         self.quality.set_visible(f == PhotoFormat::Jpeg);
     }
 
@@ -151,9 +138,4 @@ impl ExportUi {
 /// The format picked in `row` (its items are `PhotoFormat::ALL`).
 fn selected(row: &adw::ComboRow) -> PhotoFormat {
     PhotoFormat::ALL.get(row.selected() as usize).copied().unwrap_or(PhotoFormat::Jpeg)
-}
-
-/// "8.4 MB": the size as GNOME writes it.
-pub fn bytes(n: u64) -> String {
-    glib::format_size(n).to_string()
 }

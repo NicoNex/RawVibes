@@ -7,6 +7,7 @@ use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 
 use crate::profiles::Profile;
+use crate::view::Region;
 
 /// OKLCh hue centres (radians) of the 8 selective-colour bands — red,
 /// orange, yellow, green, teal, blue, purple, magenta. Mirrors `HUES` in
@@ -110,6 +111,12 @@ pub struct Params {
 }
 
 impl Params {
+    /// Renders `shown`, a part of `crop`: where the creative vignette falls on it.
+    pub fn frame(&mut self, shown: &Region, crop: &Region) {
+        self.vignette_view = shown.rect_in(crop);
+        self.vignette_aspect = crop.size[0] / crop.size[1];
+    }
+
     /// Makes the LUT's input domain the signal of `profile`.
     pub fn set_input(&mut self, profile: Profile) {
         self.input = profile.curve();

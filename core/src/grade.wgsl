@@ -504,15 +504,20 @@ fn vignette(idx: u32, c: vec3<f32>) -> vec3<f32> {
     return c + (1.0 - c) * (k * t);
 }
 
+// The grade, the optional look LUT after it (lut_size 0 = none), the
+// creative vignette: what the preview shows and the export writes.
+fn look_graded(idx: u32, c: vec3<f32>) -> vec3<f32> {
+    var g = grade_unclamped(c);
+    if p.lut_size > 0u { g = tetrahedral(clamp(g, vec3(0.0), vec3(1.0))); }
+    return vignette(idx, g);
+}
+
 @compute @workgroup_size(256)
 fn preview(@builtin(global_invocation_id) id: vec3<u32>) {
     let idx = id.x;
     if idx >= p.width * p.height { return; }
     let c = src[idx].rgb;
-    // Optional look LUT after the grade (lut_size 0 = none).
-    var g = grade_unclamped(c);
-    if p.lut_size > 0u { g = tetrahedral(clamp(g, vec3(0.0), vec3(1.0))); }
-    g = vignette(idx, g);
+    var g = look_graded(idx, c);
     if p.overlay == 1u { g = mark_clipping(idx, g); }
     dst_px[idx] = finish(idx, clamp(g, vec3(0.0), vec3(1.0)), c);
 }
@@ -539,9 +544,7 @@ fn bake(@builtin(global_invocation_id) id: vec3<u32>) {
 fn export16(@builtin(global_invocation_id) id: vec3<u32>) {
     let idx = id.x;
     if idx >= p.width * p.height { return; }
-    var g = grade_unclamped(src[idx].rgb);
-    if p.lut_size > 0u { g = tetrahedral(clamp(g, vec3(0.0), vec3(1.0))); }
-    g = clamp(vignette(idx, g), vec3(0.0), vec3(1.0));
+    let g = clamp(look_graded(idx, src[idx].rgb), vec3(0.0), vec3(1.0));
     dst_px[2u * idx] = pack2x16unorm(g.rg);
     dst_px[2u * idx + 1u] = pack2x16unorm(vec2(g.b, 1.0));
 }

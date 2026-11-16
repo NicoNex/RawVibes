@@ -164,17 +164,19 @@ pub fn auto_tone_curve(neutral: &Photo, camera: &Photo, full_width: u32) -> Opti
     if sw * 33 < full_width || sw * sh < 19200 {
         return None;
     }
-    // Crop the neutral render to the JPEG's aspect ratio, centred.
+    // Crop the neutral render to the JPEG's aspect ratio, centred. The JPEG may
+    // not be rotated like the render: compare them in the render's orientation.
+    let (sw, sh) = if (sw >= sh) == (neutral.width >= neutral.height) { (sw, sh) } else { (sh, sw) };
     let (mut tw, mut th) = (neutral.width, neutral.height);
     let ratio = |w: u32, h: u32| w.max(h) as f32 / w.min(h) as f32;
     let (mut cx, mut cy) = (0, 0);
     if (ratio(sw, sh) - ratio(tw, th)).abs() > 0.01 {
         if ratio(sw, sh) > ratio(tw, th) {
-            let ch = th - (tw as f32 * sh as f32 / sw as f32) as u32;
+            let ch = th.saturating_sub((tw as f32 * sh as f32 / sw as f32) as u32);
             cy = ch / 2;
             th -= ch;
         } else {
-            let cw = tw - (th as f32 * sw as f32 / sh as f32) as u32;
+            let cw = tw.saturating_sub((th as f32 * sw as f32 / sh as f32) as u32);
             cx = cw / 2;
             tw -= cw;
         }
@@ -266,6 +268,15 @@ mod tests {
             img.put_pixel(2 * nw + x, y, image::Rgb([u(q[0]), u(q[1]), u(q[2])]));
         }
         img.save(format!("{out}/match.png")).unwrap();
+    }
+
+    /// A landscape JPEG of a portrait render (the camera did not rotate it)
+    /// with another aspect ratio: matched, no overflow.
+    #[test]
+    fn unrotated_jpeg_of_another_ratio() {
+        let neutral = photo(400, 600, |t| t);
+        let c = auto_tone_curve(&neutral, &photo(320, 180, |t| t), 600).unwrap();
+        assert!(c.len() >= 2);
     }
 
     #[test]

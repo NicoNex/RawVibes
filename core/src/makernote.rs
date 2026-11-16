@@ -15,7 +15,31 @@ pub struct CameraLut {
 
 /// The Real Time LUTs named in the RW2 at `path` (none for other files).
 pub fn real_time_luts(path: &Path) -> Vec<CameraLut> {
-    std::fs::read(path).ok().and_then(|b| from_rw2(&b)).unwrap_or_default()
+    read_rw2(path).unwrap_or_default()
+}
+
+/// Reads only what it needs: the RW2 header and IFD0, then the start of the
+/// embedded JPEG, where its EXIF is (a JPEG's APP1 is at most 64 KB).
+fn read_rw2(path: &Path) -> Option<Vec<CameraLut>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut read_at = |at: u64, len: usize| -> Option<Vec<u8>> {
+        f.seek(SeekFrom::Start(at)).ok()?;
+        let mut buf = Vec::new();
+        f.by_ref().take(len as u64).read_to_end(&mut buf).ok()?;
+        Some(buf)
+    };
+    let head = read_at(0, 8)?;
+    if head.get(..4)? != b"IIU\0" {
+        return None;
+    }
+    let ifd0 = u32::from_le_bytes(head[4..8].try_into().ok()?) as u64;
+    let n = u16::from_le_bytes(read_at(ifd0, 2)?.try_into().ok()?) as usize;
+    // IFD0 alone, re-based at 0: its JpgFromRaw entry gives the JPEG's offset and length.
+    let ifd = read_at(ifd0, 2 + 12 * n.min(1024))?;
+    let (count, field) = Tiff { b: &ifd, le: true }.entry(0, 0x2e)?;
+    let at = u32::from_le_bytes(ifd.get(field..field + 4)?.try_into().ok()?) as u64;
+    from_jpeg(&read_at(at, (count as usize).min(1 << 17))?)
 }
 
 /// A TIFF block: its bytes and byte order.
@@ -50,16 +74,6 @@ impl Tiff<'_> {
         let at = if count <= 4 { field } else { self.u32(field)? as usize };
         self.b.get(at..at.checked_add(count as usize)?)
     }
-}
-
-fn from_rw2(file: &[u8]) -> Option<Vec<CameraLut>> {
-    // RW2: little-endian TIFF with magic 0x55.
-    if file.get(..4)? != b"IIU\0" {
-        return None;
-    }
-    let rw2 = Tiff { b: file, le: true };
-    let jpeg = rw2.bytes(rw2.u32(4)? as usize, 0x2e)?;
-    from_jpeg(jpeg)
 }
 
 /// The LUTs in the Panasonic makernote of `jpeg`'s EXIF.
@@ -169,7 +183,7 @@ mod tests {
         let mut bad = good.clone();
         bad[50..60].fill(0xff);
         let _ = from_jpeg(&bad);
-        assert!(from_rw2(b"not a raw").is_none());
+        assert!(real_time_luts(Path::new(env!("CARGO_MANIFEST_PATH"))).is_empty(), "not a RAW");
     }
 
     /// On a real file (RAWVALLEY_RAW): prints what the camera named.

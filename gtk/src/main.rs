@@ -34,7 +34,7 @@ use rawvalley_core::develop::{Camera, Detail, Develop, KELVIN, WB_PRESETS};
 use rawvalley_core::export::{self, PhotoFormat};
 use rawvalley_core::gpu::{self, Done, Job, PhotoExport, ThumbBase};
 use rawvalley_core::grade::{
-    BAND_HUE_RANGE, BAND_HUES, Curve, Grade, HUE_HUE, HUE_SAT, LUM_SAT, LUMA, MASTER, Params, Stage,
+    BAND_HUE_RANGE, BAND_HUES, Curve, Grade, HUE_HUE, HUE_SAT, LUM_SAT, LUMA, MASTER, Params, Stage, neutral_curve,
 };
 use rawvalley_core::lab::{Blend, Layer, Source, Stack, oklch_to_srgb};
 use rawvalley_core::lut::{self, Format, Lut3d, LutEntry, MAX_LIBRARY};
@@ -84,11 +84,11 @@ enum Msg {
     CameraCurve(PathBuf, Option<Curve>),
     /// A Real Time LUT the camera applied to the photo, and its file if found.
     CameraLut(PathBuf, CameraLut, Option<PathBuf>),
-    /// Choose the file of a camera LUT that was not found.
-    CameraLutFind(CameraLut),
-    /// Add a camera LUT file to the looks at its opacity.
-    CameraLutAdd(CameraLut, PathBuf),
-    CameraLutLoaded(CameraLut, PathBuf, Result<Lut3d, String>),
+    /// Choose the file of photo `PathBuf`'s camera LUT that was not found.
+    CameraLutFind(PathBuf, CameraLut),
+    /// Use a camera LUT file (photo, LUT, file) in place of the matched curve.
+    CameraLutAdd(PathBuf, CameraLut, PathBuf),
+    CameraLutLoaded(PathBuf, CameraLut, PathBuf, Result<Lut3d, String>),
     AsInCameraOnOpen(bool),
     /// Write the sidecar if tick `u64` is still the last edit.
     SaveSidecar(u64),
@@ -503,6 +503,8 @@ struct App {
     develop_tick: u64,
     /// The camera match of a file, once computed.
     camera_match: Option<(PathBuf, Match)>,
+    /// The last tone curve "As in camera" matched, and its photo, until the camera's LUT replaces it.
+    camera_curve: Option<(PathBuf, Curve)>,
     /// The match in flight is the camera's, for this file.
     camera_job: Option<PathBuf>,
     /// The open photo's edits as last read from or written to its sidecar.
@@ -1137,22 +1139,24 @@ impl App {
             self.edit_develop(DevelopEdit::AsShot, sender);
             self.edit_develop(DevelopEdit::CameraExposure, sender);
             let (Some(d), Some(cam)) = (self.decoded.clone(), self.camera().cloned()) else { return };
-            let (profile, develop) = (self.profile, Develop { wb: None, exposure: cam.baseline_ev, ..self.develop });
+            let develop = Develop { wb: None, exposure: cam.baseline_ev, ..self.develop };
+            let library: Vec<PathBuf> = self.luts.iter().map(|l| l.path.clone()).collect();
             let s = sender.input_sender().clone();
             std::thread::spawn(move || {
                 let (w, h) = d.size();
                 let whole = Region { center: [w as f32 / 2.0, h as f32 / 2.0], size: [w as f32, h as f32], angle: 0.0 };
                 let curve = rawvalley_core::photo::embedded_preview(&path).ok().and_then(|jpeg| {
-                    let neutral = d.encode_fit(&whole, 1024, profile, &develop);
+                    // The master curve works on display values: Standard is the display encoding whatever the input profile.
+                    let neutral = d.encode_fit(&whole, 1024, Profile::Standard, &develop);
                     rawvalley_core::histmatch::auto_tone_curve(&neutral, &jpeg, w)
                 });
                 s.emit(Msg::CameraCurve(path.clone(), curve));
-                // The Real Time LUTs are offered, not applied: the curve already matches the JPEG's tones.
+                // The Real Time LUTs are offered in place of the curve, not on top of it.
                 for lut in rawvalley_core::makernote::real_time_luts(&path) {
                     let remembered = settings::value(&camera_lut_key(&lut.name)).map(PathBuf::from);
-                    let file = remembered.filter(|p| p.is_file()).or_else(|| {
-                        settings::folder(settings::LUT_FOLDER).and_then(|dir| lut::find_named(&dir, &lut.name))
-                    });
+                    let file = remembered
+                        .filter(|p| p.is_file())
+                        .or_else(|| lut::find_named(library.iter().map(PathBuf::as_path), &lut.name));
                     s.emit(Msg::CameraLut(path.clone(), lut, file));
                 }
             });
@@ -1203,10 +1207,18 @@ impl App {
         std::thread::spawn(move || s.emit(Msg::LayerLoaded(which, path.clone(), Lut3d::load(&path))));
     }
 
-    fn push_lut(&mut self, which: Layers, lut: Arc<Lut3d>, path: Option<PathBuf>, sender: &ComponentSender<Self>) {
+    /// Adds `lut` to `which`, with its input and intensity if known.
+    fn push_lut(
+        &mut self,
+        which: Layers,
+        lut: Arc<Lut3d>,
+        path: Option<PathBuf>,
+        known: Option<(Profile, f32)>,
+        sender: &ComponentSender<Self>,
+    ) {
         // Vendors name the input in the file (e.g. "…_FLog_…"): preselect it.
-        let input = Profile::guess_from_name(&lut.title);
-        self.layers_mut(which).push(LabLayer { kind: LabKind::Lut(lut), intensity: 1.0, input, on: true, path });
+        let (input, intensity) = known.unwrap_or_else(|| (Profile::guess_from_name(&lut.title), 1.0));
+        self.layers_mut(which).push(LabLayer { kind: LabKind::Lut(lut), intensity, input, on: true, path });
         self.layers_changed(which, true, sender);
     }
 
@@ -1462,7 +1474,9 @@ fn section_with(title: &str, child: &impl IsA<gtk::Widget>, header: &[gtk::Widge
     card
 }
 
-/// Where a file dialog opens: the remembered folder for `key`, if it still exists.
+/// File extensions of the LUT files RawValley reads.
+const LUT_EXTENSIONS: [&str; 3] = ["cube", "vlt", "png"];
+
 /// Settings key remembering where the camera LUT `name` was found.
 fn camera_lut_key(name: &str) -> String {
     let safe: String =
@@ -1470,6 +1484,7 @@ fn camera_lut_key(name: &str) -> String {
     format!("camera-lut-{safe}")
 }
 
+/// Where a file dialog opens: the remembered folder for `key`, if it still exists.
 fn start_in(key: &str) -> Option<gio::File> {
     settings::folder(key).map(gio::File::for_path)
 }
@@ -3099,6 +3114,7 @@ impl SimpleComponent for App {
             refine: settings::value(settings::REFINE_IDLE).as_deref() != Some("0"),
             develop_tick: 0,
             camera_match: None,
+            camera_curve: None,
             camera_job: None,
             saved: None,
             save_tick: 0,
@@ -3299,25 +3315,31 @@ impl SimpleComponent for App {
             }
             Msg::AsInCamera(part) => self.as_in_camera(part, &sender),
             Msg::CameraCurve(path, _) if Some(&path) != self.path.as_ref() => {}
-            Msg::CameraCurve(_, Some(curve)) => {
+            Msg::CameraCurve(photo, Some(curve)) => {
+                let before = self.grade.clone();
                 let mut grade = self.grade.clone();
-                grade.curves[MASTER] = curve;
+                grade.curves[MASTER] = curve.clone();
+                self.camera_curve = Some((photo, curve));
                 self.apply_grade(grade);
+                self.undo_toast(&gettext("Tone curve matched to the camera JPEG"), move || {
+                    Msg::RestoreGrade(Box::new(before.clone()))
+                });
             }
             Msg::CameraCurve(_, None) => self.toast(&gettext("No camera JPEG to match the tone curve to")),
             Msg::CameraLut(path, _, _) if Some(&path) != self.path.as_ref() => {}
-            Msg::CameraLut(_, l, Some(file)) => {
+            Msg::CameraLut(photo, l, Some(file)) => {
                 let title = gettext!("The camera applied the LUT “{}” at {}%", l.name, l.opacity);
-                self.action_toast(&title, &gettext("Add"), move || Msg::CameraLutAdd(l.clone(), file.clone()));
+                let msg = move || Msg::CameraLutAdd(photo.clone(), l.clone(), file.clone());
+                self.action_toast(&title, &gettext("Use LUT"), msg);
             }
-            Msg::CameraLut(_, l, None) => {
+            Msg::CameraLut(photo, l, None) => {
                 let title = gettext!("The camera applied the LUT “{}”: not in your LUT folder", l.name);
-                self.action_toast(&title, &gettext("Find…"), move || Msg::CameraLutFind(l.clone()));
+                self.action_toast(&title, &gettext("Find…"), move || Msg::CameraLutFind(photo.clone(), l.clone()));
             }
-            Msg::CameraLutFind(l) => {
+            Msg::CameraLutFind(photo, l) => {
                 let dialog = gtk::FileDialog::builder()
                     .title(gettext!("Find the LUT “{}”", l.name))
-                    .filters(&file_filters(&gettext("LUTs"), &["cube".into(), "vlt".into(), "png".into()]))
+                    .filters(&file_filters(&gettext("LUTs"), &LUT_EXTENSIONS.map(String::from)))
                     .modal(true)
                     .build();
                 dialog.set_initial_folder(start_in(settings::LUT_FOLDER).as_ref());
@@ -3326,22 +3348,27 @@ impl SimpleComponent for App {
                     if let Some(p) = r.ok().and_then(|f| f.path()) {
                         // Remembered by name: the next photo with this LUT finds it.
                         let _ = settings::set_value(&camera_lut_key(&l.name), &p.to_string_lossy());
-                        s.input(Msg::CameraLutAdd(l, p));
+                        s.input(Msg::CameraLutAdd(photo, l, p));
                     }
                 });
             }
-            Msg::CameraLutAdd(l, p) => {
+            Msg::CameraLutAdd(photo, l, p) => {
                 let s = sender.input_sender().clone();
-                std::thread::spawn(move || s.emit(Msg::CameraLutLoaded(l, p.clone(), Lut3d::load(&p))));
+                std::thread::spawn(move || s.emit(Msg::CameraLutLoaded(photo, l, p.clone(), Lut3d::load(&p))));
             }
-            Msg::CameraLutLoaded(l, p, Ok(lut)) => {
+            Msg::CameraLutLoaded(photo, ..) if Some(&photo) != self.path.as_ref() => {}
+            Msg::CameraLutLoaded(photo, l, p, Ok(lut)) => {
+                // The JPEG the curve was matched to already carries this LUT: it replaces the curve.
+                if self.camera_curve.take().is_some_and(|(f, c)| f == photo && c == self.grade.curves[MASTER]) {
+                    let mut grade = self.grade.clone();
+                    grade.curves[MASTER] = neutral_curve(MASTER);
+                    self.apply_grade(grade);
+                }
                 // Real Time LUTs take V-Log: the camera applies them to its log signal.
-                let kind = LabKind::Lut(Arc::new(lut));
                 let intensity = l.opacity as f32 / 100.0;
-                self.looks.push(LabLayer { kind, intensity, input: Profile::VLog, on: true, path: Some(p) });
-                self.layers_changed(Layers::Look, true, &sender);
+                self.push_lut(Layers::Look, Arc::new(lut), Some(p), Some((Profile::VLog, intensity)), &sender);
             }
-            Msg::CameraLutLoaded(_, p, Err(e)) => self.toast(&gettext!("Cannot read {}: {}", p.display(), e)),
+            Msg::CameraLutLoaded(_, _, p, Err(e)) => self.toast(&gettext!("Cannot read {}: {}", p.display(), e)),
             Msg::CameraJpeg(path, _) if Some(&path) != self.path.as_ref() => {}
             Msg::CameraJpeg(path, Ok(reference)) => {
                 let (Some(d), Some(cam)) = (self.decoded.clone(), self.camera().cloned()) else { return };
@@ -4023,7 +4050,7 @@ impl SimpleComponent for App {
                 match self.candidate.take().filter(|c| c.0 == i) {
                     Some((_, lut)) => {
                         let path = self.luts.get(i).map(|l| l.path.clone());
-                        self.push_lut(Layers::Look, lut, path, &sender)
+                        self.push_lut(Layers::Look, lut, path, None, &sender)
                     }
                     None => {
                         if let Some(entry) = self.luts.get(i) {
@@ -4075,10 +4102,12 @@ impl SimpleComponent for App {
                     None => self.toast(&gettext("Select a LUT in the browser first")),
                 },
                 LabAdd::File => {
-                    let pats: Vec<String> = ["cube", "vlt", "png"].map(String::from).to_vec();
                     let dialog = gtk::FileDialog::builder()
                         .title(gettext("Add LUT"))
-                        .filters(&file_filters(&gettext("LUTs (.cube, .vlt, HALD .png)"), &pats))
+                        .filters(&file_filters(
+                            &gettext("LUTs (.cube, .vlt, HALD .png)"),
+                            &LUT_EXTENSIONS.map(String::from),
+                        ))
                         .modal(true)
                         .build();
                     dialog.set_initial_folder(start_in(settings::LUT_FOLDER).as_ref());
@@ -4100,7 +4129,7 @@ impl SimpleComponent for App {
                 }
                 sender.input(Msg::LayerAdd(Layers::Lab, LabAdd::Selected));
             }
-            Msg::LayerLoaded(which, p, Ok(lut)) => self.push_lut(which, Arc::new(lut), Some(p), &sender),
+            Msg::LayerLoaded(which, p, Ok(lut)) => self.push_lut(which, Arc::new(lut), Some(p), None, &sender),
             Msg::LayerLoaded(_, p, Err(e)) => {
                 self.flash_new_look = false;
                 self.toast(&gettext!("Cannot read {}: {}", p.display(), e))

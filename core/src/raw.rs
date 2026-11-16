@@ -830,42 +830,41 @@ impl Gpu {
         }
         let (p, g) = (&self.raw, grid(lw * lh));
         let hit = |c: &Option<(Key, wgpu::Buffer)>, key: &Key| c.as_ref().filter(|c| c.0 == *key).map(|c| c.1.clone());
-        if let Some(b) = hit(&work.after_contrast, &contrast_key) {
-            self.copy(&b, &work.lin);
-        } else {
-            if let Some(b) = hit(&work.after_haze, &haze_key) {
-                self.copy(&b, &work.lin);
-            } else {
-                if let Some(b) = hit(&work.after_nr, &nr_key) {
-                    self.copy(&b, &work.lin);
-                } else {
-                    let linear = [(10, level), (11, raw.ai_level(k)), (12, &p.develop_params), (15, &work.lin)];
-                    self.passes(&[(&p.develop_linear, &linear, g)]);
-                    if nr_on {
-                        let lin = work.lin.clone();
-                        self.denoise(&lin, work.scratch(self), lw, lh, s, d, noise);
-                        keep(self, &work.lin, &mut work.after_nr, nr_key);
-                    }
-                }
-                if haze_on {
-                    let lin = work.lin.clone();
-                    for (amount, brighten) in [(d.defringe, false), (d.defringe_green, true)] {
-                        if amount > 0.0 {
-                            self.defringe(&lin, work.scratch(self), lw, lh, s, amount, brighten);
-                        }
-                    }
-                    if d.dehaze != 0.0 {
-                        self.airlight(raw, dev, profile);
-                        self.dehaze(&lin, work.scratch(self), lw, lh, s, d.dehaze);
-                    }
-                    keep(self, &work.lin, &mut work.after_haze, haze_key);
-                }
-            }
-            if contrast_on {
+        // The latest cached stage, copied back; the stages after it run (and are kept).
+        let hits =
+            [hit(&work.after_nr, &nr_key), hit(&work.after_haze, &haze_key), hit(&work.after_contrast, &contrast_key)];
+        let from = hits.iter().rposition(Option::is_some).map_or(0, |i| i + 1);
+        if let Some(b) = from.checked_sub(1).and_then(|i| hits[i].as_ref()) {
+            self.copy(b, &work.lin);
+        }
+        if from < 1 {
+            let linear = [(10, level), (11, raw.ai_level(k)), (12, &p.develop_params), (15, &work.lin)];
+            self.passes(&[(&p.develop_linear, &linear, g)]);
+            if nr_on {
                 let lin = work.lin.clone();
-                self.local_laplacian(&lin, work.scratch(self), lw, lh, s, d.local_contrast);
-                keep(self, &work.lin, &mut work.after_contrast, contrast_key);
+                self.denoise(&lin, work.scratch(self), lw, lh, s, d, noise);
+                keep(self, &work.lin, &mut work.after_nr, nr_key);
             }
+        }
+        if from < 2 && haze_on {
+            let lin = work.lin.clone();
+            // Purple and green fringes share the module's three working buffers.
+            let fringe = [0; 3].map(|_| self.buffer(lin.size(), wgpu::BufferUsages::empty()));
+            for (amount, brighten) in [(d.defringe, false), (d.defringe_green, true)] {
+                if amount > 0.0 {
+                    self.defringe(&lin, work.scratch(self), &fringe, lw, lh, s, amount, brighten);
+                }
+            }
+            if d.dehaze != 0.0 {
+                self.airlight(raw, dev, profile);
+                self.dehaze(&lin, work.scratch(self), lw, lh, s, d.dehaze);
+            }
+            keep(self, &work.lin, &mut work.after_haze, haze_key);
+        }
+        if from < 3 && contrast_on {
+            let lin = work.lin.clone();
+            self.local_laplacian(&lin, work.scratch(self), lw, lh, s, d.local_contrast);
+            keep(self, &work.lin, &mut work.after_contrast, contrast_key);
         }
         if d.sharpen > 0.0 {
             let lin = work.lin.clone();
@@ -937,7 +936,7 @@ impl Gpu {
     /// (kept while photo, white balance, exposure, lens and AI blend stay).
     fn airlight(&self, raw: &GpuRaw, dev: &Develop, profile: Profile) {
         let (fw, fh) = raw.oriented_size();
-        let whole = Region { center: [fw as f32 / 2.0, fh as f32 / 2.0], size: [fw as f32, fh as f32], angle: 0.0 };
+        let whole = Region::whole(fw, fh);
         let (w, h) = crate::photo::Decoded::fit_size(&whole, AIR_SIZE);
         let (params, k) = develop_params(raw, &whole, w, h, dev, profile, 0);
         let g = params.gains;
@@ -1046,6 +1045,7 @@ impl Gpu {
         &self,
         lin: &wgpu::Buffer,
         [sa, sb]: [&wgpu::Buffer; 2],
+        [b, hi, lo]: &[wgpu::Buffer; 3],
         w: u32,
         h: u32,
         s: f32,
@@ -1061,24 +1061,23 @@ impl Gpu {
             brighten: brighten as u32,
             _pad: [0.0; 2],
         }));
-        // Blurred input, higher and lower manifolds.
-        let [b, hi, lo] = [0; 3].map(|_| self.buffer(lin.size(), wgpu::BufferUsages::empty()));
+        // `b`, `hi`, `lo`: blurred input, higher and lower manifolds.
         let (p, g) = (&self.raw, grid(w * h));
         let blur_h = |from, to| (&p.fr_blur_h, vec![(0, &pr), (4, from), (5, to)]);
         let blur_v = |from, to| (&p.fr_blur_v, vec![(0, &pr), (4, from), (5, to)]);
         let passes = [
             blur_h(lin, sb),
-            blur_v(sb, &b),
-            (&p.fr_manifolds, vec![(0, &pr), (1, lin), (2, &lo), (5, &hi), (6, &b)]),
-            blur_h(&hi, sb),
-            blur_v(sb, &hi),
-            blur_h(&lo, sb),
-            blur_v(sb, &lo),
-            (&p.fr_normalise, vec![(0, &pr), (2, &lo), (5, &hi), (6, &b)]),
-            (&p.fr_out, vec![(0, &pr), (1, lin), (2, sa), (4, &hi), (6, &lo)]),
+            blur_v(sb, b),
+            (&p.fr_manifolds, vec![(0, &pr), (1, lin), (2, lo), (5, hi), (6, b)]),
+            blur_h(hi, sb),
+            blur_v(sb, hi),
+            blur_h(lo, sb),
+            blur_v(sb, lo),
+            (&p.fr_normalise, vec![(0, &pr), (2, lo), (5, hi), (6, b)]),
+            (&p.fr_out, vec![(0, &pr), (1, lin), (2, sa), (4, hi), (6, lo)]),
             blur_h(sa, sb),
             blur_v(sb, sa),
-            (&p.fr_apply, vec![(0, &pr), (1, lin), (2, sa), (4, &hi), (6, &lo)]),
+            (&p.fr_apply, vec![(0, &pr), (1, lin), (2, sa), (4, hi), (6, lo)]),
         ];
         let passes: Vec<Pass> = passes.iter().map(|(pl, b)| (*pl, b.as_slice(), g)).collect();
         self.passes(&passes);
@@ -1546,7 +1545,7 @@ mod tests {
     }
 
     fn whole(w: u32, h: u32) -> Region {
-        Region { center: [w as f32 / 2.0, h as f32 / 2.0], size: [w as f32, h as f32], angle: 0.0 }
+        Region::whole(w, h)
     }
 
     #[test]
@@ -1991,7 +1990,7 @@ mod tests {
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
         let (w, h) = (96u32, 48u32);
         let green = [0.12, 0.45, 0.1];
-        let y = 0.2627 * green[0] + 0.678 * green[1] + 0.0593 * green[2];
+        let y = luma(&[green[0], green[1], green[2], 0.0]);
         let px = (0..w * h)
             .map(|i| match (i % w, i / w) {
                 (30..=31, _) => green,

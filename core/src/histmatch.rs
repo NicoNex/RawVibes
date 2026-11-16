@@ -247,8 +247,7 @@ mod tests {
         let path = std::path::PathBuf::from(raw);
         let d = crate::photo::Decoded::load(&path).unwrap();
         let (w, h) = d.size();
-        let whole =
-            crate::view::Region { center: [w as f32 / 2.0, h as f32 / 2.0], size: [w as f32, h as f32], angle: 0.0 };
+        let whole = crate::view::Region::whole(w, h);
         let neutral = d.encode_fit(&whole, 1024, crate::profiles::Profile::Standard, &Default::default());
         let jpeg = crate::photo::embedded_preview(&path).unwrap();
         let c = auto_tone_curve(&neutral, &jpeg, w).unwrap();

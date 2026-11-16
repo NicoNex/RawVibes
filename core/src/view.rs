@@ -18,6 +18,11 @@ pub struct Region {
 }
 
 impl Region {
+    /// The whole of a `w` × `h` image, unrotated.
+    pub fn whole(w: u32, h: u32) -> Self {
+        Region { center: [w as f32 / 2.0, h as f32 / 2.0], size: [w as f32, h as f32], angle: 0.0 }
+    }
+
     /// The source point at offset `d` from the centre, in the region's rotated frame.
     pub fn point(&self, d: [f32; 2]) -> [f32; 2] {
         let (sin, cos) = self.angle.to_radians().sin_cos();

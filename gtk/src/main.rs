@@ -37,7 +37,8 @@ use rawvalley_core::grade::{
     BAND_HUE_RANGE, BAND_HUES, Curve, Grade, HUE_HUE, HUE_SAT, LUM_SAT, LUMA, MASTER, Params, Stage,
 };
 use rawvalley_core::lab::{Blend, Layer, Source, Stack, oklch_to_srgb};
-use rawvalley_core::lut::{Format, Lut3d, LutEntry, MAX_LIBRARY};
+use rawvalley_core::lut::{self, Format, Lut3d, LutEntry, MAX_LIBRARY};
+use rawvalley_core::makernote::CameraLut;
 use rawvalley_core::matching::{self, Match};
 use rawvalley_core::photo::{Decoded, PREVIEW_MAX, Photo, RASTER_EXTS, RAW_EXTS, is_photo, is_raw};
 use rawvalley_core::preset::{self, Preset};
@@ -81,6 +82,13 @@ enum Msg {
     CameraJpeg(PathBuf, Result<Arc<Photo>, String>),
     /// "As in camera": the tone curve matched to the camera JPEG (`None`: no usable JPEG).
     CameraCurve(PathBuf, Option<Curve>),
+    /// A Real Time LUT the camera applied to the photo, and its file if found.
+    CameraLut(PathBuf, CameraLut, Option<PathBuf>),
+    /// Choose the file of a camera LUT that was not found.
+    CameraLutFind(CameraLut),
+    /// Add a camera LUT file to the looks at its opacity.
+    CameraLutAdd(CameraLut, PathBuf),
+    CameraLutLoaded(CameraLut, PathBuf, Result<Lut3d, String>),
     AsInCameraOnOpen(bool),
     /// Write the sidecar if tick `u64` is still the last edit.
     SaveSidecar(u64),
@@ -876,9 +884,14 @@ impl App {
 
     /// Toast with an Undo button that sends `undo()`.
     fn undo_toast(&self, title: &str, undo: impl Fn() -> Msg + 'static) {
-        let toast = adw::Toast::builder().title(title).button_label(gettext("Undo")).timeout(6).build();
+        self.action_toast(title, &gettext("Undo"), undo);
+    }
+
+    /// Toast with a button `label` that sends `msg()`.
+    fn action_toast(&self, title: &str, label: &str, msg: impl Fn() -> Msg + 'static) {
+        let toast = adw::Toast::builder().title(title).button_label(label).timeout(6).build();
         let s = self.input.clone();
-        toast.connect_button_clicked(move |_| s.emit(undo()));
+        toast.connect_button_clicked(move |_| s.emit(msg()));
         self.ui.toasts.add_toast(toast);
     }
 
@@ -1133,7 +1146,15 @@ impl App {
                     let neutral = d.encode_fit(&whole, 1024, profile, &develop);
                     rawvalley_core::histmatch::auto_tone_curve(&neutral, &jpeg, w)
                 });
-                s.emit(Msg::CameraCurve(path, curve));
+                s.emit(Msg::CameraCurve(path.clone(), curve));
+                // The Real Time LUTs are offered, not applied: the curve already matches the JPEG's tones.
+                for lut in rawvalley_core::makernote::real_time_luts(&path) {
+                    let remembered = settings::value(&camera_lut_key(&lut.name)).map(PathBuf::from);
+                    let file = remembered.filter(|p| p.is_file()).or_else(|| {
+                        settings::folder(settings::LUT_FOLDER).and_then(|dir| lut::find_named(&dir, &lut.name))
+                    });
+                    s.emit(Msg::CameraLut(path.clone(), lut, file));
+                }
             });
             return;
         }
@@ -1442,6 +1463,13 @@ fn section_with(title: &str, child: &impl IsA<gtk::Widget>, header: &[gtk::Widge
 }
 
 /// Where a file dialog opens: the remembered folder for `key`, if it still exists.
+/// Settings key remembering where the camera LUT `name` was found.
+fn camera_lut_key(name: &str) -> String {
+    let safe: String =
+        name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
+    format!("camera-lut-{safe}")
+}
+
 fn start_in(key: &str) -> Option<gio::File> {
     settings::folder(key).map(gio::File::for_path)
 }
@@ -3277,6 +3305,43 @@ impl SimpleComponent for App {
                 self.apply_grade(grade);
             }
             Msg::CameraCurve(_, None) => self.toast(&gettext("No camera JPEG to match the tone curve to")),
+            Msg::CameraLut(path, _, _) if Some(&path) != self.path.as_ref() => {}
+            Msg::CameraLut(_, l, Some(file)) => {
+                let title = gettext!("The camera applied the LUT “{}” at {}%", l.name, l.opacity);
+                self.action_toast(&title, &gettext("Add"), move || Msg::CameraLutAdd(l.clone(), file.clone()));
+            }
+            Msg::CameraLut(_, l, None) => {
+                let title = gettext!("The camera applied the LUT “{}”: not in your LUT folder", l.name);
+                self.action_toast(&title, &gettext("Find…"), move || Msg::CameraLutFind(l.clone()));
+            }
+            Msg::CameraLutFind(l) => {
+                let dialog = gtk::FileDialog::builder()
+                    .title(gettext!("Find the LUT “{}”", l.name))
+                    .filters(&file_filters(&gettext("LUTs"), &["cube".into(), "vlt".into(), "png".into()]))
+                    .modal(true)
+                    .build();
+                dialog.set_initial_folder(start_in(settings::LUT_FOLDER).as_ref());
+                let s = sender.clone();
+                dialog.open(Some(&self.ui.window), gio::Cancellable::NONE, move |r| {
+                    if let Some(p) = r.ok().and_then(|f| f.path()) {
+                        // Remembered by name: the next photo with this LUT finds it.
+                        let _ = settings::set_value(&camera_lut_key(&l.name), &p.to_string_lossy());
+                        s.input(Msg::CameraLutAdd(l, p));
+                    }
+                });
+            }
+            Msg::CameraLutAdd(l, p) => {
+                let s = sender.input_sender().clone();
+                std::thread::spawn(move || s.emit(Msg::CameraLutLoaded(l, p.clone(), Lut3d::load(&p))));
+            }
+            Msg::CameraLutLoaded(l, p, Ok(lut)) => {
+                // Real Time LUTs take V-Log: the camera applies them to its log signal.
+                let kind = LabKind::Lut(Arc::new(lut));
+                let intensity = l.opacity as f32 / 100.0;
+                self.looks.push(LabLayer { kind, intensity, input: Profile::VLog, on: true, path: Some(p) });
+                self.layers_changed(Layers::Look, true, &sender);
+            }
+            Msg::CameraLutLoaded(_, p, Err(e)) => self.toast(&gettext!("Cannot read {}: {}", p.display(), e)),
             Msg::CameraJpeg(path, _) if Some(&path) != self.path.as_ref() => {}
             Msg::CameraJpeg(path, Ok(reference)) => {
                 let (Some(d), Some(cam)) = (self.decoded.clone(), self.camera().cloned()) else { return };

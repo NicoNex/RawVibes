@@ -313,6 +313,16 @@ fn looks_like_lattice(data: &[[f32; 3]], n: usize) -> bool {
     up * 10 >= steps * 9
 }
 
+/// The LUT under `dir` whose file name is `name`, ignoring case, spaces and
+/// punctuation ("Fuji Eterna 3513" finds `fuji_eterna_3513.vlt`).
+pub fn find_named(dir: &Path, name: &str) -> Option<std::path::PathBuf> {
+    let key = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect::<String>();
+    let want = key(name);
+    let mut paths = Vec::new();
+    collect_luts(dir, &mut paths);
+    paths.into_iter().find(|p| p.file_stem().is_some_and(|s| key(&s.to_string_lossy()) == want))
+}
+
 /// Recursive LUT search. Hidden entries are skipped and symlinked
 /// directories are not followed (`file_type` doesn't resolve links), so
 /// link cycles can't loop forever.

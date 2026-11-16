@@ -1,7 +1,8 @@
 // Defringe: darktable's "chromatic aberrations" module (src/iop/cacorrectrgb.c,
-// rawfiner), "darken only" mode, green guide, no refinement. Darken only,
-// because the standard mode spreads a purple fringe's colour into the dark
-// side next to it; darkening can only take colour away.
+// rawfiner), "darken only" mode for purple fringes and "brighten only" for
+// green ones, green guide, no refinement. Not the standard mode, which spreads
+// a fringe's colour into the side next to it; each one-sided mode can only
+// take colour away.
 // Red and blue are written as a ratio of green; the ratio comes from two
 // local "manifolds", averages over the pixels whose green is above (higher)
 // or below (lower) its local mean, with log2 ratios. darktable computes them
@@ -18,7 +19,8 @@ struct FringeParams {
     sigma: f32,
     // pow(20, 1 − strength): how much a moved local average falls back to the input.
     safety: f32,
-    _pad0: f32,
+    // 0: darken only (purple fringes), 1: brighten only (green).
+    brighten: u32,
     _pad1: f32,
     _pad2: f32,
 }
@@ -140,7 +142,9 @@ fn corrected(i: u32) -> vec2<f32> {
     }
     let wh = max(1.0 - wl, 0.0);
     let ratio = pow(low.xz / lg, vec2<f32>(wl)) * pow(high.xz / hg, vec2<f32>(wh));
-    return min(g * ratio, max(lin[i].xz, vec2<f32>(0.0)));
+    let input = max(lin[i].xz, vec2<f32>(0.0));
+    if p.brighten == 1u { return max(g * ratio, input); }
+    return min(g * ratio, input);
 }
 
 /// sa = (red in, red out, blue in, blue out).

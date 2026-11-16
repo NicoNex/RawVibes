@@ -74,7 +74,7 @@ fn judge(name: &str, values: &[f32], m: &[f32], neutral: Option<usize>, dir: Dir
 }
 
 /// Findings that are the method's own behaviour, not defects: failure prefix, why.
-const EXPECTED: [(&str, &str); 10] = [
+const EXPECTED: [(&str, &str); 12] = [
     ("gain luma: lopsided", "raising gain clips the highlights it is measured on"),
     ("mono mix", "negative filters push weights below zero; the sum is floored, so the far negative end folds"),
     ("vignette midpoint", "past ~60 the vignette starts beyond the corners: nothing left to darken"),
@@ -83,6 +83,8 @@ const EXPECTED: [(&str, &str); 10] = [
     ("sharpening threshold (100): dead from 90", "above the noise level every pixel is already protected"),
     ("defringe: dead from 0 to 10", "darktable's safety 20^(1 − strength): weights barely move below strength 0.2"),
     ("defringe: dead from 10 to 20", "as above"),
+    ("green defringe: dead from 0 to 10", "the same safety blend as purple"),
+    ("green defringe: dead from 10 to 20", "as above"),
     (
         "NR chrominance (change): dead from 90",
         "a 2σ soft threshold has removed the white noise: the last step takes its final ~5%",
@@ -522,11 +524,11 @@ fn edge() -> Vec<[f32; 3]> {
 }
 
 /// A purple fringe two px wide between a dark and a bright grey.
-fn fringe() -> Vec<[f32; 3]> {
+fn fringe(colour: [f32; 3]) -> Vec<[f32; 3]> {
     (0..RW * RH)
         .map(|i| match i % RW {
             x if x < RW / 2 => [0.03; 3],
-            x if x < RW / 2 + 2 => [0.35, 0.08, 0.6],
+            x if x < RW / 2 + 2 => colour,
             _ => [0.6; 3],
         })
         .collect()
@@ -564,7 +566,8 @@ fn audit_develop_sliders() {
     let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
     let flat = rgb_raw(&gpu, noisy_flat(), NOISE);
     let edge_raw = rgb_raw(&gpu, edge(), NOISE);
-    let fringe_raw = rgb_raw(&gpu, fringe(), NOISE);
+    let fringe_raw = rgb_raw(&gpu, fringe([0.35, 0.08, 0.6]), NOISE);
+    let green_fringe_raw = rgb_raw(&gpu, fringe([0.12, 0.45, 0.1]), NOISE);
     let hazy_raw = rgb_raw(&gpu, hazy(), NOISE);
     let texture_raw = rgb_raw(&gpu, texture(), NOISE);
     let grey_raw = rgb_raw(&gpu, vec![[0.2; 3]; (RW * RH) as usize], NOISE);
@@ -702,6 +705,15 @@ fn audit_develop_sliders() {
             Dir::Down,
         ),
         ("defringe", &fringe_raw, detail(|d, v| d.defringe = v), (0.0, 100.0), 0.0, Box::new(fringe_chroma), Dir::Down),
+        (
+            "green defringe",
+            &green_fringe_raw,
+            detail(|d, v| d.defringe_green = v),
+            (0.0, 100.0),
+            0.0,
+            Box::new(fringe_chroma),
+            Dir::Down,
+        ),
         ("dehaze", &hazy_raw, detail(|d, v| d.dehaze = v), (-100.0, 100.0), 0.0, Box::new(contrast), Dir::Up),
         (
             "local contrast",

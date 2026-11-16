@@ -562,7 +562,9 @@ struct FringeParams {
     radius: i32,
     sigma: f32,
     safety: f32,
-    _pad: [f32; 3],
+    /// 0: darken only (purple fringes), 1: brighten only (green).
+    brighten: u32,
+    _pad: [f32; 2],
 }
 
 /// Rows of a row-major 3×3 matrix, padded as WGSL lays out `mat3x3` columns
@@ -794,10 +796,10 @@ impl Gpu {
         key.extend([k as f32, gains[0], gains[1], gains[2], exposure, d.lens_vignette, margin as f32, params.ai]);
         key.extend([d.nr_luma, d.nr_chroma, d.nr_detail]);
         let nr_key = (raw.id, key.clone());
-        key.extend([d.defringe, d.dehaze, d.local_contrast]);
+        key.extend([d.defringe, d.defringe_green, d.dehaze, d.local_contrast]);
         let tone_key = (raw.id, key);
         let nr_on = d.nr_luma > 0.0 || d.nr_chroma > 0.0;
-        let tone_on = d.defringe > 0.0 || d.dehaze != 0.0 || d.local_contrast > 0.0;
+        let tone_on = d.defringe > 0.0 || d.defringe_green > 0.0 || d.dehaze != 0.0 || d.local_contrast > 0.0;
         // A tool turned off frees its cache (a 100% view's is ~100 MB).
         if !nr_on {
             work.after_nr = None;
@@ -823,8 +825,10 @@ impl Gpu {
             }
             if tone_on {
                 let lin = work.lin.clone();
-                if d.defringe > 0.0 {
-                    self.defringe(&lin, work.scratch(self), lw, lh, s, d.defringe);
+                for (amount, brighten) in [(d.defringe, false), (d.defringe_green, true)] {
+                    if amount > 0.0 {
+                        self.defringe(&lin, work.scratch(self), lw, lh, s, amount, brighten);
+                    }
                 }
                 if d.dehaze != 0.0 {
                     self.airlight(raw, dev, profile);
@@ -1010,15 +1014,27 @@ impl Gpu {
     }
 
     /// Defringe (`fringe.wgsl`): darktable's chromatic aberrations module,
-    /// radius 5 px at full resolution, strength = `amount` / 100 (50 is darktable's default).
-    fn defringe(&self, lin: &wgpu::Buffer, [sa, sb]: [&wgpu::Buffer; 2], w: u32, h: u32, s: f32, amount: f32) {
+    /// radius 5 px at full resolution, strength = `amount` / 100 (50 is darktable's default);
+    /// darken only (purple fringes) or brighten only (green).
+    #[allow(clippy::too_many_arguments)]
+    fn defringe(
+        &self,
+        lin: &wgpu::Buffer,
+        [sa, sb]: [&wgpu::Buffer; 2],
+        w: u32,
+        h: u32,
+        s: f32,
+        amount: f32,
+        brighten: bool,
+    ) {
         let sigma = (5.0 * s).max(1.0);
         let pr = self.storage(bytemuck::bytes_of(&FringeParams {
             size: [w, h],
             radius: (3.0 * sigma).ceil() as i32,
             sigma,
             safety: 20f32.powf(1.0 - amount / 100.0),
-            _pad: [0.0; 3],
+            brighten: brighten as u32,
+            _pad: [0.0; 2],
         }));
         // Blurred input, higher and lower manifolds.
         let [b, hi, lo] = [0; 3].map(|_| self.buffer(lin.size(), wgpu::BufferUsages::empty()));
@@ -1941,6 +1957,42 @@ mod tests {
             chroma(&after, 70, 24),
             chroma(&before, 70, 24)
         );
+    }
+
+    /// Brighten only: a green fringe along a dark/bright edge loses its
+    /// colour; a green patch away from any edge keeps it; purple is left alone.
+    #[test]
+    fn green_defringe_cleans_green_edges_only() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (96u32, 48u32);
+        let green = [0.12, 0.45, 0.1];
+        let y = 0.2627 * green[0] + 0.678 * green[1] + 0.0593 * green[2];
+        let px = (0..w * h)
+            .map(|i| match (i % w, i / w) {
+                (30..=31, _) => green,
+                (0..=31, _) => [0.03; 3],
+                (60..=79, 14..=33) => green,
+                (60.., _) => [y; 3],
+                _ => [0.8; 3],
+            })
+            .collect::<Vec<_>>();
+        let chroma = |v: &[[f32; 4]], x: u32, yy: u32| {
+            let p = v[(yy * w + x) as usize];
+            ((p[0] - p[1]).powi(2) + (p[2] - p[1]).powi(2)).sqrt()
+        };
+        let before = field(&gpu, w, h, px.clone(), Detail::default());
+        let after = field(&gpu, w, h, px.clone(), Detail { defringe_green: 100.0, ..Detail::default() });
+        let (f0, f1) = (chroma(&before, 31, 24), chroma(&after, 31, 24));
+        // Looser than purple's 0.4: the fringe's own pixels sit in the bright side's manifold and,
+        // only 2.2 EV from neutral (purple's are 2.9), the 2 EV down-weighting barely moves them.
+        assert!(f1 <= 0.5 * f0, "fringe {f1} vs {f0}");
+        let (p0, p1) = (chroma(&before, 70, 24), chroma(&after, 70, 24));
+        assert!(p1 >= 0.9 * p0, "patch {p1} vs {p0}");
+        // Brighten only never darkens: a purple fringe (red and blue above green) is untouched.
+        let purple: Vec<_> = px.iter().map(|&p| if p == green { [0.35, 0.08, 0.6] } else { p }).collect();
+        let before = field(&gpu, w, h, purple.clone(), Detail::default());
+        let after = field(&gpu, w, h, purple, Detail { defringe_green: 100.0, ..Detail::default() });
+        assert!(chroma(&after, 31, 24) >= 0.95 * chroma(&before, 31, 24));
     }
 
     /// Dark branch, purple fringe, bright blue sky: the fringe loses its

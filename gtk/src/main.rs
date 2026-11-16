@@ -1793,7 +1793,8 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     detail_slider(&sharp, &gettext("Sharpening"), (0.0, 100.0), |d| &mut d.usm);
     detail_slider(&sharp, &gettext("Sharpening radius"), (0.5, 3.0), |d| &mut d.usm_radius);
     detail_slider(&sharp, &gettext("Sharpening threshold"), (0.0, 100.0), |d| &mut d.usm_threshold);
-    detail_slider(&sharp, &gettext("Defringe"), (0.0, 100.0), |d| &mut d.defringe);
+    detail_slider(&sharp, &gettext("Purple fringe"), (0.0, 100.0), |d| &mut d.defringe);
+    detail_slider(&sharp, &gettext("Green fringe"), (0.0, 100.0), |d| &mut d.defringe_green);
     root.append(&section(&gettext("Detail"), &sharp));
     let lens = vbox(4);
     detail_slider(&lens, &gettext("Lens vignetting"), (-100.0, 100.0), |d| &mut d.lens_vignette);

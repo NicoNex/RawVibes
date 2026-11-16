@@ -79,6 +79,8 @@ enum Msg {
     AsInCamera(CameraPart),
     /// The camera JPEG of a RAW, read for "As in camera".
     CameraJpeg(PathBuf, Result<Arc<Photo>, String>),
+    /// "As in camera": the tone curve matched to the camera JPEG (`None`: no usable JPEG).
+    CameraCurve(PathBuf, Option<Curve>),
     AsInCameraOnOpen(bool),
     /// Write the sidecar if tick `u64` is still the last edit.
     SaveSidecar(u64),
@@ -241,9 +243,9 @@ struct RollItem {
 enum CameraPart {
     /// Reference match: the whole match to the camera JPEG.
     Match,
-    /// The photo as the camera shot it, from the RAW metadata only: white
-    /// balance and exposure. Nothing from the JPEG: on the S9 it often
-    /// carries an in-camera LUT, and the RAW holds no tone curve.
+    /// The photo as the camera shot it: as-shot white balance and exposure
+    /// from the RAW metadata, then RawTherapee's auto-matched tone curve
+    /// (luminance only) to the camera JPEG in the master curve.
     All,
 }
 
@@ -1113,13 +1115,27 @@ impl App {
         self.render();
     }
 
-    /// "As in camera": WB and exposure from the metadata (`All`), or the
-    /// match to the camera JPEG (`Match`), computed once per file.
+    /// "As in camera": WB and exposure from the metadata plus the matched
+    /// tone curve (`All`), or the full match to the camera JPEG (`Match`,
+    /// computed once per file).
     fn as_in_camera(&mut self, part: CameraPart, sender: &ComponentSender<Self>) {
         let (Some(path), true) = (self.path.clone(), self.camera().is_some()) else { return };
         if matches!(part, CameraPart::All) {
             self.edit_develop(DevelopEdit::AsShot, sender);
-            return self.edit_develop(DevelopEdit::CameraExposure, sender);
+            self.edit_develop(DevelopEdit::CameraExposure, sender);
+            let (Some(d), Some(cam)) = (self.decoded.clone(), self.camera().cloned()) else { return };
+            let (profile, develop) = (self.profile, Develop { wb: None, exposure: cam.baseline_ev, ..self.develop });
+            let s = sender.input_sender().clone();
+            std::thread::spawn(move || {
+                let (w, h) = d.size();
+                let whole = Region { center: [w as f32 / 2.0, h as f32 / 2.0], size: [w as f32, h as f32], angle: 0.0 };
+                let curve = rawvalley_core::photo::embedded_preview(&path).ok().and_then(|jpeg| {
+                    let neutral = d.encode_fit(&whole, 1024, profile, &develop);
+                    rawvalley_core::histmatch::auto_tone_curve(&neutral, &jpeg, w)
+                });
+                s.emit(Msg::CameraCurve(path, curve));
+            });
+            return;
         }
         if let Some((_, m)) = self.camera_match.clone().filter(|c| c.0 == path) {
             return self.apply_match(&m);
@@ -3254,6 +3270,13 @@ impl SimpleComponent for App {
                 self.saved = Some(self.sidecar_state());
             }
             Msg::AsInCamera(part) => self.as_in_camera(part, &sender),
+            Msg::CameraCurve(path, _) if Some(&path) != self.path.as_ref() => {}
+            Msg::CameraCurve(_, Some(curve)) => {
+                let mut grade = self.grade.clone();
+                grade.curves[MASTER] = curve;
+                self.apply_grade(grade);
+            }
+            Msg::CameraCurve(_, None) => self.toast(&gettext("No camera JPEG to match the tone curve to")),
             Msg::CameraJpeg(path, _) if Some(&path) != self.path.as_ref() => {}
             Msg::CameraJpeg(path, Ok(reference)) => {
                 let (Some(d), Some(cam)) = (self.decoded.clone(), self.camera().cloned()) else { return };

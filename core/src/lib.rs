@@ -12,6 +12,7 @@ pub mod develop;
 pub mod export;
 pub mod gpu;
 pub mod grade;
+pub mod histmatch;
 pub mod lab;
 pub mod lut;
 pub mod matching;

@@ -199,7 +199,10 @@ pub(crate) struct Work {
     lin: wgpu::Buffer,
     scratch: Option<[wgpu::Buffer; 2]>,
     after_nr: Option<(Key, wgpu::Buffer)>,
-    after_tone: Option<(Key, wgpu::Buffer)>,
+    /// After defringe and dehaze; then after local contrast, so a local-contrast
+    /// drag does not re-run the other two.
+    after_haze: Option<(Key, wgpu::Buffer)>,
+    after_contrast: Option<(Key, wgpu::Buffer)>,
 }
 
 impl Work {
@@ -296,9 +299,11 @@ pub struct Pipelines {
     ll_apply: wgpu::ComputePipeline,
     /// Dehaze airlight (one f32 as bits, atomic max), zeroed per run.
     air: wgpu::Buffer,
-    /// Noise reductions run (tests check the cache).
+    /// Noise reductions and dehazes run (tests check the caches).
     #[cfg(test)]
     pub(crate) nr_runs: std::cell::Cell<u32>,
+    #[cfg(test)]
+    pub(crate) dehaze_runs: std::cell::Cell<u32>,
     /// The OETF table of the last profile developed into.
     oetf: std::cell::RefCell<Option<(Profile, wgpu::Buffer)>>,
     /// `DevelopParams`, rewritten per frame.
@@ -347,6 +352,8 @@ impl Pipelines {
             ll_apply: ll("ll_apply"),
             #[cfg(test)]
             nr_runs: Default::default(),
+            #[cfg(test)]
+            dehaze_runs: Default::default(),
             air: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("airlight"),
                 size: 16,
@@ -782,7 +789,15 @@ impl Gpu {
         if work.as_ref().is_none_or(|x| x.size != (lw, lh)) {
             let usage = wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
             let lin = self.buffer(lw as u64 * lh as u64 * 16, usage);
-            *work = Some(Work { size: (lw, lh), margin, lin, scratch: None, after_nr: None, after_tone: None });
+            *work = Some(Work {
+                size: (lw, lh),
+                margin,
+                lin,
+                scratch: None,
+                after_nr: None,
+                after_haze: None,
+                after_contrast: None,
+            });
         }
         let work = work.as_mut().expect("set above");
         work.margin = margin;
@@ -796,47 +811,60 @@ impl Gpu {
         key.extend([k as f32, gains[0], gains[1], gains[2], exposure, d.lens_vignette, margin as f32, params.ai]);
         key.extend([d.nr_luma, d.nr_chroma, d.nr_detail]);
         let nr_key = (raw.id, key.clone());
-        key.extend([d.defringe, d.defringe_green, d.dehaze, d.local_contrast]);
-        let tone_key = (raw.id, key);
+        key.extend([d.defringe, d.defringe_green, d.dehaze]);
+        let haze_key = (raw.id, key.clone());
+        key.push(d.local_contrast);
+        let contrast_key = (raw.id, key);
         let nr_on = d.nr_luma > 0.0 || d.nr_chroma > 0.0;
-        let tone_on = d.defringe > 0.0 || d.defringe_green > 0.0 || d.dehaze != 0.0 || d.local_contrast > 0.0;
+        let haze_on = d.defringe > 0.0 || d.defringe_green > 0.0 || d.dehaze != 0.0;
+        let contrast_on = d.local_contrast > 0.0;
         // A tool turned off frees its cache (a 100% view's is ~100 MB).
         if !nr_on {
             work.after_nr = None;
         }
-        if !tone_on {
-            work.after_tone = None;
+        if !haze_on {
+            work.after_haze = None;
+        }
+        if !contrast_on {
+            work.after_contrast = None;
         }
         let (p, g) = (&self.raw, grid(lw * lh));
         let hit = |c: &Option<(Key, wgpu::Buffer)>, key: &Key| c.as_ref().filter(|c| c.0 == *key).map(|c| c.1.clone());
-        if let Some(b) = hit(&work.after_tone, &tone_key) {
+        if let Some(b) = hit(&work.after_contrast, &contrast_key) {
             self.copy(&b, &work.lin);
         } else {
-            if let Some(b) = hit(&work.after_nr, &nr_key) {
+            if let Some(b) = hit(&work.after_haze, &haze_key) {
                 self.copy(&b, &work.lin);
             } else {
-                let linear = [(10, level), (11, raw.ai_level(k)), (12, &p.develop_params), (15, &work.lin)];
-                self.passes(&[(&p.develop_linear, &linear, g)]);
-                if nr_on {
-                    let lin = work.lin.clone();
-                    self.denoise(&lin, work.scratch(self), lw, lh, s, d, noise);
-                    keep(self, &work.lin, &mut work.after_nr, nr_key);
-                }
-            }
-            if tone_on {
-                let lin = work.lin.clone();
-                for (amount, brighten) in [(d.defringe, false), (d.defringe_green, true)] {
-                    if amount > 0.0 {
-                        self.defringe(&lin, work.scratch(self), lw, lh, s, amount, brighten);
+                if let Some(b) = hit(&work.after_nr, &nr_key) {
+                    self.copy(&b, &work.lin);
+                } else {
+                    let linear = [(10, level), (11, raw.ai_level(k)), (12, &p.develop_params), (15, &work.lin)];
+                    self.passes(&[(&p.develop_linear, &linear, g)]);
+                    if nr_on {
+                        let lin = work.lin.clone();
+                        self.denoise(&lin, work.scratch(self), lw, lh, s, d, noise);
+                        keep(self, &work.lin, &mut work.after_nr, nr_key);
                     }
                 }
-                if d.dehaze != 0.0 {
-                    self.airlight(raw, dev, profile);
+                if haze_on {
+                    let lin = work.lin.clone();
+                    for (amount, brighten) in [(d.defringe, false), (d.defringe_green, true)] {
+                        if amount > 0.0 {
+                            self.defringe(&lin, work.scratch(self), lw, lh, s, amount, brighten);
+                        }
+                    }
+                    if d.dehaze != 0.0 {
+                        self.airlight(raw, dev, profile);
+                        self.dehaze(&lin, work.scratch(self), lw, lh, s, d.dehaze);
+                    }
+                    keep(self, &work.lin, &mut work.after_haze, haze_key);
                 }
-                if d.dehaze != 0.0 || d.local_contrast > 0.0 {
-                    self.tone(&lin, work.scratch(self), lw, lh, s, d);
-                }
-                keep(self, &work.lin, &mut work.after_tone, tone_key);
+            }
+            if contrast_on {
+                let lin = work.lin.clone();
+                self.local_laplacian(&lin, work.scratch(self), lw, lh, s, d.local_contrast);
+                keep(self, &work.lin, &mut work.after_contrast, contrast_key);
             }
         }
         if d.sharpen > 0.0 {
@@ -870,29 +898,26 @@ impl Gpu {
     }
 
     /// Dehaze (`tone.wgsl`): a guided filter of 30 full-resolution pixels,
-    /// the dark channel over 15; then local contrast.
+    /// the dark channel over 15.
     #[allow(clippy::too_many_arguments)]
-    fn tone(&self, lin: &wgpu::Buffer, [sa, sb]: [&wgpu::Buffer; 2], w: u32, h: u32, s: f32, detail: &Detail) {
+    fn dehaze(&self, lin: &wgpu::Buffer, [sa, sb]: [&wgpu::Buffer; 2], w: u32, h: u32, s: f32, amount: f32) {
+        #[cfg(test)]
+        self.raw.dehaze_runs.set(self.raw.dehaze_runs.get() + 1);
         let (p, g) = (&self.raw, grid(w * h));
-        if detail.dehaze != 0.0 {
-            let q = self.tone_params(w, h, s, detail.dehaze, 0);
-            let (boxes, ab, air) =
-                ([(0, &q), (2, sa), (3, sb)], [(0, &q), (2, sa)], [(0, &q), (1, lin), (2, sa), (4, &p.air)]);
-            self.passes(&[
-                (&p.dh_min_h, &[(0, &q), (1, lin), (3, sb)], g),
-                (&p.dh_min_v, &[(0, &q), (2, sa), (3, sb), (4, &p.air)], g),
-                (&p.dh_prep, &air, g),
-                (&p.box_h, &boxes, g),
-                (&p.box_v, &boxes, g),
-                (&p.gf_ab, &ab, g),
-                (&p.box_h, &boxes, g),
-                (&p.box_v, &boxes, g),
-                (&p.dh_apply, &air, g),
-            ]);
-        }
-        if detail.local_contrast > 0.0 {
-            self.local_laplacian(lin, [sa, sb], w, h, s, detail.local_contrast);
-        }
+        let q = self.tone_params(w, h, s, amount, 0);
+        let (boxes, ab, air) =
+            ([(0, &q), (2, sa), (3, sb)], [(0, &q), (2, sa)], [(0, &q), (1, lin), (2, sa), (4, &p.air)]);
+        self.passes(&[
+            (&p.dh_min_h, &[(0, &q), (1, lin), (3, sb)], g),
+            (&p.dh_min_v, &[(0, &q), (2, sa), (3, sb), (4, &p.air)], g),
+            (&p.dh_prep, &air, g),
+            (&p.box_h, &boxes, g),
+            (&p.box_v, &boxes, g),
+            (&p.gf_ab, &ab, g),
+            (&p.box_h, &boxes, g),
+            (&p.box_v, &boxes, g),
+            (&p.dh_apply, &air, g),
+        ]);
     }
 
     /// `ToneParams` for a `w` × `h` buffer at `s` output pixels per full-resolution pixel (≤ 1).
@@ -2093,7 +2118,8 @@ mod tests {
         }
     }
 
-    /// Changing only sharpening re-runs sharpening, not noise reduction.
+    /// Changing only sharpening re-runs sharpening, not noise reduction;
+    /// changing only local contrast does not re-run dehaze.
     #[test]
     fn cached_stage_is_reused() {
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
@@ -2109,9 +2135,18 @@ mod tests {
         // And the cached result is the same as a fresh one.
         let fresh = gpu.read_photo(&gpu.develop(&raw, &whole(w, h), w, h, &dev, Profile::Standard).unwrap());
         assert_eq!(gpu.read_photo(slot.as_ref().unwrap()).pixels, fresh.pixels);
+        dev.detail.dehaze = 20.0;
+        gpu.develop_into(&mut slot, &raw, &whole(w, h), w, h, &dev, Profile::Standard).unwrap();
+        let hazes = gpu.raw.dehaze_runs.get();
+        dev.detail.local_contrast = 70.0;
+        gpu.develop_into(&mut slot, &raw, &whole(w, h), w, h, &dev, Profile::Standard).unwrap();
+        assert_eq!(gpu.raw.dehaze_runs.get(), hazes, "dehaze ran again");
+        let fresh = gpu.read_photo(&gpu.develop(&raw, &whole(w, h), w, h, &dev, Profile::Standard).unwrap());
+        assert_eq!(gpu.read_photo(slot.as_ref().unwrap()).pixels, fresh.pixels);
+        let runs = gpu.raw.nr_runs.get();
         dev.exposure = 0.5;
         gpu.develop_into(&mut slot, &raw, &whole(w, h), w, h, &dev, Profile::Standard).unwrap();
-        assert_eq!(gpu.raw.nr_runs.get(), runs + 2, "an exposure change re-runs everything");
+        assert_eq!(gpu.raw.nr_runs.get(), runs + 1, "an exposure change re-runs everything");
     }
 
     /// A 1:1 view of part of the photo is that part of the full develop: the

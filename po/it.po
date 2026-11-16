@@ -1153,9 +1153,8 @@ msgid "The camera applied the LUT “{}” at {}%"
 msgstr "La fotocamera ha applicato la LUT “{}” al {}%"
 
 #: gtk/src/main.rs:3311
-#, fuzzy
 msgid "Add"
-msgstr "Aggiungi LUT"
+msgstr "Aggiungi"
 
 #: gtk/src/main.rs:3314
 #, rust-format

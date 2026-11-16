@@ -1,8 +1,9 @@
 // Classic noise reduction on the linear Rec.2020 develop buffer `lin`.
 // Luminance: generalised Anscombe transform (unit-variance noise under the
 // Poisson–Gaussian model), non-local means, inverse. Chrominance: opponent
-// space (Cb = B − Y, Cr = R − Y), edge-aware à-trous B3-spline smoothing
-// guided by Y, blended in; Y is kept exactly.
+// space (Cb = B − Y, Cr = R − Y), edge-aware à-trous B3-spline wavelets
+// guided by Y, each detail band soft-thresholded against its noise level
+// (darktable denoiseprofile, wavelet mode); Y is kept exactly.
 
 struct NrParams {
     w: u32,
@@ -15,7 +16,7 @@ struct NrParams {
     // Noise model of Y at this buffer's scale: σ² = a·Y + b.
     a: f32,
     b: f32,
-    // Luminance strength (noise scale ¼…4), detail kept back (0..½), chrominance strength (0..1).
+    // Luminance strength (noise scale ¼…4), detail kept back (0..½), chrominance threshold (0..2 σ).
     luma: f32,
     detail: f32,
     chroma: f32,
@@ -129,8 +130,16 @@ fn nr_chroma_init(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups)
     sa[i] = vec4<f32>(c.z - y, c.x - y, y, 0.0);
 }
 
-// One à-trous level, `sa` → `sb`, at `step`; weights fall with the luminance
-// difference relative to the pixel's own, so chroma does not bleed across edges.
+// Noise σ of each B3-spline à-trous detail band for unit white noise
+// (Starck & Murtagh, Astronomical Image and Data Analysis, table 2.1).
+const BAND_SIGMA = array<f32, 5>(0.8907, 0.2007, 0.0856, 0.0413, 0.0205);
+
+// One à-trous level, `sa` → `sb`, at `step`; edge-avoiding weights fall with
+// the luminance difference relative to the pixel's own and with the chroma
+// difference relative to the band's noise, so colour does not cross edges
+// even where luminance stays the same. The band `sa` − `sb` is
+// soft-thresholded: the part within ±t of zero is noise and comes out of
+// `lin`'s chroma, anything larger (a real colour edge) stays.
 @compute @workgroup_size(256)
 fn nr_atrous(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
              @builtin(local_invocation_index) lid: u32) {
@@ -139,32 +148,30 @@ fn nr_atrous(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: v
     let x = i32(i % p.w);
     let y = i32(i / p.w);
     let centre = sa[i];
+    // Cb and Cr are differences of two noisy channels: about √2 × the noise of Y.
+    let sigma = 1.41 * sqrt(max(p.a * max(centre.z, 0.0) + p.b, 0.0));
+    let band = sigma * BAND_SIGMA[min(countTrailingZeros(u32(p.step)), 4u)];
     var sum = vec2<f32>(0.0);
     var total = 0.0;
     for (var ky = 0; ky < 5; ky++) {
         for (var kx = 0; kx < 5; kx++) {
             let q = sa[at(x + (kx - 2) * p.step, y + (ky - 2) * p.step)];
             let r = (q.z - centre.z) / (abs(centre.z) + 0.02);
-            let wgt = B3[kx] * B3[ky] * exp(-r * r * 20.0);
+            // Noise moves chroma by a few band σ; an edge by far more.
+            let d = q.xy - centre.xy;
+            let rc = dot(d, d) / (16.0 * band * band + 1e-12);
+            let wgt = B3[kx] * B3[ky] * exp(-r * r * 20.0 - rc);
             sum += wgt * q.xy;
             total += wgt;
         }
     }
-    sb[i] = vec4<f32>(sum / total, centre.z, 0.0);
-}
-
-// `sa` holds the smoothest level: blend the chroma in, keep Y exactly.
-@compute @workgroup_size(256)
-fn nr_chroma_apply(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
-                   @builtin(local_invocation_index) lid: u32) {
-    let i = index(wg, n, lid);
-    if i >= p.w * p.h { return; }
+    let coarse = sum / total;
+    sb[i] = vec4<f32>(coarse, centre.z, 0.0);
+    let t = p.chroma * band;
+    let noise = clamp(centre.xy - coarse, vec2(-t), vec2(t));
     let c = lin[i];
-    let y = dot(c.xyz, LUMA);
-    let cb = mix(c.z - y, sa[i].x, p.chroma);
-    let cr = mix(c.x - y, sa[i].y, p.chroma);
-    let r = cr + y;
-    let b = cb + y;
-    let g = (y - LUMA.x * r - LUMA.z * b) / LUMA.y;
-    lin[i] = vec4<f32>(r, g, b, c.w);
+    let luma = dot(c.xyz, LUMA);
+    let r = c.x - noise.y;
+    let b = c.z - noise.x;
+    lin[i] = vec4<f32>(r, (luma - LUMA.x * r - LUMA.z * b) / LUMA.y, b, c.w);
 }

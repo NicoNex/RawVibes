@@ -267,7 +267,6 @@ pub struct Pipelines {
     nr_luma_apply: wgpu::ComputePipeline,
     nr_chroma_init: wgpu::ComputePipeline,
     nr_atrous: wgpu::ComputePipeline,
-    nr_chroma_apply: wgpu::ComputePipeline,
     sh_init: wgpu::ComputePipeline,
     sh_ratio: wgpu::ComputePipeline,
     sh_update: wgpu::ComputePipeline,
@@ -373,7 +372,6 @@ impl Pipelines {
             nr_luma_apply: denoise("nr_luma_apply"),
             nr_chroma_init: denoise("nr_chroma_init"),
             nr_atrous: denoise("nr_atrous"),
-            nr_chroma_apply: denoise("nr_chroma_apply"),
             white_balance: pipeline("white_balance"),
             hl_partials: pipeline("hl_partials"),
             hl_reduce: pipeline("hl_reduce"),
@@ -1127,7 +1125,9 @@ impl Gpu {
                 // to ×4 (100) of the measured one, ×1 at 50.
                 luma: 4f32.powf(2.0 * detail.nr_luma / 100.0 - 1.0),
                 detail: detail.nr_detail / 200.0,
-                chroma: detail.nr_chroma / 100.0,
+                // Soft threshold of each chroma band, 0 to 2 × its noise σ (where white noise
+                // is gone), squared so the slider spreads over the range still removing some.
+                chroma: 2.0 * (detail.nr_chroma / 100.0).powi(2),
                 _pad2: 0.0,
             }))
         };
@@ -1148,19 +1148,15 @@ impl Gpu {
             let init = [(0, &base), (1, lin), (2, sa)];
             passes.push((&p.nr_chroma_init, &init, g));
             let order = [[(0, sa), (1, sb)], [(0, sb), (1, sa)]];
-            let binds: Vec<[(u32, &wgpu::Buffer); 3]> = steps
+            let binds: Vec<[(u32, &wgpu::Buffer); 4]> = steps
                 .iter()
                 .enumerate()
                 .map(|(l, s)| {
                     let [(_, from), (_, to)] = order[l % 2];
-                    [(0, s), (2, from), (3, to)]
+                    [(0, s), (1, lin), (2, from), (3, to)]
                 })
                 .collect();
             passes.extend(binds.iter().map(|b| (&p.nr_atrous, b.as_slice(), g)));
-            // The last level wrote the buffer the next one would read: bind it as `sa`.
-            let last = if levels % 2 == 1 { sb } else { sa };
-            let apply = [(0, &base), (1, lin), (2, last)];
-            passes.push((&p.nr_chroma_apply, &apply, g));
             self.passes(&passes);
         }
     }
@@ -1647,13 +1643,13 @@ mod tests {
     /// A `w` × `h` field of `f(x)` with Poisson–Gaussian noise of [`NOISE`], developed
     /// at full resolution with `detail`; the linear Rec.2020 result.
     fn noisy(gpu: &Gpu, w: u32, h: u32, f: impl Fn(u32) -> f32, detail: Detail) -> Vec<[f32; 4]> {
+        noisy_rgb(gpu, w, h, |x| [f(x); 3], detail)
+    }
+
+    /// [`noisy`] of a colour field.
+    fn noisy_rgb(gpu: &Gpu, w: u32, h: u32, f: impl Fn(u32) -> [f32; 3], detail: Detail) -> Vec<[f32; 4]> {
         let mut n = crate::noise::tests::normals(11);
-        let px = (0..w * h)
-            .map(|i| {
-                let x = f(i % w);
-                std::array::from_fn(|_| x + (NOISE.a * x + NOISE.b).sqrt() * n())
-            })
-            .collect();
+        let px = (0..w * h).map(|i| f(i % w).map(|x| x + (NOISE.a * x + NOISE.b).sqrt() * n())).collect();
         let mut raw = rgb_raw(gpu, w, h, px, 1, Camera::neutral());
         raw.noise = NOISE;
         let dev = Develop { detail, ..Develop::default() };
@@ -1725,6 +1721,26 @@ mod tests {
         assert!(before.iter().zip(&after).all(|(p, q)| (luma(p) - luma(q)).abs() < 1e-3));
         let chroma = |v: &[[f32; 4]]| mean_std(v.iter().map(|p| p[2] - luma(p))).1;
         assert!(chroma(&after) * 2.0 < chroma(&before), "chroma noise {} vs {}", chroma(&after), chroma(&before));
+    }
+
+    /// Chroma NR keeps a colour edge where luminance does not change: the
+    /// 10–90% transition of R − Y stays within a few pixels (it once spread ~20).
+    #[test]
+    fn chroma_nr_keeps_colour_edges() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (128u32, 48u32);
+        // Same Rec.2020 luminance (≈ 0.2) on both sides, opposite chroma.
+        let (red, cyan) = ([0.45, 0.1, 0.15], [0.05, 0.25, 0.3]);
+        assert!((luma(&[red[0], red[1], red[2], 0.0]) - luma(&[cyan[0], cyan[1], cyan[2], 0.0])).abs() < 0.01);
+        let px = noisy_rgb(&gpu, w, h, |x| if x < w / 2 { red } else { cyan }, nr(0.0, 100.0));
+        let w = w as usize;
+        let cr: Vec<f32> = (0..w)
+            .map(|x| (0..h as usize).map(|y| px[y * w + x][0] - luma(&px[y * w + x])).sum::<f32>() / h as f32)
+            .collect();
+        let (hi, lo) =
+            (cr[..w / 4].iter().sum::<f32>() / (w / 4) as f32, cr[3 * w / 4..].iter().sum::<f32>() / (w / 4) as f32);
+        let between = cr.iter().filter(|&&v| v < lo + 0.9 * (hi - lo) && v > lo + 0.1 * (hi - lo)).count();
+        assert!(between <= 4, "R − Y transition over {between} px: {:?}", &cr[w / 2 - 12..w / 2 + 12]);
     }
 
     /// Every EXIF orientation gives what the image crate's `apply_orientation` does.

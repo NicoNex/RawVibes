@@ -74,7 +74,7 @@ fn judge(name: &str, values: &[f32], m: &[f32], neutral: Option<usize>, dir: Dir
 }
 
 /// Findings that are the method's own behaviour, not defects: failure prefix, why.
-const EXPECTED: [(&str, &str); 9] = [
+const EXPECTED: [(&str, &str); 10] = [
     ("gain luma: lopsided", "raising gain clips the highlights it is measured on"),
     ("mono mix", "negative filters push weights below zero; the sum is floored, so the far negative end folds"),
     ("vignette midpoint", "past ~60 the vignette starts beyond the corners: nothing left to darken"),
@@ -83,6 +83,10 @@ const EXPECTED: [(&str, &str); 9] = [
     ("sharpening threshold (100): dead from 90", "above the noise level every pixel is already protected"),
     ("defringe: dead from 0 to 10", "darktable's safety 20^(1 − strength): weights barely move below strength 0.2"),
     ("defringe: dead from 10 to 20", "as above"),
+    (
+        "NR chrominance (change): dead from 90",
+        "a 2σ soft threshold has removed the white noise: the last step takes its final ~5%",
+    ),
     ("dehaze: lopsided", "dark-channel dehaze on a scene without sky: removing haze has more room than adding it"),
 ];
 

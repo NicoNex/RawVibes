@@ -1,6 +1,19 @@
-# Handoff — 2026-11-15
+# Handoff — 2026-11-16
 
-Phase 4 (AI denoise) is **done and merged into `master`**. Workflow
+Phase 5 (export), the last, is **done and merged into `master`**: header
+Export = photo (Ctrl+E): JPEG with remembered quality and a size estimate
+from a clean preview frame, PNG 16, TIFF 16, full resolution of the crop,
+developed and graded in strips sized with the detail-tool margin, the AI
+result finished first; written through a synced `.part` file, Stop keeps the
+old file. The menu also lists the LUT formats (Ctrl+Shift+E = 33³ .cube).
+"Not in LUT" badges skipped: the Photo / Grade tabs already split it.
+
+Phase 5 deferred (`shortcut:` comments): export output buffers allocated per
+strip; detail caches filled per strip (a no-cache develop would allow larger
+strips); JPEG export holds the full 16-bit buffer plus an 8-bit copy;
+encoding runs on the GPU worker (the dialog is modal).
+
+Phase 4 (AI denoise) is done and merged. Workflow
 unchanged: native execution, checkpoint commits, one `/code-review high` +
 `/simplify` at the end of each phase only.
 
@@ -48,10 +61,7 @@ unchanged: native execution, checkpoint commits, one `/code-review high` +
 - Not run: `makepkg` and the model converter in the packaging path (no
   `onnx` on the host).
 
-## Next: phase 5, the last
+## Next
 
-Photo export (JPEG with remembered quality and live size estimate, PNG 16,
-TIFF 16, full resolution) and LUT export (`.cube` 33/65/129, `.vlt`, HALD —
-Grade + looks only, "not in LUT" badges on excluded sections). Export must
-use the AI chain when the photo has AI on. Deferred by the user: a
+All five phases are done. Open items above; deferred by the user: a
 local-contrast cache.

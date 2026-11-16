@@ -8,6 +8,7 @@ macro_rules! gettext {
 }
 
 mod crop_ui;
+mod export_ui;
 mod filmstrip;
 mod lab_page;
 mod presets_ui;
@@ -22,6 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 
 use crop_ui::CropUi;
+use export_ui::ExportUi;
 use filmstrip::{Filmstrip, MAX_ROLL, ROLL_PX};
 use gettextrs::gettext;
 use lab_page::{LabAdd, LabKind, LabLayer, LabUi, Layers, caption};
@@ -29,7 +31,8 @@ use presets_ui::PresetsUi;
 use rawvalley_core::chart::test_chart;
 use rawvalley_core::crop::{self, Crop, PRESETS, Ratio};
 use rawvalley_core::develop::{Camera, Detail, Develop, KELVIN, WB_PRESETS};
-use rawvalley_core::gpu::{self, Done, Job, ThumbBase};
+use rawvalley_core::export::{self, PhotoFormat};
+use rawvalley_core::gpu::{self, Done, Job, PhotoExport, ThumbBase};
 use rawvalley_core::grade::{
     BAND_HUE_RANGE, BAND_HUES, Curve, Grade, HUE_HUE, HUE_SAT, LUM_SAT, LUMA, MASTER, Params, Stage,
 };
@@ -175,6 +178,18 @@ enum Msg {
     PresetImport,
     PresetExport,
     PresetExportTo(PathBuf),
+    /// Opens the Export Photo dialog, on this format if given.
+    ExportPhoto(Option<PhotoFormat>),
+    /// The dialog's format or quality changed.
+    ExportSettings,
+    /// Encodes the JPEG size estimate of this generation (for `w` × `h`), if still current.
+    ExportEstimateRun(u64, u32, u32),
+    /// A JPEG size estimate (estimate generation, bytes).
+    ExportEstimate(u64, u64),
+    /// The dialog's button: choose the file, or stop the running export.
+    ExportGo,
+    ExportPhotoTo(PathBuf),
+    ExportClosed,
     /// Undo of a preset load: the grade before it.
     RestoreGrade(Box<Grade>),
     /// Undo of Reset all: every edit of the photo before it.
@@ -360,6 +375,7 @@ struct Ui {
     stack: adw::ViewStack,
     thumbs: Vec<gtk::Picture>,
     export: adw::SplitButton,
+    export_photo: ExportUi,
     chart_btn: gtk::ToggleButton,
     /// Header "As in camera" (RAWs only).
     camera_btn: gtk::Button,
@@ -423,6 +439,11 @@ struct App {
     show_chart: bool,
     selected: Option<usize>,
     jobs: mpsc::Sender<Job>,
+    /// The running photo export's stop flag.
+    exporting: Option<Arc<AtomicBool>>,
+    /// The frame the JPEG size estimate encodes (`Done::ExportFrame`), and its generation.
+    export_frame: Option<(u32, u32, Arc<Vec<u16>>)>,
+    export_gen: u64,
     /// Last preview request; identical requests (e.g. echoes of programmatic
     /// widget resets) are not re-rendered.
     sent: Option<(Grade, f32)>,
@@ -560,8 +581,7 @@ impl App {
         // Where the shown image sits in the crop, for the creative vignette.
         if let (Some(shown), Some(crop)) = (self.shown_region(), self.crop_region()) {
             let visible = self.view_zoom().map_or(shown, |z| z.view(&shown, self.canvas).0);
-            grade.params.vignette_view = visible.rect_in(&crop);
-            grade.params.vignette_aspect = crop.size[0] / crop.size[1];
+            grade.params.frame(&visible, &crop);
         }
         let req = Some((grade, self.split_value()));
         if self.has_source() && self.sent != req {
@@ -1256,6 +1276,28 @@ impl App {
             self.ui.lab.rebuild(&self.lab_layers, self.lab_blend, self.lab_input, self.source_profile(), sender);
         }
         self.render_lab();
+    }
+
+    /// The export dialog's file size: JPEG estimated from the photo graded at
+    /// preview size (encoded off the main thread once the quality settles,
+    /// scaled by the pixel count), 16-bit exact or bounded.
+    fn export_estimate(&mut self, sender: &ComponentSender<Self>) {
+        let Some((w, h)) = self.crop_region().map(|c| Decoded::fit_size(&c, u32::MAX)) else { return };
+        let ui = &self.ui.export_photo;
+        let raw = w as u64 * h as u64 * 6;
+        self.export_gen += 1;
+        match ui.format() {
+            PhotoFormat::Tiff16 => ui.set_estimate(Some(glib::format_size(raw).into())),
+            PhotoFormat::Png16 => ui.set_estimate(Some(gettext!("up to {}", glib::format_size(raw)))),
+            PhotoFormat::Jpeg => {
+                ui.set_estimate(None);
+                let (generation, s) = (self.export_gen, sender.input_sender().clone());
+                // A spin held down sends a value per tick: encode only the one it stops on.
+                glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
+                    s.emit(Msg::ExportEstimateRun(generation, w, h))
+                });
+            }
+        }
     }
 
     fn toast(&self, text: &str) {
@@ -2666,14 +2708,15 @@ impl SimpleComponent for App {
 
         let export_menu = export_menu("export", true);
         let export = adw::SplitButton::builder()
-            .label(gettext("Export LUT"))
+            .label(gettext("Export"))
             .menu_model(&export_menu)
             .css_classes(["suggested-action"])
-            .tooltip_text(gettext("Export a 33³ .cube (Ctrl+E)"))
+            .tooltip_text(gettext("Export the edited photo (Ctrl+E)"))
+            .dropdown_tooltip(gettext("Photo and LUT formats"))
             .sensitive(false)
             .build();
         let snd = sender.clone();
-        export.connect_clicked(move |_| snd.input(Msg::Export(Format::Cube, 33, What::Grade)));
+        export.connect_clicked(move |_| snd.input(Msg::ExportPhoto(None)));
         header.pack_end(&export);
 
         let compare_btn = gtk::ToggleButton::builder()
@@ -2730,6 +2773,13 @@ impl SimpleComponent for App {
             });
             window.add_action(&action);
         }
+        let action = gio::SimpleAction::new("export-photo", Some(glib::VariantTy::STRING));
+        let snd = sender.clone();
+        action.connect_activate(move |_, v| {
+            let format = v.and_then(|v| v.str().and_then(PhotoFormat::from_tag));
+            snd.input(Msg::ExportPhoto(format));
+        });
+        window.add_action(&action);
         for (name, which) in [("lab-add", Layers::Lab), ("look-add", Layers::Look)] {
             let action = gio::SimpleAction::new(name, Some(glib::VariantTy::STRING));
             let snd = sender.clone();
@@ -2864,6 +2914,8 @@ impl SimpleComponent for App {
         shortcut("<Control>o", Box::new(move || snd.input(Msg::Open)));
         let e = export.clone();
         shortcut("<Control>e", Box::new(move || e.emit_clicked()));
+        let snd = sender.clone();
+        shortcut("<Control><Shift>e", Box::new(move || snd.input(Msg::Export(Format::Cube, 33, What::Grade))));
         let c = chart_btn.clone();
         shortcut("t", Box::new(move || c.set_active(!c.is_active())));
         let c = compare_btn.clone();
@@ -2972,6 +3024,9 @@ impl SimpleComponent for App {
             show_chart: false,
             selected: None,
             jobs,
+            exporting: None,
+            export_frame: None,
+            export_gen: 0,
             sent: None,
             load_gen: 0,
             gallery_gen: 0,
@@ -3024,6 +3079,7 @@ impl SimpleComponent for App {
                 stack: stack.clone(),
                 thumbs: Vec::new(),
                 export,
+                export_photo: export_ui::build(&sender),
                 chart_btn,
                 camera_btn,
                 presets,
@@ -3601,6 +3657,91 @@ impl SimpleComponent for App {
                     }
                 }
             }
+            Msg::ExportPhoto(_) if self.exporting.is_some() => {
+                self.ui.export_photo.dialog.present(Some(&self.ui.window))
+            }
+            Msg::ExportPhoto(format) => {
+                let Some((crop, _)) = self.crop_region().zip(self.path.as_ref()).filter(|_| !self.show_chart) else {
+                    return self.toast(&gettext("Open a photo to export it"));
+                };
+                let ui = &self.ui.export_photo;
+                ui.set_format(format.unwrap_or_else(|| export_ui::remembered().0));
+                let (w, h) = Decoded::fit_size(&crop, u32::MAX);
+                ui.set_size(w, h);
+                // The JPEG estimate waits for the frame (Done::ExportFrame).
+                self.export_frame = None;
+                let grade = self.graded();
+                self.send(Job::ExportFrame(grade));
+                ui.dialog.present(Some(&self.ui.window));
+                self.export_estimate(&sender);
+            }
+            Msg::ExportSettings => {
+                let ui = &self.ui.export_photo;
+                ui.set_format(ui.format());
+                self.export_estimate(&sender);
+            }
+            Msg::ExportEstimateRun(generation, w, h) if generation == self.export_gen => {
+                let Some((fw, fh, px)) = self.export_frame.clone() else { return };
+                let (quality, s) = (self.ui.export_photo.quality(), sender.input_sender().clone());
+                std::thread::spawn(move || {
+                    let n = export::jpeg_size(&px, fw, fh, quality) as f64 * (w as f64 * h as f64) / (fw * fh) as f64;
+                    s.emit(Msg::ExportEstimate(generation, n as u64));
+                });
+            }
+            Msg::ExportEstimateRun(..) => {}
+            Msg::ExportEstimate(generation, n) if generation == self.export_gen => {
+                self.ui.export_photo.set_estimate(Some(gettext!("about {}", glib::format_size(n))))
+            }
+            Msg::ExportEstimate(..) => {}
+            Msg::ExportGo => {
+                if let Some(cancel) = &self.exporting {
+                    return cancel.store(true, Ordering::Relaxed);
+                }
+                let (Some(path), format) = (&self.path, self.ui.export_photo.format()) else { return };
+                let stem = stem_label(path).unwrap_or_default();
+                let dialog = gtk::FileDialog::builder()
+                    .title(gettext("Export Photo"))
+                    // Never the original's own name: a JPEG source sits in the same folder.
+                    .initial_name(format!("{stem}_edit.{}", format.ext()))
+                    .filters(&file_filters(&format.ext().to_uppercase(), &[format.ext().into()]))
+                    .modal(true)
+                    .build();
+                dialog.set_initial_folder(path.parent().map(gio::File::for_path).as_ref());
+                let s = sender.clone();
+                dialog.save(Some(&self.ui.window), gio::Cancellable::NONE, move |r| {
+                    if let Some(p) = r.ok().and_then(|f| f.path()) {
+                        s.input(Msg::ExportPhotoTo(p));
+                    }
+                });
+            }
+            Msg::ExportPhotoTo(path) => {
+                let (Some(decoded), Some(crop)) = (self.decoded.clone(), self.crop_region()) else { return };
+                let cancel = Arc::new(AtomicBool::new(false));
+                self.exporting = Some(cancel.clone());
+                let ui = &self.ui.export_photo;
+                ui.set_busy(true);
+                // Remembered as used, not per spin tick.
+                let _ = settings::set_value(settings::EXPORT_FORMAT, ui.format().tag());
+                let _ = settings::set_value(settings::JPEG_QUALITY, &ui.quality().to_string());
+                self.send(Job::ExportPhoto(PhotoExport {
+                    decoded,
+                    crop,
+                    develop: self.develop,
+                    profile: self.profile,
+                    grade: self.graded(),
+                    look: self.look_stack(self.look_layers()),
+                    format: ui.format(),
+                    quality: ui.quality(),
+                    path,
+                    cancel,
+                }));
+            }
+            // Closing the dialog stops the export.
+            Msg::ExportClosed => {
+                if let Some(cancel) = &self.exporting {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            }
             Msg::ChooseFolder => {
                 let dialog = gtk::FileDialog::builder().title(gettext("LUT folder")).modal(true).build();
                 dialog.set_initial_folder(start_in(settings::LUT_FOLDER).as_ref());
@@ -3938,15 +4079,15 @@ impl SimpleComponent for App {
             }
             Msg::Page(page) => {
                 self.page = page;
-                // The header's Export LUT exports the grade; LUT Lab has its own export.
-                self.ui.export.set_visible(matches!(page, Page::Grade));
+                // The header's Export saves the photo or the grade's LUT; LUT Lab has its own export.
+                self.ui.export.set_visible(!matches!(page, Page::Lab));
                 // Zoom is a Grade canvas view; the other pages show the whole photo.
                 if !matches!(page, Page::Grade) {
                     self.set_zoom(None);
                 }
                 self.refresh();
             }
-            Msg::Gpu(done) => self.on_gpu(done),
+            Msg::Gpu(done) => self.on_gpu(done, &sender),
             Msg::Zoom(cmd) => self.on_zoom(cmd),
             Msg::CanvasSize(area) => {
                 self.canvas = area;
@@ -4163,9 +4304,15 @@ impl App {
         }
     }
 
-    fn on_gpu(&mut self, done: Done) {
+    fn on_gpu(&mut self, done: Done, sender: &ComponentSender<Self>) {
         match done {
-            Done::Failed(e) => self.toast(&gettext!("GPU unavailable: {}", e)),
+            Done::Failed(e) => {
+                // The worker is gone: an export in progress never reports back.
+                if self.exporting.take().is_some() {
+                    self.ui.export_photo.set_busy(false);
+                }
+                self.toast(&gettext!("GPU unavailable: {}", e))
+            }
             Done::Graded { width, height, rgba, scopes: Scopes { histogram, waveform, vectorscope } } => {
                 self.ui.grade_pic.set_paintable(Some(&texture(width, height, rgba)));
                 let [h, w, v] = &self.ui.sidebar.scopes;
@@ -4186,6 +4333,25 @@ impl App {
                 self.toast(&gettext!("LUT saved: {}", p.file_name().unwrap_or_default().to_string_lossy()))
             }
             Done::Exported(Err(e)) => self.toast(&gettext!("Export failed: {}", e)),
+            Done::ExportProgress(f) => self.ui.export_photo.set_progress(f),
+            Done::ExportFrame(w, h, rgb) => {
+                self.export_frame = Some((w, h, Arc::new(rgb)));
+                if self.ui.export_photo.format() == PhotoFormat::Jpeg {
+                    self.export_estimate(sender);
+                }
+            }
+            Done::PhotoExported(r) => {
+                self.exporting = None;
+                self.ui.export_photo.set_busy(false);
+                match r {
+                    Ok(Some(p)) => {
+                        self.ui.export_photo.dialog.close();
+                        self.toast(&gettext!("Photo saved: {}", file_label(&p)));
+                    }
+                    Ok(None) => self.toast(&gettext("Export stopped")),
+                    Err(e) => self.toast(&gettext!("Export failed: {}", e)),
+                }
+            }
             Done::RollFrame { generation, index, width, height, rgba } => {
                 if generation == self.roll_gen {
                     self.ui.filmstrip.set_frame(index, &texture(width, height, rgba));
@@ -4255,22 +4421,30 @@ fn profile_hint(p: Profile) -> String {
     }
 }
 
-/// Menu of export formats for action `action` (`win.<action>::<kind>-<size>`).
-fn export_menu(action: &str, with_identity: bool) -> gio::Menu {
+/// Menu of export formats for action `action` (`win.<action>::<kind>-<size>`);
+/// the `header` one also has the photo formats and the HALD identity.
+fn export_menu(action: &str, header: bool) -> gio::Menu {
     let item =
         |m: &gio::Menu, label: &str, target: &str| m.append(Some(label), Some(&format!("win.{action}::{target}")));
     let menu = gio::Menu::new();
+    if header {
+        let photo = gio::Menu::new();
+        for f in PhotoFormat::ALL {
+            photo.append(Some(&(export_ui::format_label(f) + "…")), Some(&format!("win.export-photo::{}", f.tag())));
+        }
+        menu.append_section(Some(gettext("Photo").as_str()), &photo);
+    }
     // .cube is the universal 3D LUT format; the sizes differ only in precision.
     let cube = gio::Menu::new();
     item(&cube, &gettext("33³ .cube · cameras and monitors"), "cube-33");
     item(&cube, &gettext("65³ .cube · grading and editing"), "cube-65");
     item(&cube, &gettext("129³ .cube · maximum precision"), "cube-129");
-    menu.append_section(Some(".cube"), &cube);
+    menu.append_section(Some(gettext("LUT · .cube").as_str()), &cube);
     let other = gio::Menu::new();
     item(&other, &gettext("Panasonic VLT · 17³ .vlt"), "vlt-17");
     item(&other, &gettext("HALD CLUT · 64³ .png"), "hald-64");
-    menu.append_section(Some(gettext("Other formats").as_str()), &other);
-    if with_identity {
+    menu.append_section(Some(gettext("LUT · other formats").as_str()), &other);
+    if header {
         let tools = gio::Menu::new();
         item(&tools, &gettext("HALD identity · .png"), "identity-64");
         menu.append_section(Some(gettext("Tools").as_str()), &tools);
@@ -4301,7 +4475,8 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
     let section = adw::ShortcutsSection::new(None);
     for (title, accel) in [
         (gettext("Open Photo"), "<Control>o"),
-        (gettext("Export LUT"), "<Control>e"),
+        (gettext("Export photo"), "<Control>e"),
+        (gettext("Export LUT · 33³ .cube"), "<Control><Shift>e"),
         (gettext("Before / after"), "backslash"),
         (gettext("Test chart"), "t"),
         (gettext("Show clipping"), "c"),

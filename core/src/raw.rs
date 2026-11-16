@@ -199,7 +199,10 @@ pub(crate) struct Work {
     lin: wgpu::Buffer,
     scratch: Option<[wgpu::Buffer; 2]>,
     after_nr: Option<(Key, wgpu::Buffer)>,
-    after_tone: Option<(Key, wgpu::Buffer)>,
+    /// After defringe and dehaze; then after local contrast, so a local-contrast
+    /// drag does not re-run the other two.
+    after_haze: Option<(Key, wgpu::Buffer)>,
+    after_contrast: Option<(Key, wgpu::Buffer)>,
 }
 
 impl Work {
@@ -267,7 +270,6 @@ pub struct Pipelines {
     nr_luma_apply: wgpu::ComputePipeline,
     nr_chroma_init: wgpu::ComputePipeline,
     nr_atrous: wgpu::ComputePipeline,
-    nr_chroma_apply: wgpu::ComputePipeline,
     sh_init: wgpu::ComputePipeline,
     sh_ratio: wgpu::ComputePipeline,
     sh_update: wgpu::ComputePipeline,
@@ -297,9 +299,11 @@ pub struct Pipelines {
     ll_apply: wgpu::ComputePipeline,
     /// Dehaze airlight (one f32 as bits, atomic max), zeroed per run.
     air: wgpu::Buffer,
-    /// Noise reductions run (tests check the cache).
+    /// Noise reductions and dehazes run (tests check the caches).
     #[cfg(test)]
     pub(crate) nr_runs: std::cell::Cell<u32>,
+    #[cfg(test)]
+    pub(crate) dehaze_runs: std::cell::Cell<u32>,
     /// The OETF table of the last profile developed into.
     oetf: std::cell::RefCell<Option<(Profile, wgpu::Buffer)>>,
     /// `DevelopParams`, rewritten per frame.
@@ -348,6 +352,8 @@ impl Pipelines {
             ll_apply: ll("ll_apply"),
             #[cfg(test)]
             nr_runs: Default::default(),
+            #[cfg(test)]
+            dehaze_runs: Default::default(),
             air: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("airlight"),
                 size: 16,
@@ -373,7 +379,6 @@ impl Pipelines {
             nr_luma_apply: denoise("nr_luma_apply"),
             nr_chroma_init: denoise("nr_chroma_init"),
             nr_atrous: denoise("nr_atrous"),
-            nr_chroma_apply: denoise("nr_chroma_apply"),
             white_balance: pipeline("white_balance"),
             hl_partials: pipeline("hl_partials"),
             hl_reduce: pipeline("hl_reduce"),
@@ -564,7 +569,9 @@ struct FringeParams {
     radius: i32,
     sigma: f32,
     safety: f32,
-    _pad: [f32; 3],
+    /// 0: darken only (purple fringes), 1: brighten only (green).
+    brighten: u32,
+    _pad: [f32; 2],
 }
 
 /// Rows of a row-major 3×3 matrix, padded as WGSL lays out `mat3x3` columns
@@ -782,7 +789,15 @@ impl Gpu {
         if work.as_ref().is_none_or(|x| x.size != (lw, lh)) {
             let usage = wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
             let lin = self.buffer(lw as u64 * lh as u64 * 16, usage);
-            *work = Some(Work { size: (lw, lh), margin, lin, scratch: None, after_nr: None, after_tone: None });
+            *work = Some(Work {
+                size: (lw, lh),
+                margin,
+                lin,
+                scratch: None,
+                after_nr: None,
+                after_haze: None,
+                after_contrast: None,
+            });
         }
         let work = work.as_mut().expect("set above");
         work.margin = margin;
@@ -796,46 +811,60 @@ impl Gpu {
         key.extend([k as f32, gains[0], gains[1], gains[2], exposure, d.lens_vignette, margin as f32, params.ai]);
         key.extend([d.nr_luma, d.nr_chroma, d.nr_detail]);
         let nr_key = (raw.id, key.clone());
-        key.extend([d.defringe, d.dehaze, d.local_contrast]);
-        let tone_key = (raw.id, key);
+        key.extend([d.defringe, d.defringe_green, d.dehaze]);
+        let haze_key = (raw.id, key.clone());
+        key.push(d.local_contrast);
+        let contrast_key = (raw.id, key);
         let nr_on = d.nr_luma > 0.0 || d.nr_chroma > 0.0;
-        let tone_on = d.defringe > 0.0 || d.dehaze != 0.0 || d.local_contrast > 0.0;
+        let haze_on = d.defringe > 0.0 || d.defringe_green > 0.0 || d.dehaze != 0.0;
+        let contrast_on = d.local_contrast > 0.0;
         // A tool turned off frees its cache (a 100% view's is ~100 MB).
         if !nr_on {
             work.after_nr = None;
         }
-        if !tone_on {
-            work.after_tone = None;
+        if !haze_on {
+            work.after_haze = None;
+        }
+        if !contrast_on {
+            work.after_contrast = None;
         }
         let (p, g) = (&self.raw, grid(lw * lh));
         let hit = |c: &Option<(Key, wgpu::Buffer)>, key: &Key| c.as_ref().filter(|c| c.0 == *key).map(|c| c.1.clone());
-        if let Some(b) = hit(&work.after_tone, &tone_key) {
-            self.copy(&b, &work.lin);
-        } else {
-            if let Some(b) = hit(&work.after_nr, &nr_key) {
-                self.copy(&b, &work.lin);
-            } else {
-                let linear = [(10, level), (11, raw.ai_level(k)), (12, &p.develop_params), (15, &work.lin)];
-                self.passes(&[(&p.develop_linear, &linear, g)]);
-                if nr_on {
-                    let lin = work.lin.clone();
-                    self.denoise(&lin, work.scratch(self), lw, lh, s, d, noise);
-                    keep(self, &work.lin, &mut work.after_nr, nr_key);
-                }
-            }
-            if tone_on {
+        // The latest cached stage, copied back; the stages after it run (and are kept).
+        let hits =
+            [hit(&work.after_nr, &nr_key), hit(&work.after_haze, &haze_key), hit(&work.after_contrast, &contrast_key)];
+        let from = hits.iter().rposition(Option::is_some).map_or(0, |i| i + 1);
+        if let Some(b) = from.checked_sub(1).and_then(|i| hits[i].as_ref()) {
+            self.copy(b, &work.lin);
+        }
+        if from < 1 {
+            let linear = [(10, level), (11, raw.ai_level(k)), (12, &p.develop_params), (15, &work.lin)];
+            self.passes(&[(&p.develop_linear, &linear, g)]);
+            if nr_on {
                 let lin = work.lin.clone();
-                if d.defringe > 0.0 {
-                    self.defringe(&lin, work.scratch(self), lw, lh, s, d.defringe);
-                }
-                if d.dehaze != 0.0 {
-                    self.airlight(raw, dev, profile);
-                }
-                if d.dehaze != 0.0 || d.local_contrast > 0.0 {
-                    self.tone(&lin, work.scratch(self), lw, lh, s, d);
-                }
-                keep(self, &work.lin, &mut work.after_tone, tone_key);
+                self.denoise(&lin, work.scratch(self), lw, lh, s, d, noise);
+                keep(self, &work.lin, &mut work.after_nr, nr_key);
             }
+        }
+        if from < 2 && haze_on {
+            let lin = work.lin.clone();
+            // Purple and green fringes share the module's three working buffers.
+            let fringe = [0; 3].map(|_| self.buffer(lin.size(), wgpu::BufferUsages::empty()));
+            for (amount, brighten) in [(d.defringe, false), (d.defringe_green, true)] {
+                if amount > 0.0 {
+                    self.defringe(&lin, work.scratch(self), &fringe, lw, lh, s, amount, brighten);
+                }
+            }
+            if d.dehaze != 0.0 {
+                self.airlight(raw, dev, profile);
+                self.dehaze(&lin, work.scratch(self), lw, lh, s, d.dehaze);
+            }
+            keep(self, &work.lin, &mut work.after_haze, haze_key);
+        }
+        if from < 3 && contrast_on {
+            let lin = work.lin.clone();
+            self.local_laplacian(&lin, work.scratch(self), lw, lh, s, d.local_contrast);
+            keep(self, &work.lin, &mut work.after_contrast, contrast_key);
         }
         if d.sharpen > 0.0 {
             let lin = work.lin.clone();
@@ -868,29 +897,26 @@ impl Gpu {
     }
 
     /// Dehaze (`tone.wgsl`): a guided filter of 30 full-resolution pixels,
-    /// the dark channel over 15; then local contrast.
+    /// the dark channel over 15.
     #[allow(clippy::too_many_arguments)]
-    fn tone(&self, lin: &wgpu::Buffer, [sa, sb]: [&wgpu::Buffer; 2], w: u32, h: u32, s: f32, detail: &Detail) {
+    fn dehaze(&self, lin: &wgpu::Buffer, [sa, sb]: [&wgpu::Buffer; 2], w: u32, h: u32, s: f32, amount: f32) {
+        #[cfg(test)]
+        self.raw.dehaze_runs.set(self.raw.dehaze_runs.get() + 1);
         let (p, g) = (&self.raw, grid(w * h));
-        if detail.dehaze != 0.0 {
-            let q = self.tone_params(w, h, s, detail.dehaze, 0);
-            let (boxes, ab, air) =
-                ([(0, &q), (2, sa), (3, sb)], [(0, &q), (2, sa)], [(0, &q), (1, lin), (2, sa), (4, &p.air)]);
-            self.passes(&[
-                (&p.dh_min_h, &[(0, &q), (1, lin), (3, sb)], g),
-                (&p.dh_min_v, &[(0, &q), (2, sa), (3, sb), (4, &p.air)], g),
-                (&p.dh_prep, &air, g),
-                (&p.box_h, &boxes, g),
-                (&p.box_v, &boxes, g),
-                (&p.gf_ab, &ab, g),
-                (&p.box_h, &boxes, g),
-                (&p.box_v, &boxes, g),
-                (&p.dh_apply, &air, g),
-            ]);
-        }
-        if detail.local_contrast > 0.0 {
-            self.local_laplacian(lin, [sa, sb], w, h, s, detail.local_contrast);
-        }
+        let q = self.tone_params(w, h, s, amount, 0);
+        let (boxes, ab, air) =
+            ([(0, &q), (2, sa), (3, sb)], [(0, &q), (2, sa)], [(0, &q), (1, lin), (2, sa), (4, &p.air)]);
+        self.passes(&[
+            (&p.dh_min_h, &[(0, &q), (1, lin), (3, sb)], g),
+            (&p.dh_min_v, &[(0, &q), (2, sa), (3, sb), (4, &p.air)], g),
+            (&p.dh_prep, &air, g),
+            (&p.box_h, &boxes, g),
+            (&p.box_v, &boxes, g),
+            (&p.gf_ab, &ab, g),
+            (&p.box_h, &boxes, g),
+            (&p.box_v, &boxes, g),
+            (&p.dh_apply, &air, g),
+        ]);
     }
 
     /// `ToneParams` for a `w` × `h` buffer at `s` output pixels per full-resolution pixel (≤ 1).
@@ -910,7 +936,7 @@ impl Gpu {
     /// (kept while photo, white balance, exposure, lens and AI blend stay).
     fn airlight(&self, raw: &GpuRaw, dev: &Develop, profile: Profile) {
         let (fw, fh) = raw.oriented_size();
-        let whole = Region { center: [fw as f32 / 2.0, fh as f32 / 2.0], size: [fw as f32, fh as f32], angle: 0.0 };
+        let whole = Region::whole(fw, fh);
         let (w, h) = crate::photo::Decoded::fit_size(&whole, AIR_SIZE);
         let (params, k) = develop_params(raw, &whole, w, h, dev, profile, 0);
         let g = params.gains;
@@ -1012,34 +1038,46 @@ impl Gpu {
     }
 
     /// Defringe (`fringe.wgsl`): darktable's chromatic aberrations module,
-    /// radius 5 px at full resolution, strength = `amount` / 100 (50 is darktable's default).
-    fn defringe(&self, lin: &wgpu::Buffer, [sa, sb]: [&wgpu::Buffer; 2], w: u32, h: u32, s: f32, amount: f32) {
+    /// radius 5 px at full resolution, strength = `amount` / 100 (50 is darktable's default);
+    /// darken only (purple fringes) or brighten only (green).
+    #[allow(clippy::too_many_arguments)]
+    fn defringe(
+        &self,
+        lin: &wgpu::Buffer,
+        [sa, sb]: [&wgpu::Buffer; 2],
+        [b, hi, lo]: &[wgpu::Buffer; 3],
+        w: u32,
+        h: u32,
+        s: f32,
+        amount: f32,
+        brighten: bool,
+    ) {
         let sigma = (5.0 * s).max(1.0);
         let pr = self.storage(bytemuck::bytes_of(&FringeParams {
             size: [w, h],
             radius: (3.0 * sigma).ceil() as i32,
             sigma,
             safety: 20f32.powf(1.0 - amount / 100.0),
-            _pad: [0.0; 3],
+            brighten: brighten as u32,
+            _pad: [0.0; 2],
         }));
-        // Blurred input, higher and lower manifolds.
-        let [b, hi, lo] = [0; 3].map(|_| self.buffer(lin.size(), wgpu::BufferUsages::empty()));
+        // `b`, `hi`, `lo`: blurred input, higher and lower manifolds.
         let (p, g) = (&self.raw, grid(w * h));
         let blur_h = |from, to| (&p.fr_blur_h, vec![(0, &pr), (4, from), (5, to)]);
         let blur_v = |from, to| (&p.fr_blur_v, vec![(0, &pr), (4, from), (5, to)]);
         let passes = [
             blur_h(lin, sb),
-            blur_v(sb, &b),
-            (&p.fr_manifolds, vec![(0, &pr), (1, lin), (2, &lo), (5, &hi), (6, &b)]),
-            blur_h(&hi, sb),
-            blur_v(sb, &hi),
-            blur_h(&lo, sb),
-            blur_v(sb, &lo),
-            (&p.fr_normalise, vec![(0, &pr), (2, &lo), (5, &hi), (6, &b)]),
-            (&p.fr_out, vec![(0, &pr), (1, lin), (2, sa), (4, &hi), (6, &lo)]),
+            blur_v(sb, b),
+            (&p.fr_manifolds, vec![(0, &pr), (1, lin), (2, lo), (5, hi), (6, b)]),
+            blur_h(hi, sb),
+            blur_v(sb, hi),
+            blur_h(lo, sb),
+            blur_v(sb, lo),
+            (&p.fr_normalise, vec![(0, &pr), (2, lo), (5, hi), (6, b)]),
+            (&p.fr_out, vec![(0, &pr), (1, lin), (2, sa), (4, hi), (6, lo)]),
             blur_h(sa, sb),
             blur_v(sb, sa),
-            (&p.fr_apply, vec![(0, &pr), (1, lin), (2, sa), (4, &hi), (6, &lo)]),
+            (&p.fr_apply, vec![(0, &pr), (1, lin), (2, sa), (4, hi), (6, lo)]),
         ];
         let passes: Vec<Pass> = passes.iter().map(|(pl, b)| (*pl, b.as_slice(), g)).collect();
         self.passes(&passes);
@@ -1127,7 +1165,9 @@ impl Gpu {
                 // to ×4 (100) of the measured one, ×1 at 50.
                 luma: 4f32.powf(2.0 * detail.nr_luma / 100.0 - 1.0),
                 detail: detail.nr_detail / 200.0,
-                chroma: detail.nr_chroma / 100.0,
+                // Soft threshold of each chroma band, 0 to 2 × its noise σ (where white noise
+                // is gone), squared so the slider spreads over the range still removing some.
+                chroma: 2.0 * (detail.nr_chroma / 100.0).powi(2),
                 _pad2: 0.0,
             }))
         };
@@ -1148,19 +1188,15 @@ impl Gpu {
             let init = [(0, &base), (1, lin), (2, sa)];
             passes.push((&p.nr_chroma_init, &init, g));
             let order = [[(0, sa), (1, sb)], [(0, sb), (1, sa)]];
-            let binds: Vec<[(u32, &wgpu::Buffer); 3]> = steps
+            let binds: Vec<[(u32, &wgpu::Buffer); 4]> = steps
                 .iter()
                 .enumerate()
                 .map(|(l, s)| {
                     let [(_, from), (_, to)] = order[l % 2];
-                    [(0, s), (2, from), (3, to)]
+                    [(0, s), (1, lin), (2, from), (3, to)]
                 })
                 .collect();
             passes.extend(binds.iter().map(|b| (&p.nr_atrous, b.as_slice(), g)));
-            // The last level wrote the buffer the next one would read: bind it as `sa`.
-            let last = if levels % 2 == 1 { sb } else { sa };
-            let apply = [(0, &base), (1, lin), (2, last)];
-            passes.push((&p.nr_chroma_apply, &apply, g));
             self.passes(&passes);
         }
     }
@@ -1509,7 +1545,7 @@ mod tests {
     }
 
     fn whole(w: u32, h: u32) -> Region {
-        Region { center: [w as f32 / 2.0, h as f32 / 2.0], size: [w as f32, h as f32], angle: 0.0 }
+        Region::whole(w, h)
     }
 
     #[test]
@@ -1647,13 +1683,13 @@ mod tests {
     /// A `w` × `h` field of `f(x)` with Poisson–Gaussian noise of [`NOISE`], developed
     /// at full resolution with `detail`; the linear Rec.2020 result.
     fn noisy(gpu: &Gpu, w: u32, h: u32, f: impl Fn(u32) -> f32, detail: Detail) -> Vec<[f32; 4]> {
+        noisy_rgb(gpu, w, h, |x| [f(x); 3], detail)
+    }
+
+    /// [`noisy`] of a colour field.
+    fn noisy_rgb(gpu: &Gpu, w: u32, h: u32, f: impl Fn(u32) -> [f32; 3], detail: Detail) -> Vec<[f32; 4]> {
         let mut n = crate::noise::tests::normals(11);
-        let px = (0..w * h)
-            .map(|i| {
-                let x = f(i % w);
-                std::array::from_fn(|_| x + (NOISE.a * x + NOISE.b).sqrt() * n())
-            })
-            .collect();
+        let px = (0..w * h).map(|i| f(i % w).map(|x| x + (NOISE.a * x + NOISE.b).sqrt() * n())).collect();
         let mut raw = rgb_raw(gpu, w, h, px, 1, Camera::neutral());
         raw.noise = NOISE;
         let dev = Develop { detail, ..Develop::default() };
@@ -1725,6 +1761,26 @@ mod tests {
         assert!(before.iter().zip(&after).all(|(p, q)| (luma(p) - luma(q)).abs() < 1e-3));
         let chroma = |v: &[[f32; 4]]| mean_std(v.iter().map(|p| p[2] - luma(p))).1;
         assert!(chroma(&after) * 2.0 < chroma(&before), "chroma noise {} vs {}", chroma(&after), chroma(&before));
+    }
+
+    /// Chroma NR keeps a colour edge where luminance does not change: the
+    /// 10–90% transition of R − Y stays within a few pixels (it once spread ~20).
+    #[test]
+    fn chroma_nr_keeps_colour_edges() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (128u32, 48u32);
+        // Same Rec.2020 luminance (≈ 0.2) on both sides, opposite chroma.
+        let (red, cyan) = ([0.45, 0.1, 0.15], [0.05, 0.25, 0.3]);
+        assert!((luma(&[red[0], red[1], red[2], 0.0]) - luma(&[cyan[0], cyan[1], cyan[2], 0.0])).abs() < 0.01);
+        let px = noisy_rgb(&gpu, w, h, |x| if x < w / 2 { red } else { cyan }, nr(0.0, 100.0));
+        let w = w as usize;
+        let cr: Vec<f32> = (0..w)
+            .map(|x| (0..h as usize).map(|y| px[y * w + x][0] - luma(&px[y * w + x])).sum::<f32>() / h as f32)
+            .collect();
+        let (hi, lo) =
+            (cr[..w / 4].iter().sum::<f32>() / (w / 4) as f32, cr[3 * w / 4..].iter().sum::<f32>() / (w / 4) as f32);
+        let between = cr.iter().filter(|&&v| v < lo + 0.9 * (hi - lo) && v > lo + 0.1 * (hi - lo)).count();
+        assert!(between <= 4, "R − Y transition over {between} px: {:?}", &cr[w / 2 - 12..w / 2 + 12]);
     }
 
     /// Every EXIF orientation gives what the image crate's `apply_orientation` does.
@@ -1927,6 +1983,42 @@ mod tests {
         );
     }
 
+    /// Brighten only: a green fringe along a dark/bright edge loses its
+    /// colour; a green patch away from any edge keeps it; purple is left alone.
+    #[test]
+    fn green_defringe_cleans_green_edges_only() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (96u32, 48u32);
+        let green = [0.12, 0.45, 0.1];
+        let y = luma(&[green[0], green[1], green[2], 0.0]);
+        let px = (0..w * h)
+            .map(|i| match (i % w, i / w) {
+                (30..=31, _) => green,
+                (0..=31, _) => [0.03; 3],
+                (60..=79, 14..=33) => green,
+                (60.., _) => [y; 3],
+                _ => [0.8; 3],
+            })
+            .collect::<Vec<_>>();
+        let chroma = |v: &[[f32; 4]], x: u32, yy: u32| {
+            let p = v[(yy * w + x) as usize];
+            ((p[0] - p[1]).powi(2) + (p[2] - p[1]).powi(2)).sqrt()
+        };
+        let before = field(&gpu, w, h, px.clone(), Detail::default());
+        let after = field(&gpu, w, h, px.clone(), Detail { defringe_green: 100.0, ..Detail::default() });
+        let (f0, f1) = (chroma(&before, 31, 24), chroma(&after, 31, 24));
+        // Looser than purple's 0.4: the fringe's own pixels sit in the bright side's manifold and,
+        // only 2.2 EV from neutral (purple's are 2.9), the 2 EV down-weighting barely moves them.
+        assert!(f1 <= 0.5 * f0, "fringe {f1} vs {f0}");
+        let (p0, p1) = (chroma(&before, 70, 24), chroma(&after, 70, 24));
+        assert!(p1 >= 0.9 * p0, "patch {p1} vs {p0}");
+        // Brighten only never darkens: a purple fringe (red and blue above green) is untouched.
+        let purple: Vec<_> = px.iter().map(|&p| if p == green { [0.35, 0.08, 0.6] } else { p }).collect();
+        let before = field(&gpu, w, h, purple.clone(), Detail::default());
+        let after = field(&gpu, w, h, purple, Detail { defringe_green: 100.0, ..Detail::default() });
+        assert!(chroma(&after, 31, 24) >= 0.95 * chroma(&before, 31, 24));
+    }
+
     /// Dark branch, purple fringe, bright blue sky: the fringe loses its
     /// colour without taking the sky's, and the dark side stays neutral.
     #[test]
@@ -2025,7 +2117,8 @@ mod tests {
         }
     }
 
-    /// Changing only sharpening re-runs sharpening, not noise reduction.
+    /// Changing only sharpening re-runs sharpening, not noise reduction;
+    /// changing only local contrast does not re-run dehaze.
     #[test]
     fn cached_stage_is_reused() {
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
@@ -2041,9 +2134,18 @@ mod tests {
         // And the cached result is the same as a fresh one.
         let fresh = gpu.read_photo(&gpu.develop(&raw, &whole(w, h), w, h, &dev, Profile::Standard).unwrap());
         assert_eq!(gpu.read_photo(slot.as_ref().unwrap()).pixels, fresh.pixels);
+        dev.detail.dehaze = 20.0;
+        gpu.develop_into(&mut slot, &raw, &whole(w, h), w, h, &dev, Profile::Standard).unwrap();
+        let hazes = gpu.raw.dehaze_runs.get();
+        dev.detail.local_contrast = 70.0;
+        gpu.develop_into(&mut slot, &raw, &whole(w, h), w, h, &dev, Profile::Standard).unwrap();
+        assert_eq!(gpu.raw.dehaze_runs.get(), hazes, "dehaze ran again");
+        let fresh = gpu.read_photo(&gpu.develop(&raw, &whole(w, h), w, h, &dev, Profile::Standard).unwrap());
+        assert_eq!(gpu.read_photo(slot.as_ref().unwrap()).pixels, fresh.pixels);
+        let runs = gpu.raw.nr_runs.get();
         dev.exposure = 0.5;
         gpu.develop_into(&mut slot, &raw, &whole(w, h), w, h, &dev, Profile::Standard).unwrap();
-        assert_eq!(gpu.raw.nr_runs.get(), runs + 2, "an exposure change re-runs everything");
+        assert_eq!(gpu.raw.nr_runs.get(), runs + 1, "an exposure change re-runs everything");
     }
 
     /// A 1:1 view of part of the photo is that part of the full develop: the

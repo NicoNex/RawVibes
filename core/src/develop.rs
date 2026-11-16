@@ -35,7 +35,10 @@ pub struct Detail {
     pub sharpen: f32,
     /// Capture sharpening PSF radius, 0.5–2.0 full-resolution pixels.
     pub sharpen_radius: f32,
+    /// Purple and green fringe removal: darktable's chromatic aberrations
+    /// module in "darken only" and "brighten only" mode.
     pub defringe: f32,
+    pub defringe_green: f32,
     /// Output sharpening (unsharp mask on luminance): amount, radius 0.5–3.0
     /// full-resolution pixels, threshold 0–100.
     pub usm: f32,
@@ -65,6 +68,7 @@ impl Detail {
         on(d.nr_luma, 9.0)
             + on(d.nr_chroma, 62.0)
             + on(d.defringe, 32.0)
+            + on(d.defringe_green, 32.0)
             + on(d.dehaze, 67.0)
             + on(d.local_contrast, 256.0)
             // The most iterations at the largest radius, so neither amount nor radius moves the margin (or the caches).
@@ -77,7 +81,7 @@ impl Detail {
     pub fn clamped(self) -> Option<Self> {
         let d = self;
         let all = [d.nr_luma, d.nr_chroma, d.nr_detail, d.sharpen, d.sharpen_radius];
-        let all = [all.as_slice(), &[d.defringe, d.usm, d.usm_radius, d.usm_threshold]].concat();
+        let all = [all.as_slice(), &[d.defringe, d.defringe_green, d.usm, d.usm_radius, d.usm_threshold]].concat();
         let all = [all.as_slice(), &[d.dehaze, d.local_contrast, d.lens_vignette, d.nr_ai_strength]].concat();
         if all.iter().any(|v| !v.is_finite()) {
             return None;
@@ -91,6 +95,7 @@ impl Detail {
             sharpen: amount(d.sharpen),
             sharpen_radius: d.sharpen_radius.clamp(0.5, 2.0),
             defringe: amount(d.defringe),
+            defringe_green: amount(d.defringe_green),
             usm: amount(d.usm),
             usm_radius: d.usm_radius.clamp(0.5, 3.0),
             usm_threshold: amount(d.usm_threshold),
@@ -113,6 +118,7 @@ impl Default for Detail {
             sharpen: 0.0,
             sharpen_radius: 0.8,
             defringe: 0.0,
+            defringe_green: 0.0,
             usm: 0.0,
             usm_radius: 1.0,
             usm_threshold: 0.0,

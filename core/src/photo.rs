@@ -251,9 +251,10 @@ pub fn embedded_preview(path: &Path) -> Result<Photo, String> {
     let decoder = rawler::get_decoder(&src).map_err(|e| e.to_string())?;
     // Not `analyze::extract_preview_pixels`: without a preview it develops the RAW itself.
     let img = decoder.preview_image(&src, &params).map_err(|e| e.to_string())?.ok_or("no camera JPEG")?;
-    let img = img.into_rgba32f();
+    // Shrunk while still 8-bit: a full-size f32 copy of a 24 MP JPEG is ~380 MB.
+    let img = img.thumbnail(1024, 1024).into_rgba32f();
     let (w, h) = img.dimensions();
-    Ok(Photo { width: w, height: h, pixels: bytemuck::allocation::cast_vec(img.into_raw()) }.downscaled(1024))
+    Ok(Photo { width: w, height: h, pixels: bytemuck::allocation::cast_vec(img.into_raw()) })
 }
 
 /// Longest side of a RAW's small CPU copy when no size is asked for.

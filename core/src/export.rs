@@ -58,40 +58,56 @@ fn to_u8(v: u16) -> u8 {
 }
 
 /// Writes `rgb` (16-bit, `w` × `h`) to `path`. Through a `.part` file
-/// renamed at the end, so a failed export never destroys the file it replaces.
-pub fn save(path: &Path, w: u32, h: u32, rgb: Vec<u16>, format: PhotoFormat, quality: u8) -> Result<(), String> {
+/// renamed at the end, so a failed export never destroys the file it
+/// replaces; not renamed (`Ok(false)`) once `cancelled` says so.
+pub fn save(
+    path: &Path,
+    w: u32,
+    h: u32,
+    rgb: Vec<u16>,
+    format: PhotoFormat,
+    quality: u8,
+    cancelled: impl Fn() -> bool,
+) -> Result<bool, String> {
     let mut part = path.as_os_str().to_owned();
     part.push(".part");
     let part = std::path::PathBuf::from(part);
     let write = || -> Result<(), String> {
+        let mut file = BufWriter::new(std::fs::File::create(&part).map_err(|e| e.to_string())?);
         match format {
             PhotoFormat::Jpeg => {
                 let px: Vec<u8> = rgb.iter().map(|&v| to_u8(v)).collect();
-                let file = BufWriter::new(std::fs::File::create(&part).map_err(|e| e.to_string())?);
-                JpegEncoder::new_with_quality(file, quality)
+                JpegEncoder::new_with_quality(&mut file, quality)
                     .encode(&px, w, h, ExtendedColorType::Rgb8)
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| e.to_string())?;
             }
             PhotoFormat::Png16 | PhotoFormat::Tiff16 => {
                 let img = ImageBuffer::<Rgb<u16>, _>::from_raw(w, h, rgb).ok_or("export buffer size mismatch")?;
                 let f = if format == PhotoFormat::Png16 { ImageFormat::Png } else { ImageFormat::Tiff };
-                img.save_with_format(&part, f).map_err(|e| e.to_string())
+                img.write_to(&mut file, f).map_err(|e| e.to_string())?;
             }
         }
+        // The last buffered bytes and the disk sync can fail too (disk full): before the rename.
+        file.into_inner().map_err(|e| e.error().to_string())?.sync_all().map_err(|e| e.to_string())
     };
-    let r = write().and_then(|_| std::fs::rename(&part, path).map_err(|e| e.to_string()));
-    if r.is_err() {
+    let r = write().and_then(|_| {
+        if cancelled() {
+            return Ok(false);
+        }
+        std::fs::rename(&part, path).map(|_| true).map_err(|e| e.to_string())
+    });
+    if r != Ok(true) {
         let _ = std::fs::remove_file(&part);
     }
     r
 }
 
-/// Bytes of an RGBA8 image (`w` × `h`) as a JPEG at `quality`: what the
+/// Bytes of a 16-bit RGB image (`w` × `h`) as a JPEG at `quality`: what the
 /// export dialog scales by the pixel-count ratio to estimate the file size.
-pub fn jpeg_size(rgba: &[u8], w: u32, h: u32, quality: u8) -> usize {
-    let rgb: Vec<u8> = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+pub fn jpeg_size(rgb: &[u16], w: u32, h: u32, quality: u8) -> usize {
+    let px: Vec<u8> = rgb.iter().map(|&v| to_u8(v)).collect();
     let mut out = Cursor::new(Vec::new());
-    let _ = JpegEncoder::new_with_quality(&mut out, quality).encode(&rgb, w, h, ExtendedColorType::Rgb8);
+    let _ = JpegEncoder::new_with_quality(&mut out, quality).encode(&px, w, h, ExtendedColorType::Rgb8);
     out.into_inner().len()
 }
 
@@ -119,7 +135,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         for f in PhotoFormat::ALL {
             let p = dir.join(format!("x.{}", f.ext()));
-            save(&p, w, h, rgb.clone(), f, JPEG_QUALITY).unwrap();
+            assert!(save(&p, w, h, rgb.clone(), f, JPEG_QUALITY, || false).unwrap());
             let back = image::open(&p).unwrap();
             assert_eq!((back.width(), back.height()), (w, h));
             if f != PhotoFormat::Jpeg {
@@ -127,12 +143,18 @@ mod tests {
             }
             assert!(!dir.join(format!("x.{}.part", f.ext())).exists());
         }
+        // Stopped while saving: the file it would replace is untouched, no `.part` left.
+        let p = dir.join("x.png");
+        let before = std::fs::read(&p).unwrap();
+        assert!(!save(&p, w, h, vec![0; rgb.len()], PhotoFormat::Png16, 90, || true).unwrap());
+        assert_eq!(std::fs::read(&p).unwrap(), before);
+        assert!(!dir.join("x.png.part").exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn jpeg_size_grows_with_quality() {
-        let rgba: Vec<u8> = (0..64 * 64 * 4).map(|i| (i * 37 % 251) as u8).collect();
-        assert!(jpeg_size(&rgba, 64, 64, 50) < jpeg_size(&rgba, 64, 64, 95));
+        let rgb: Vec<u16> = (0..64 * 64 * 3).map(|i| (i * 37 % 251 * 257) as u16).collect();
+        assert!(jpeg_size(&rgb, 64, 64, 50) < jpeg_size(&rgb, 64, 64, 95));
     }
 }

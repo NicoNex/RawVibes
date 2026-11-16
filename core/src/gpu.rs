@@ -238,9 +238,10 @@ impl Gpu {
         let (out, staging) = self.output(photo.width as u64 * photo.height as u64 * 8);
         let bind =
             self.bind(&self.export16, &[(0, &self.params), (1, &self.curves), (2, &photo.src), (3, &out), (5, lut)]);
+        // shortcut: new output buffers per strip; keep them per export if allocation shows in profiles.
         let rgba = self.run(&self.export16, &bind, photo.width * photo.height, &out, &staging);
-        let rgba: &[u16] = bytemuck::cast_slice(&rgba);
-        rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect()
+        // A Vec<u8> may be unaligned for a u16 cast: read the little-endian pairs.
+        rgba.chunks_exact(8).flat_map(|p| [0, 2, 4].map(|i| u16::from_le_bytes([p[i], p[i + 1]]))).collect()
     }
 
     /// Photo seen through an external LUT (tetrahedral), as RGBA8.
@@ -375,6 +376,9 @@ pub enum Job {
     },
     /// The open photo, developed and graded at full resolution, to a file.
     ExportPhoto(PhotoExport),
+    /// The whole photo graded as exported (no zoom, overlay or split), at
+    /// preview size: what the export dialog estimates the JPEG size from.
+    ExportFrame(Grade),
     /// The grade followed by its look LUTs.
     Export {
         grade: Grade,
@@ -460,6 +464,8 @@ pub enum Done {
     /// Photo export: fraction done, then the file written (`None`: cancelled).
     ExportProgress(f32),
     PhotoExported(Result<Option<PathBuf>, String>),
+    /// `Job::ExportFrame`: width, height, 16-bit RGB.
+    ExportFrame(u32, u32, Vec<u16>),
     RollFrame {
         generation: u64,
         index: usize,
@@ -560,9 +566,10 @@ struct Ai {
 /// Longest side of the CPU copy of each developed RAW frame.
 const SMALL_COPY: u32 = 512;
 
-/// Linear working buffer per export strip (~1400 rows of a 6000 px photo):
-/// with the detail caches and the strip's own buffers it stays well under 1 GB.
-const EXPORT_ROWS_BYTES: u64 = 128 << 20;
+/// Linear working buffer per export strip, margin included: with its two
+/// scratch buffers and the two detail caches about 1 GB of VRAM.
+// shortcut: the caches never hit across strips; a no-cache develop would allow larger strips (less margin re-developed).
+const EXPORT_ROWS_BYTES: u64 = 192 << 20;
 
 /// Lattice the look LUTs are composed on for export (the preview uses 33³).
 const EXPORT_LOOK: usize = 65;
@@ -687,11 +694,19 @@ impl Worker {
     ) -> Result<Option<(u32, u32, Vec<u16>)>, String> {
         let cancelled = || e.cancel.load(Ordering::Relaxed);
         let raw = e.decoded.is_raw();
-        // The AI result the preview shows, finished first if still running.
+        // The AI result the preview shows, finished first if still running: the first half of the bar.
+        let mut start = 0.0;
         if raw && e.develop.detail.nr_ai {
+            let notify = |d: Done| {
+                if let Done::AiProgress(_, f) = &d {
+                    notify(Done::ExportProgress(f * 0.5));
+                }
+                notify(d)
+            };
             #[cfg(feature = "ai")]
-            self.ai_begin(gpu, true, notify);
-            while self.ai_step(gpu, notify) {
+            self.ai_begin(gpu, true, &notify);
+            while self.ai_step(gpu, &notify) {
+                start = 0.5;
                 if cancelled() {
                     return Ok(None);
                 }
@@ -702,7 +717,10 @@ impl Worker {
             .then(|| gpu.upload_lut(&lab::compose(&e.look, EXPORT_LOOK, &|g| self.bake_cached(gpu, g))));
         let limits = gpu.device.limits();
         let budget = strip_bytes.min(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size);
-        let rows = ((budget / (w as u64 * 16)) as u32).clamp(16, h.max(16));
+        // Each strip develops the detail tools' margin all round too (at full resolution, 1 px per px).
+        let margin = if raw { e.develop.detail.support().ceil() as u64 } else { 0 };
+        let rows = (budget / ((w as u64 + 2 * margin) * 16)).saturating_sub(2 * margin);
+        let rows = (rows as u32).clamp(16, h.max(16));
         let mut out = Vec::with_capacity(w as usize * h as usize * 3);
         let mut slot = None;
         for y0 in (0..h).step_by(rows as usize) {
@@ -722,11 +740,10 @@ impl Worker {
                 );
             }
             let mut grade = e.grade.clone();
-            grade.params.overlay = 0;
             grade.params.vignette_view = strip.rect_in(&e.crop);
             grade.params.vignette_aspect = e.crop.size[0] / e.crop.size[1];
             out.extend(gpu.render16(slot.as_ref().expect("developed above"), &grade, look.as_ref()));
-            notify(Done::ExportProgress(y1 as f32 / h as f32));
+            notify(Done::ExportProgress(start + (1.0 - start) * y1 as f32 / h as f32));
         }
         Ok(Some((w, h, out)))
     }
@@ -887,11 +904,17 @@ impl Worker {
                 notify(Done::Exported(Lut3d { title, format, ..lut }.save(&path).map(|_| path)));
             }
             Job::ExportPhoto(e) => {
+                let cancelled = || e.cancel.load(Ordering::Relaxed);
                 let r = self.export_photo(gpu, &e, EXPORT_ROWS_BYTES, notify).and_then(|done| match done {
-                    Some((w, h, rgb)) => export::save(&e.path, w, h, rgb, e.format, e.quality).map(|_| Some(e.path)),
+                    Some((w, h, rgb)) => export::save(&e.path, w, h, rgb, e.format, e.quality, cancelled)
+                        .map(|saved| saved.then_some(e.path.clone())),
                     None => Ok(None),
                 });
                 notify(Done::PhotoExported(r));
+            }
+            Job::ExportFrame(grade) => {
+                let Some(ph) = (if self.show_raw { self.raw_fit.as_ref() } else { self.fit.as_ref() }) else { return };
+                notify(Done::ExportFrame(ph.width, ph.height, gpu.render16(ph, &grade, self.look.as_ref())));
             }
             Job::Export { grade, look, size, format, title, path } => {
                 let size = format.fixed_size().unwrap_or(size);
@@ -1106,8 +1129,6 @@ mod tests {
         assert_eq!(failures(), 2);
     }
 
-    /// The RAW renders at the size it was developed at, from the GPU; the
-    /// small CPU copy it hands back only brings it back (e.g. after the chart).
     /// Exporting in many strips gives the same pixels as in one: detail
     /// tools, rotation and the creative vignette see no seams.
     #[test]
@@ -1160,8 +1181,10 @@ mod tests {
             cancel: Arc::default(),
         };
         let (_, _, one) = worker.export_photo(&gpu, &e, u64::MAX, &notify).unwrap().unwrap();
-        // 37 rows per strip: 5 strips, the last one short.
-        let (ew, eh, many) = worker.export_photo(&gpu, &e, 240 * 16 * 37, &notify).unwrap().unwrap();
+        // 37 rows per strip (plus the margin all round): 5 strips, the last one short.
+        let m = e.develop.detail.support().ceil() as u64;
+        let budget = (240 + 2 * m) * 16 * (37 + 2 * m);
+        let (ew, eh, many) = worker.export_photo(&gpu, &e, budget, &notify).unwrap().unwrap();
         assert_eq!((ew, eh, one.len()), (240, 160, many.len()));
         let worst = one.iter().zip(&many).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
         assert!(worst <= 64, "strip seams differ by {worst}/65535");
@@ -1201,12 +1224,14 @@ mod tests {
             let t = std::time::Instant::now();
             let (w, h, rgb) = worker.export_photo(&gpu, &e, EXPORT_ROWS_BYTES, &notify).unwrap().unwrap();
             let dev = t.elapsed();
-            export::save(&e.path, w, h, rgb, format, 90).unwrap();
+            export::save(&e.path, w, h, rgb, format, 90, || false).unwrap();
             let size = std::fs::metadata(&e.path).unwrap().len();
             eprintln!("{format:?} {w}x{h}: develop {dev:.2?}, total {:.2?}, {} MB", t.elapsed(), size / 1_000_000);
         }
     }
 
+    /// The RAW renders at the size it was developed at, from the GPU; the
+    /// small CPU copy it hands back only brings it back (e.g. after the chart).
     #[test]
     fn raw_renders_full_size_and_comes_back_after_the_chart() {
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };

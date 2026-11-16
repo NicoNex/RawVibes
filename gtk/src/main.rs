@@ -181,7 +181,9 @@ enum Msg {
     /// Opens the Export Photo dialog, on this format if given.
     ExportPhoto(Option<PhotoFormat>),
     ExportFormat(PhotoFormat),
-    ExportQuality(u8),
+    ExportQuality,
+    /// Encodes the JPEG size estimate of this generation, if still current.
+    ExportEstimateRun(u64),
     /// A JPEG size estimate (estimate generation, bytes).
     ExportEstimate(u64, u64),
     /// The dialog's button: choose the file, or stop the running export.
@@ -439,8 +441,8 @@ struct App {
     jobs: mpsc::Sender<Job>,
     /// The running photo export's stop flag.
     exporting: Option<Arc<AtomicBool>>,
-    /// The preview frame the JPEG size estimate encodes, and its generation.
-    export_frame: Option<(u32, u32, Arc<Vec<u8>>)>,
+    /// The frame the JPEG size estimate encodes (`Done::ExportFrame`), and its generation.
+    export_frame: Option<(u32, u32, Arc<Vec<u16>>)>,
     export_gen: u64,
     /// Last preview request; identical requests (e.g. echoes of programmatic
     /// widget resets) are not re-rendered.
@@ -1277,8 +1279,9 @@ impl App {
         self.render_lab();
     }
 
-    /// The export dialog's file size: JPEG estimated from the frame on screen
-    /// (encoded off the main thread, scaled by the pixel count), 16-bit exact or bounded.
+    /// The export dialog's file size: JPEG estimated from the photo graded at
+    /// preview size (encoded off the main thread once the quality settles,
+    /// scaled by the pixel count), 16-bit exact or bounded.
     fn export_estimate(&mut self, sender: &ComponentSender<Self>) {
         let Some((w, h)) = self.crop_region().map(|c| Decoded::fit_size(&c, u32::MAX)) else { return };
         let ui = &self.ui.export_photo;
@@ -1288,12 +1291,11 @@ impl App {
             PhotoFormat::Tiff16 => ui.set_estimate(Some(export_ui::bytes(raw))),
             PhotoFormat::Png16 => ui.set_estimate(Some(gettext!("up to {}", export_ui::bytes(raw)))),
             PhotoFormat::Jpeg => {
-                let Some((fw, fh, px)) = self.export_frame.clone() else { return ui.set_estimate(None) };
                 ui.set_estimate(None);
-                let (generation, quality, s) = (self.export_gen, ui.quality(), sender.input_sender().clone());
-                std::thread::spawn(move || {
-                    let n = export::jpeg_size(&px, fw, fh, quality) as f64 * (w as f64 * h as f64) / (fw * fh) as f64;
-                    s.emit(Msg::ExportEstimate(generation, n as u64));
+                let (generation, s) = (self.export_gen, sender.input_sender().clone());
+                // A spin held down sends a value per tick: encode only the one it stops on.
+                glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
+                    s.emit(Msg::ExportEstimateRun(generation))
                 });
             }
         }
@@ -3667,25 +3669,28 @@ impl SimpleComponent for App {
                 ui.set_format(format.unwrap_or_else(|| export_ui::remembered().0));
                 let (w, h) = Decoded::fit_size(&crop, u32::MAX);
                 ui.set_size(w, h);
-                // The size estimate encodes the frame on screen.
-                self.export_frame = self.ui.grade_pic.paintable().and_downcast::<gdk::Texture>().map(|t| {
-                    let (tw, th) = (t.width() as u32, t.height() as u32);
-                    let mut px = vec![0; (tw * th * 4) as usize];
-                    t.download(&mut px, tw as usize * 4);
-                    (tw, th, Arc::new(px))
-                });
+                // The JPEG estimate waits for the frame (Done::ExportFrame).
+                self.export_frame = None;
+                let grade = self.graded();
+                self.send(Job::ExportFrame(grade));
                 ui.dialog.present(Some(&self.ui.window));
                 self.export_estimate(&sender);
             }
             Msg::ExportFormat(f) => {
                 self.ui.export_photo.set_format(f);
-                let _ = settings::set_value(settings::EXPORT_FORMAT, f.tag());
                 self.export_estimate(&sender);
             }
-            Msg::ExportQuality(q) => {
-                let _ = settings::set_value(settings::JPEG_QUALITY, &q.to_string());
-                self.export_estimate(&sender);
+            Msg::ExportQuality => self.export_estimate(&sender),
+            Msg::ExportEstimateRun(generation) if generation == self.export_gen => {
+                let Some((w, h)) = self.crop_region().map(|c| Decoded::fit_size(&c, u32::MAX)) else { return };
+                let Some((fw, fh, px)) = self.export_frame.clone() else { return };
+                let (quality, s) = (self.ui.export_photo.quality(), sender.input_sender().clone());
+                std::thread::spawn(move || {
+                    let n = export::jpeg_size(&px, fw, fh, quality) as f64 * (w as f64 * h as f64) / (fw * fh) as f64;
+                    s.emit(Msg::ExportEstimate(generation, n as u64));
+                });
             }
+            Msg::ExportEstimateRun(_) => {}
             Msg::ExportEstimate(generation, n) if generation == self.export_gen => {
                 self.ui.export_photo.set_estimate(Some(gettext!("about {}", export_ui::bytes(n))))
             }
@@ -3698,7 +3703,8 @@ impl SimpleComponent for App {
                 let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
                 let dialog = gtk::FileDialog::builder()
                     .title(gettext("Export Photo"))
-                    .initial_name(format!("{stem}.{}", format.ext()))
+                    // Never the original's own name: a JPEG source sits in the same folder.
+                    .initial_name(format!("{stem}_edit.{}", format.ext()))
                     .filters(&file_filters(&format.ext().to_uppercase(), &[format.ext().into()]))
                     .modal(true)
                     .build();
@@ -3716,6 +3722,9 @@ impl SimpleComponent for App {
                 self.exporting = Some(cancel.clone());
                 let ui = &self.ui.export_photo;
                 ui.set_busy(true);
+                // Remembered as used, not per spin tick.
+                let _ = settings::set_value(settings::EXPORT_FORMAT, ui.format().tag());
+                let _ = settings::set_value(settings::JPEG_QUALITY, &ui.quality().to_string());
                 self.send(Job::ExportPhoto(PhotoExport {
                     decoded,
                     crop,
@@ -4080,7 +4089,7 @@ impl SimpleComponent for App {
                 }
                 self.refresh();
             }
-            Msg::Gpu(done) => self.on_gpu(done),
+            Msg::Gpu(done) => self.on_gpu(done, &sender),
             Msg::Zoom(cmd) => self.on_zoom(cmd),
             Msg::CanvasSize(area) => {
                 self.canvas = area;
@@ -4297,9 +4306,15 @@ impl App {
         }
     }
 
-    fn on_gpu(&mut self, done: Done) {
+    fn on_gpu(&mut self, done: Done, sender: &ComponentSender<Self>) {
         match done {
-            Done::Failed(e) => self.toast(&gettext!("GPU unavailable: {}", e)),
+            Done::Failed(e) => {
+                // The worker is gone: an export in progress never reports back.
+                if self.exporting.take().is_some() {
+                    self.ui.export_photo.set_busy(false);
+                }
+                self.toast(&gettext!("GPU unavailable: {}", e))
+            }
             Done::Graded { width, height, rgba, scopes: Scopes { histogram, waveform, vectorscope } } => {
                 self.ui.grade_pic.set_paintable(Some(&texture(width, height, rgba)));
                 let [h, w, v] = &self.ui.sidebar.scopes;
@@ -4321,6 +4336,12 @@ impl App {
             }
             Done::Exported(Err(e)) => self.toast(&gettext!("Export failed: {}", e)),
             Done::ExportProgress(f) => self.ui.export_photo.set_progress(f),
+            Done::ExportFrame(w, h, rgb) => {
+                self.export_frame = Some((w, h, Arc::new(rgb)));
+                if self.ui.export_photo.format() == PhotoFormat::Jpeg {
+                    self.export_estimate(sender);
+                }
+            }
             Done::PhotoExported(r) => {
                 self.exporting = None;
                 self.ui.export_photo.set_busy(false);
@@ -4402,12 +4423,13 @@ fn profile_hint(p: Profile) -> String {
     }
 }
 
-/// Menu of export formats for action `action` (`win.<action>::<kind>-<size>`).
-fn export_menu(action: &str, with_identity: bool) -> gio::Menu {
+/// Menu of export formats for action `action` (`win.<action>::<kind>-<size>`);
+/// the `header` one also has the photo formats and the HALD identity.
+fn export_menu(action: &str, header: bool) -> gio::Menu {
     let item =
         |m: &gio::Menu, label: &str, target: &str| m.append(Some(label), Some(&format!("win.{action}::{target}")));
     let menu = gio::Menu::new();
-    if with_identity {
+    if header {
         let photo = gio::Menu::new();
         for f in PhotoFormat::ALL {
             photo.append(Some(&export_ui::menu_label(f)), Some(&format!("win.export-photo::{}", f.tag())));
@@ -4424,7 +4446,7 @@ fn export_menu(action: &str, with_identity: bool) -> gio::Menu {
     item(&other, &gettext("Panasonic VLT · 17³ .vlt"), "vlt-17");
     item(&other, &gettext("HALD CLUT · 64³ .png"), "hald-64");
     menu.append_section(Some(gettext("LUT · other formats").as_str()), &other);
-    if with_identity {
+    if header {
         let tools = gio::Menu::new();
         item(&tools, &gettext("HALD identity · .png"), "identity-64");
         menu.append_section(Some(gettext("Tools").as_str()), &tools);

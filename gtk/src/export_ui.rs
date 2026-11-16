@@ -46,18 +46,17 @@ pub fn build(sender: &ComponentSender<App>) -> ExportUi {
     let format_row = adw::ComboRow::builder()
         .title(gettext("Format"))
         .model(&gtk::StringList::new(&names))
-        .selected(PhotoFormat::ALL.iter().position(|&f| f == format).unwrap_or(0) as u32)
         .build();
     let snd = sender.clone();
     format_row.connect_selected_notify(move |r| {
-        snd.input(Msg::ExportFormat(PhotoFormat::ALL[(r.selected() as usize).min(2)]))
+        snd.input(Msg::ExportFormat(selected(r)))
     });
     let quality_row = adw::SpinRow::builder()
         .title(gettext("Quality"))
         .adjustment(&gtk::Adjustment::new(quality as f64, 1.0, 100.0, 1.0, 10.0, 0.0))
         .build();
     let snd = sender.clone();
-    quality_row.connect_value_notify(move |r| snd.input(Msg::ExportQuality(r.value().round() as u8)));
+    quality_row.connect_value_notify(move |_| snd.input(Msg::ExportQuality));
     let size = adw::ActionRow::builder().title(gettext("Size")).css_classes(["property"]).build();
     let estimate = adw::ActionRow::builder().title(gettext("File size")).css_classes(["property"]).build();
     let group = adw::PreferencesGroup::builder()
@@ -104,7 +103,7 @@ pub fn build(sender: &ComponentSender<App>) -> ExportUi {
 
 impl ExportUi {
     pub fn format(&self) -> PhotoFormat {
-        PhotoFormat::ALL[(self.format.selected() as usize).min(2)]
+        selected(&self.format)
     }
 
     pub fn quality(&self) -> u8 {
@@ -147,6 +146,11 @@ impl ExportUi {
             self.bar.set_text(Some(&gettext("Saving…")));
         }
     }
+}
+
+/// The format picked in `row` (its items are `PhotoFormat::ALL`).
+fn selected(row: &adw::ComboRow) -> PhotoFormat {
+    PhotoFormat::ALL.get(row.selected() as usize).copied().unwrap_or(PhotoFormat::Jpeg)
 }
 
 /// "8.4 MB": the size as GNOME writes it.

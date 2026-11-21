@@ -2,7 +2,7 @@
 //! through the current grade, and a grid view of all of them, so a look can
 //! be judged on skin, sky, foliage and night shots at once.
 
-use gettextrs::gettext;
+use crate::gettext;
 use relm4::adw::prelude::*;
 use relm4::gtk::gdk;
 use relm4::{ComponentSender, gtk};

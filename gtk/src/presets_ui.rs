@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use gettextrs::gettext;
+use crate::gettext;
 use relm4::adw::prelude::*;
 use relm4::{ComponentSender, adw, gtk};
 

@@ -1,6 +1,6 @@
 [package]
 name = "rawvibes"
-description = "RawVibes: GTK4/libadwaita colour grading and LUT creation tool"
+description = "RawVibes: RAW photo editor with colour grading and 3D LUT export (GTK4/libadwaita)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,4 +8,4 @@ license.workspace = true
 [dependencies]
 rawvibes-core = { path = "../core" }
 relm4 = { version = "0.11", features = ["libadwaita", "gnome_50"] }
-gettext-rs = { version = "0.8.0", features = ["gettext-system"] }
+gettext-sys = { version = "0.27", features = ["gettext-system"] }

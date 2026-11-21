@@ -3,7 +3,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use gettextrs::gettext;
+use crate::gettext;
 use rawvibes_core::crop::{self, Crop, Handle, PRESETS};
 use relm4::gtk::prelude::*;
 use relm4::{ComponentSender, gtk};

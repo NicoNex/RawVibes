@@ -13,7 +13,7 @@ at full resolution. Then export the same grade as a 3D LUT, `.cube` or `.vlt`,
 that your camera loads as a Real Time LUT.
 
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
-![Rust](https://img.shields.io/badge/Rust-2024-orange?logo=rust)
+![Rust, 2024 edition](https://img.shields.io/badge/Rust-2024_edition-orange?logo=rust)
 ![GTK4 + libadwaita](https://img.shields.io/badge/GTK4-libadwaita-4a86cf?logo=gnome)
 ![GPU: Vulkan · Metal](https://img.shields.io/badge/GPU-Vulkan%20·%20Metal-8b5cf6)
 ![RAW: RW2 · CR3 · NEF · ARW · RAF · DNG](https://img.shields.io/badge/RAW-RW2%20·%20CR3%20·%20NEF%20·%20ARW%20·%20RAF%20·%20DNG-22c55e)

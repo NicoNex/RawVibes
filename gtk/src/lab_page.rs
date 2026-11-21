@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use gettextrs::gettext;
+use crate::gettext;
 use rawvibes_core::lab::Blend;
 use rawvibes_core::lut::Lut3d;
 use rawvibes_core::profiles::Profile;

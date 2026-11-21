@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::f64::consts::TAU;
 use std::rc::Rc;
 
-use gettextrs::gettext;
+use crate::gettext;
 use rawvibes_core::grade::{
     CURVES, Curve, HUE_HUE, LUM_SAT, is_periodic, neutral_curve, sample_curve, sample_periodic,
 };

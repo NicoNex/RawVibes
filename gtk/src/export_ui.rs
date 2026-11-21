@@ -1,7 +1,7 @@
 //! Export Photo dialog: format, JPEG quality with a live size estimate,
 //! then a file chooser; progress and Stop while the worker exports.
 
-use gettextrs::gettext;
+use crate::gettext;
 use rawvibes_core::export::{JPEG_QUALITY, PhotoFormat};
 use relm4::adw::prelude::*;
 use relm4::{ComponentSender, adw, gtk};

@@ -3,7 +3,7 @@
 /// `gettext` with `{}` placeholders filled in order (translations may not reorder them).
 macro_rules! gettext {
     ($msgid:literal, $($arg:expr),+ $(,)?) => {
-        $crate::fill(&gettextrs::gettext($msgid), &[$($arg.to_string()),+])
+        $crate::fill(&$crate::gettext($msgid), &[$($arg.to_string()),+])
     };
 }
 
@@ -17,7 +17,8 @@ mod widgets;
 mod zoom_ui;
 
 use std::cell::Cell;
-use std::path::PathBuf;
+use std::ffi::{CStr, CString};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -25,7 +26,6 @@ use std::sync::{Arc, mpsc};
 use crop_ui::CropUi;
 use export_ui::ExportUi;
 use filmstrip::{Filmstrip, MAX_ROLL, ROLL_PX};
-use gettextrs::gettext;
 use lab_page::{LabAdd, LabKind, LabLayer, LabUi, Layers, caption};
 use presets_ui::PresetsUi;
 use rawvibes_core::chart::test_chart;
@@ -4678,11 +4678,28 @@ thread_local! {
     static OPEN: std::cell::OnceCell<relm4::Sender<Msg>> = const { std::cell::OnceCell::new() };
 }
 
+/// The interface's translation of `msgid`, or `msgid` itself.
+pub fn gettext(msgid: &str) -> String {
+    let id = CString::new(msgid).expect("message ids have no NUL");
+    // SAFETY: gettext returns a NUL-terminated static translation, or `id`, which outlives the copy.
+    unsafe { CStr::from_ptr(gettext_sys::gettext(id.as_ptr())) }.to_string_lossy().into_owned()
+}
+
+/// Points gettext at the `rawvibes` catalogs in `dir`. gtk_init calls setlocale;
+/// a missing catalog just leaves the English source strings.
+fn bind_text_domain(dir: &Path) {
+    let domain = c"rawvibes";
+    let Ok(dir) = CString::new(dir.as_os_str().as_encoded_bytes()) else { return };
+    // SAFETY: plain C calls with NUL-terminated strings that gettext copies.
+    unsafe {
+        gettext_sys::bindtextdomain(domain.as_ptr(), dir.as_ptr());
+        gettext_sys::bind_textdomain_codeset(domain.as_ptr(), c"UTF-8".as_ptr());
+        gettext_sys::textdomain(domain.as_ptr());
+    }
+}
+
 fn main() {
-    // gtk_init calls setlocale; a missing catalog just leaves the English source strings.
-    let _ = gettextrs::bindtextdomain("rawvibes", locale_dir());
-    let _ = gettextrs::bind_textdomain_codeset("rawvibes", "UTF-8");
-    let _ = gettextrs::textdomain("rawvibes");
+    bind_text_domain(&locale_dir());
     // HANDLES_OPEN: files from the command line or a file manager ("Open With")
     // arrive here, also when RawVibes is already running.
     let app = adw::Application::builder().application_id(APP_ID).flags(gio::ApplicationFlags::HANDLES_OPEN).build();
@@ -4741,6 +4758,18 @@ fn rgba8(pixels: &[[f32; 4]]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The catalogs `make` builds are found and read (needs the it_IT.UTF-8 locale).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn italian_catalog_translates() {
+        // SAFETY: LC_ALL = 6 on glibc; the only test that touches the locale.
+        if unsafe { gettext_sys::setlocale(6, c"it_IT.UTF-8".as_ptr()) }.is_null() {
+            return eprintln!("no it_IT.UTF-8 locale, skipped");
+        }
+        bind_text_domain(&locale_dir());
+        assert_eq!(gettext("Open Photo"), "Apri foto");
+    }
 
     /// A frame within budget renders at full size; four times over budget, at half
     /// size (a quarter of the pixels); hopelessly slow GPUs stop at the floor.

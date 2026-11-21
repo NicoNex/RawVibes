@@ -23,7 +23,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed base-devel git rust gtk4 libadwaita vulkan-icd-loader \
             gettext unzip python-onnx python-numpy
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Build with makepkg
         # makepkg refuses to run as root.
         run: |
@@ -32,7 +32,7 @@ jobs:
           sudo -u builder git config --global --add safe.directory "$PWD"
           set -o pipefail
           sudo -u builder make arch 2>&1 | tee build.log || { echo "::error title=make arch::$(tail -40 build.log | awk '{gsub(/%/,"%25"); printf "%s%%0A", $0}')"; exit 1; }
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: rawvibes-arch
           path: packaging/arch/*.pkg.tar.zst
@@ -40,15 +40,15 @@ jobs:
 
   macos:
     name: macOS disk image
-    runs-on: macos-15
+    runs-on: macos-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.x"
       - name: Install build dependencies
         run: |
           brew install gtk4 libadwaita adwaita-icon-theme librsvg gettext dylibbundler
@@ -59,7 +59,7 @@ jobs:
         run: |
           set -o pipefail
           make dmg 2>&1 | tee build.log || { echo "::error title=make dmg::$(tail -40 build.log | awk '{gsub(/%/,"%25"); printf "%s%%0A", $0}')"; exit 1; }
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: rawvibes-macos
           path: target/rawvibes-*.dmg
@@ -72,7 +72,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true

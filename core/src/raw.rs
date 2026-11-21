@@ -1210,7 +1210,7 @@ impl Gpu {
         Photo {
             width: p.width,
             height: p.height,
-            pixels: px.chunks_exact(4).map(|c| [c[0], c[1], c[2], c[3]]).collect(),
+            pixels: px.as_chunks::<4>().0.iter().map(|c| [c[0], c[1], c[2], c[3]]).collect(),
         }
     }
 
@@ -1269,7 +1269,7 @@ impl Gpu {
     /// A mip level as f32 RGB.
     fn read_level(&self, raw: &GpuRaw, k: usize) -> Vec<[f32; 3]> {
         let words: Vec<u32> = bytemuck::cast_slice(&self.read_f32(&raw.levels[k].0)).to_vec();
-        words.chunks_exact(2).map(unpack).collect()
+        words.as_chunks::<2>().0.iter().map(unpack).collect()
     }
 
     /// The mosaic white-balanced as shot, with clipped highlights rebuilt.
@@ -1325,7 +1325,7 @@ fn sensor_point([x, y]: [f32; 2], orientation: u16, w: u32, h: u32) -> [f32; 2] 
 }
 
 /// A packed level pixel (two words of f16, as `pack` in `raw.wgsl` writes them) as RGB.
-pub(crate) fn unpack(w: &[u32]) -> [f32; 3] {
+pub(crate) fn unpack(w: &[u32; 2]) -> [f32; 3] {
     [f16_to_f32(w[0] as u16), f16_to_f32((w[0] >> 16) as u16), f16_to_f32(w[1] as u16)]
 }
 

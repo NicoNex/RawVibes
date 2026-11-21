@@ -61,7 +61,9 @@ impl UNet {
         let pipeline = crate::gpu::shader(&gpu.device, "unet.wgsl", include_str!("unet.wgsl"));
         let layers = w
             .tensors
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| {
                 (pair[0].name.trim_end_matches(".weight").to_string(), (pair[0].offset as u32, pair[1].offset as u32))
             })

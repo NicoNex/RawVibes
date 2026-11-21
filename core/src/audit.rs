@@ -125,7 +125,7 @@ fn chart() -> Photo {
 
 /// OKLab of each pixel of a render.
 fn lab(rgba: &[u8]) -> Vec<[f32; 3]> {
-    rgba.chunks_exact(4).map(|p| to_oklab([0, 1, 2].map(|c| p[c] as f32 / 255.0))).collect()
+    rgba.as_chunks::<4>().0.iter().map(|p| to_oklab([0, 1, 2].map(|c| p[c] as f32 / 255.0))).collect()
 }
 
 fn mean(px: &[[f32; 3]], pick: impl Fn(u32, u32) -> bool, f: impl Fn([f32; 3]) -> f32) -> f32 {

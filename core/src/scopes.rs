@@ -75,7 +75,7 @@ impl Scopes {
         // RGB overlay waveform.
         let gain = 60.0 * HIST_W as f32 / samples.max(1) as f32;
         let mut waveform = vec![0u8; HIST_W * HIST_H * 4];
-        for (cell, p) in wave.iter().zip(waveform.chunks_exact_mut(4)) {
+        for (cell, p) in wave.iter().zip(waveform.as_chunks_mut::<4>().0.iter_mut()) {
             let v = cell.map(|c| glow(c, gain));
             p[0] = (v[0] * 255.0) as u8;
             p[1] = (v[1] * 255.0) as u8;
@@ -86,7 +86,7 @@ impl Scopes {
         // Vectorscope: each cell tinted by the average colour that lands there.
         let vgain = 400.0 / samples.max(1) as f32;
         let mut vectorscope = vec![0u8; VEC_SIZE * VEC_SIZE * 4];
-        for (cell, p) in vec.iter().zip(vectorscope.chunks_exact_mut(4)) {
+        for (cell, p) in vec.iter().zip(vectorscope.as_chunks_mut::<4>().0.iter_mut()) {
             if cell[3] == 0 {
                 continue;
             }

@@ -3,7 +3,10 @@
 /// `gettext` with `{}` placeholders filled in order (translations may not reorder them).
 macro_rules! gettext {
     ($msgid:literal, $($arg:expr),+ $(,)?) => {
-        $crate::fill(&$crate::gettext($msgid), &[$($arg.to_string()),+])
+        {
+            let args = [$($arg.to_string()),+];
+            $crate::fill(&$crate::gettext($msgid), &args)
+        }
     };
 }
 

@@ -286,7 +286,7 @@ mod tests {
     fn run(gpu: &Gpu, net: &UNet, raw: &RawData, t: u32) -> Vec<[f32; 3]> {
         let buf = gpu.ai_denoise_tiled(raw, net, t, &AtomicBool::new(false), &|_| {}).unwrap().unwrap();
         let words: Vec<u32> = bytemuck::cast_slice(&gpu.read_f32(&buf)).to_vec();
-        words.chunks_exact(2).map(unpack).collect()
+        words.as_chunks::<2>().0.iter().map(unpack).collect()
     }
 
     /// Deterministic noise in −1..1 (a hash).
@@ -527,7 +527,7 @@ mod quality {
             let level0 = gpu.ai_denoise(&data, &net, &AtomicBool::new(false), &|_| {}).unwrap().unwrap();
             // H1: darktable's way, the net's value at each site's own colour, then RCD.
             let words: Vec<u32> = bytemuck::cast_slice(&gpu.read_f32(&level0)).to_vec();
-            let ai_rgb: Vec<[f32; 3]> = words.chunks_exact(2).map(crate::raw::unpack).collect();
+            let ai_rgb: Vec<[f32; 3]> = words.as_chunks::<2>().0.iter().map(crate::raw::unpack).collect();
             let remosaic = RawData {
                 pixels: Pixels::Bayer(
                     (0..W * H)

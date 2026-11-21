@@ -231,7 +231,9 @@ impl Gpu {
         let (out, staging) = self.output(photo.width as u64 * photo.height as u64 * 8);
         let rgba = self.grade_pass(&self.export16, photo, grade, look, 0.0, &out, &staging);
         // A Vec<u8> may be unaligned for a u16 cast: read the little-endian pairs.
-        into.extend(rgba.chunks_exact(8).flat_map(|p| [0, 2, 4].map(|i| u16::from_le_bytes([p[i], p[i + 1]]))));
+        into.extend(
+            rgba.as_chunks::<8>().0.iter().flat_map(|p| [0, 2, 4].map(|i| u16::from_le_bytes([p[i], p[i + 1]]))),
+        );
     }
 
     /// `photo` through the grade and `look` with `pipeline`, read back from `out`.

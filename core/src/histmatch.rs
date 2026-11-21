@@ -150,7 +150,7 @@ fn mapping_to_curve(mapping: &[i32]) -> Curve {
     if curve.len() < 4 {
         return crate::grade::identity_curve();
     }
-    let mut pts: Curve = curve.chunks_exact(2).map(|p| (p[0] as f32, p[1] as f32)).collect();
+    let mut pts: Curve = curve.as_chunks::<2>().0.iter().map(|p| (p[0] as f32, p[1] as f32)).collect();
     // RT feeds these to its own spline; ours needs strictly increasing x.
     pts.dedup_by(|b, a| b.0 <= a.0);
     pts

@@ -186,10 +186,10 @@ mod tests {
         assert!(real_time_luts(Path::new(env!("CARGO_MANIFEST_PATH"))).is_empty(), "not a RAW");
     }
 
-    /// On a real file (RAWVALLEY_RAW): prints what the camera named.
+    /// On a real file (RAWVIBES_RAW): prints what the camera named.
     #[test]
     fn on_sample() {
-        let Ok(path) = std::env::var("RAWVALLEY_RAW") else { return };
+        let Ok(path) = std::env::var("RAWVIBES_RAW") else { return };
         eprintln!("{:?}", real_time_luts(Path::new(&path)));
     }
 }

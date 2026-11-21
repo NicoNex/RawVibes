@@ -130,7 +130,7 @@ mod tests {
     fn formats_round_trip() {
         let (w, h) = (8, 4);
         let rgb: Vec<u16> = (0..w * h * 3).map(|i| (i * 2000) as u16).collect();
-        let dir = std::env::temp_dir().join(format!("rawvalley-export-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rawvibes-export-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         for f in PhotoFormat::ALL {
             let p = dir.join(format!("x.{}", f.ext()));

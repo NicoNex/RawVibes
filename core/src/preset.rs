@@ -1,7 +1,7 @@
 //! Grade presets as readable JSON.
 //!
 //! ```json
-//! { "format": "rawvalley-preset", "version": 1, "name": "Teal & orange",
+//! { "format": "rawvibes-preset", "version": 1, "name": "Teal & orange",
 //!   "params": { "exposure": 0.3, "lift": [0.1, -0.2, 0.0, 0.0], … },
 //!   "curves": { "master": [[0.0, 0.0], [1.0, 1.0]], … } }
 //! ```
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::grade::{CURVES, Curve, Grade, Params, is_periodic, neutral_curve};
 
-const FORMAT: &str = "rawvalley-preset";
+const FORMAT: &str = "rawvibes-preset";
 const VERSION: u32 = 1;
 pub const EXT: &str = "json";
 
@@ -84,10 +84,10 @@ impl Preset {
         let file: File = serde_json::from_str(text).map_err(|e| e.to_string())?;
         // VibingLUT presets share the same schema and stay importable.
         if file.format != FORMAT && file.format != "vibinglut-preset" {
-            return Err(format!("not a RawValley preset ({})", file.format));
+            return Err(format!("not a RawVibes preset ({})", file.format));
         }
         if file.version > VERSION {
-            return Err(format!("made by a newer RawValley (preset version {})", file.version));
+            return Err(format!("made by a newer RawVibes (preset version {})", file.version));
         }
         Ok(Self { name: file.name, grade: grade_from(file.params, file.curves)? })
     }
@@ -197,16 +197,19 @@ mod tests {
     /// Missing fields are neutral; preview-only state never comes from a file.
     #[test]
     fn partial_and_hostile_files() {
-        let p = Preset::from_json(r#"{"format":"rawvalley-preset","version":1,"name":"x","params":{"exposure":0.5,"width":9999,"overlay":1}}"#).unwrap();
+        let p = Preset::from_json(
+            r#"{"format":"rawvibes-preset","version":1,"name":"x","params":{"exposure":0.5,"width":9999,"overlay":1}}"#,
+        )
+        .unwrap();
         let mut want = Grade::default();
         want.params.exposure = 0.5;
         assert_eq!(p.grade, want);
         for bad in [
             r#"{"format":"other","version":1,"name":"x"}"#,
-            r#"{"format":"rawvalley-preset","version":99,"name":"x"}"#,
-            r#"{"format":"rawvalley-preset","version":1,"name":"x","curves":{"red":[[0.0,0.0],[0.5,0.2],[0.4,0.3],[1.0,1.0]]}}"#,
-            r#"{"format":"rawvalley-preset","version":1,"name":"x","curves":{"blue":[[0.0,2.0],[1.0,1.0]]}}"#,
-            r#"{"format":"rawvalley-preset","version":1,"name":"x","params":{"exposure":1e999}}"#,
+            r#"{"format":"rawvibes-preset","version":99,"name":"x"}"#,
+            r#"{"format":"rawvibes-preset","version":1,"name":"x","curves":{"red":[[0.0,0.0],[0.5,0.2],[0.4,0.3],[1.0,1.0]]}}"#,
+            r#"{"format":"rawvibes-preset","version":1,"name":"x","curves":{"blue":[[0.0,2.0],[1.0,1.0]]}}"#,
+            r#"{"format":"rawvibes-preset","version":1,"name":"x","params":{"exposure":1e999}}"#,
         ] {
             assert!(Preset::from_json(bad).is_err(), "accepted {bad}");
         }

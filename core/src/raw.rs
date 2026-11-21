@@ -1515,11 +1515,11 @@ mod tests {
         }
     }
 
-    /// Times a real file (RAWVALLEY_RAW): `cargo test --release -p rawvalley-core open_time -- --ignored --nocapture`.
+    /// Times a real file (RAWVIBES_RAW): `cargo test --release -p rawvibes-core open_time -- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn open_time() {
-        let Ok(path) = std::env::var("RAWVALLEY_RAW") else { return eprintln!("no sample, skipped") };
+        let Ok(path) = std::env::var("RAWVIBES_RAW") else { return eprintln!("no sample, skipped") };
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
         let t = std::time::Instant::now();
         let raw = read_raw(Path::new(&path)).unwrap();
@@ -1807,12 +1807,12 @@ mod tests {
         }
     }
 
-    /// On a real file (RAWVALLEY_RAW) the GPU develop and the CPU small copy
+    /// On a real file (RAWVIBES_RAW) the GPU develop and the CPU small copy
     /// (rawler's demosaic) agree on the fitted photo: same framing,
     /// orientation, crop and colour. Also prints the develop time.
     #[test]
     fn gpu_and_cpu_raw_paths_agree() {
-        let Ok(path) = std::env::var("RAWVALLEY_RAW") else { return eprintln!("no sample, skipped") };
+        let Ok(path) = std::env::var("RAWVIBES_RAW") else { return eprintln!("no sample, skipped") };
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
         let raw = gpu.load_raw(&read_raw(Path::new(&path)).unwrap()).unwrap();
         let cpu = crate::photo::Decoded::load_max(Path::new(&path), Some(512)).unwrap();
@@ -2194,11 +2194,11 @@ mod tests {
         }
     }
 
-    /// On a real file (RAWVALLEY_RAW): the estimated noise model, and what
+    /// On a real file (RAWVIBES_RAW): the estimated noise model, and what
     /// noise reduction costs a 2048 px fit and a 100% 2048 px view.
     #[test]
     fn nr_on_sample() {
-        let Ok(path) = std::env::var("RAWVALLEY_RAW") else { return eprintln!("no sample, skipped") };
+        let Ok(path) = std::env::var("RAWVIBES_RAW") else { return eprintln!("no sample, skipped") };
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
         let t = std::time::Instant::now();
         let raw = gpu.load_raw(&read_raw(Path::new(&path)).unwrap()).unwrap();
@@ -2221,13 +2221,13 @@ mod tests {
         }
     }
 
-    /// On a real file (RAWVALLEY_RAW), NR 50: a ¼-scale view and a 100% view
+    /// On a real file (RAWVIBES_RAW), NR 50: a ¼-scale view and a 100% view
     /// of the same region, box-averaged to ¼, keep the same noise on flat
     /// patches (within 25%) — the fit predicts the zoom. Also prints the
     /// Balanced drag-frame time at 2048 px with all tools on.
     #[test]
     fn fit_and_zoom_agree_statistically() {
-        let Ok(path) = std::env::var("RAWVALLEY_RAW") else { return eprintln!("no sample, skipped") };
+        let Ok(path) = std::env::var("RAWVIBES_RAW") else { return eprintln!("no sample, skipped") };
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
         let raw = gpu.load_raw(&read_raw(Path::new(&path)).unwrap()).unwrap();
         let (w, h) = raw.oriented_size();
@@ -2281,11 +2281,11 @@ mod tests {
         }
     }
 
-    /// On a real file (RAWVALLEY_RAW): each detail stage alone, fit at 1536 px
+    /// On a real file (RAWVIBES_RAW): each detail stage alone, fit at 1536 px
     /// and a 100% 2048 px view, GPU time per frame (run with --test-threads=1).
     #[test]
     fn stage_cost_on_sample() {
-        let Ok(path) = std::env::var("RAWVALLEY_RAW") else { return eprintln!("no sample, skipped") };
+        let Ok(path) = std::env::var("RAWVIBES_RAW") else { return eprintln!("no sample, skipped") };
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
         let raw = gpu.load_raw(&read_raw(Path::new(&path)).unwrap()).unwrap();
         let (w, h) = raw.oriented_size();

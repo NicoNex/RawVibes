@@ -2,7 +2,7 @@
 //! then a file chooser; progress and Stop while the worker exports.
 
 use gettextrs::gettext;
-use rawvalley_core::export::{JPEG_QUALITY, PhotoFormat};
+use rawvibes_core::export::{JPEG_QUALITY, PhotoFormat};
 use relm4::adw::prelude::*;
 use relm4::{ComponentSender, adw, gtk};
 

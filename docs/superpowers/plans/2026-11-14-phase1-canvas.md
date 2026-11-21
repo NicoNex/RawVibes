@@ -17,7 +17,7 @@ size, which replaces the Grade page's GPU photo. Crop geometry lives in
 **Tech Stack:** Rust 2024, rawler 0.8, image 0.25, rayon, relm4 0.11 /
 GTK4 / libadwaita, wgpu 30.
 
-**Spec:** `docs/superpowers/specs/2026-11-14-rawvalley-design.md`
+**Spec:** `docs/superpowers/specs/2026-11-14-rawvibes-design.md`
 
 ## Global Constraints
 
@@ -84,7 +84,7 @@ fn rotation_90_maps_corners()       // 4×4 with a single bright pixel at (0,0),
 fn pyramid_halves_until_one_pixel() // 100×40 → level sizes 100×40, 50×20, 25×10, 12×5, 6×2, 3×1, 1×1
 ```
 
-- [ ] **Step 2:** `cargo test -p rawvalley-core view::` → FAIL (module missing).
+- [ ] **Step 2:** `cargo test -p rawvibes-core view::` → FAIL (module missing).
 
 - [ ] **Step 3: Implement `view.rs`.** Levels by 2×2 box average (odd edge
   pixel dropped). `resample`: scale = `size.x / out_w`; pick level
@@ -141,7 +141,7 @@ fn pyramid_halves_until_one_pixel() // 100×40 → level sizes 100×40, 50×20, 
 #[test] fn clamp_keeps_ratio()              // clamp of an oversized 16:9 rect at 10° → aspect still 16/9, corners inside
 ```
 
-- [ ] **Step 2:** `cargo test -p rawvalley-core crop::` → FAIL.
+- [ ] **Step 2:** `cargo test -p rawvibes-core crop::` → FAIL.
 - [ ] **Step 3: Implement.** Inscribed rect of aspect `a` in a W×H rect
   rotated by θ, centred: `h = min(H / (cos|θ| + a·sin|θ|), W / (a·cos|θ| + sin|θ|))`, `w = a·h`.
   `clamp` binary-searches a scale in (0, 1] on the corner test.

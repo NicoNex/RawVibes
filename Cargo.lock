@@ -1826,16 +1826,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "rawvalley"
+name = "rawvibes"
 version = "0.1.0"
 dependencies = [
  "gettext-rs",
- "rawvalley-core",
+ "rawvibes-core",
  "relm4",
 ]
 
 [[package]]
-name = "rawvalley-core"
+name = "rawvibes-core"
 version = "0.1.0"
 dependencies = [
  "bytemuck",

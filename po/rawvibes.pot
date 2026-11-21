@@ -1,12 +1,12 @@
 # SOME DESCRIPTIVE TITLE.
 # Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
-# This file is distributed under the same license as the RawValley package.
+# This file is distributed under the same license as the RawVibes package.
 # FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
 #
 #, fuzzy
 msgid ""
 msgstr ""
-"Project-Id-Version: RawValley\n"
+"Project-Id-Version: RawVibes\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-11-16 17:46+0100\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -990,7 +990,7 @@ msgid "Keyboard Shortcuts"
 msgstr ""
 
 #: gtk/src/main.rs:2774
-msgid "About RawValley"
+msgid "About RawVibes"
 msgstr ""
 
 #: gtk/src/main.rs:2781
@@ -1406,7 +1406,7 @@ msgid "Photos and RAWs"
 msgstr ""
 
 #: gtk/src/main.rs:4728
-msgid "RawValley presets"
+msgid "RawVibes presets"
 msgstr ""
 
 #: gtk/src/main.rs:4733

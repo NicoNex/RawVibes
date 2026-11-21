@@ -66,7 +66,7 @@ unchanged: native execution, checkpoint commits, one `/code-review high` +
 - Measurement harness (ignored tests in `core/src/ai/tile.rs`):
   `ai_vs_classic` (PSNR per band, bias, std on a synthetic scene at three
   noise levels), `ai_crops` (1:1 side-by-side crops of a real RAW:
-  `RAWVALLEY_RAW`, `RAWVALLEY_OUT`).
+  `RAWVIBES_RAW`, `RAWVIBES_OUT`).
 
 ## Open (not blocking)
 

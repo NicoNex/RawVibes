@@ -239,11 +239,11 @@ mod tests {
     }
 
     /// On a real file: neutral, neutral + matched curve, camera JPEG side by side:
-    /// `RAWVALLEY_RAW=x.RW2 RAWVALLEY_OUT=dir cargo test --release -p rawvalley-core sample_match -- --ignored`.
+    /// `RAWVIBES_RAW=x.RW2 RAWVIBES_OUT=dir cargo test --release -p rawvibes-core sample_match -- --ignored`.
     #[test]
     #[ignore]
     fn sample_match() {
-        let (Ok(raw), Ok(out)) = (std::env::var("RAWVALLEY_RAW"), std::env::var("RAWVALLEY_OUT")) else { return };
+        let (Ok(raw), Ok(out)) = (std::env::var("RAWVIBES_RAW"), std::env::var("RAWVIBES_OUT")) else { return };
         let path = std::path::PathBuf::from(raw);
         let d = crate::photo::Decoded::load(&path).unwrap();
         let (w, h) = d.size();

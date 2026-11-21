@@ -1,19 +1,19 @@
-# RawValley — design
+# RawVibes — design
 
 Date: 2026-11-14. Status: draft for approval.
 
 ## Intent
 
-RawValley is a professional RAW photo editor for the Linux desktop (macOS
+RawVibes is a professional RAW photo editor for the Linux desktop (macOS
 too), born as the continuation of VibingLUT. The author shoots a Lumix S9
 and currently uses RapidRaw, whose interface they find unusable. They like
 VibingLUT's organisation: collapsible sections, each with an eye toggle to
 bypass it, before/after split, LUT library with fast previews, and LUT
-export to the camera. RawValley adds a full RAW development stage in front
+export to the camera. RawVibes adds a full RAW development stage in front
 of VibingLUT's grading, so one app goes from RW2 to finished photo, and from
 a look built on a photo to a LUT loaded into the S9.
 
-Success: the author opens S9 RAWs in RawValley instead of RapidRaw, starts
+Success: the author opens S9 RAWs in RawVibes instead of RapidRaw, starts
 from a rendering that matches the camera JPEG with one click, finishes the
 photo with state-of-the-art tools, and exports both the photo and a LUT that
 works in-camera.
@@ -89,7 +89,7 @@ works in-camera.
 
 ## Decisions made with the author
 
-- VibingLUT is copied into this repo (history kept) and renamed; RawValley
+- VibingLUT is copied into this repo (history kept) and renamed; RawVibes
   leads from now on. VibingLUT presets still import.
 - Phased delivery: (1) base: rename, zoom/pan, background, crop;
   (2) RAW development and "as in camera"; (3) detail tools; (4) AI
@@ -110,9 +110,9 @@ works in-camera.
 
 ### Crates
 
-- `core` (`rawvalley-core`): engine, no GTK. Owns decoding, development
+- `core` (`rawvibes-core`): engine, no GTK. Owns decoding, development
   parameters, GPU pipelines, LUT bake, export, sidecars.
-- `gtk` (`rawvalley`): relm4 UI. Talks to the engine only through
+- `gtk` (`rawvibes`): relm4 UI. Talks to the engine only through
   `gpu::spawn` jobs and results, as VibingLUT already does.
 - `core/denoise-ai` lives in `core` behind a cargo feature `ai` (on by
   default) so a future UI or headless build can drop it.
@@ -201,7 +201,7 @@ surprise.
 
 ### Persistence
 
-Non-destructive sidecar next to the file (`<file>.rawvalley.json`), same
+Non-destructive sidecar next to the file (`<file>.rawvibes.json`), same
 JSON schema family as presets (`Develop` + `Grade` + crop + looks), written
 on every change after a short debounce, read when the file is opened.
 

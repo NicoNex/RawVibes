@@ -1,11 +1,11 @@
 # SOME DESCRIPTIVE TITLE.
 # Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
-# This file is distributed under the same license as the RawValley package.
+# This file is distributed under the same license as the RawVibes package.
 # FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: RawValley\n"
+"Project-Id-Version: RawVibes\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-11-16 17:46+0100\n"
 "PO-Revision-Date: 2026-10-21 19:30+0200\n"
@@ -1022,8 +1022,8 @@ msgid "Keyboard Shortcuts"
 msgstr "Scorciatoie da tastiera"
 
 #: gtk/src/main.rs:2774
-msgid "About RawValley"
-msgstr "Informazioni su RawValley"
+msgid "About RawVibes"
+msgstr "Informazioni su RawVibes"
 
 #: gtk/src/main.rs:2781
 msgid "Main Menu"
@@ -1452,8 +1452,8 @@ msgid "Photos and RAWs"
 msgstr "Foto e RAW"
 
 #: gtk/src/main.rs:4728
-msgid "RawValley presets"
-msgstr "Preset di RawValley"
+msgid "RawVibes presets"
+msgstr "Preset di RawVibes"
 
 #: gtk/src/main.rs:4733
 msgid "Open a photo first: the match is computed on it"

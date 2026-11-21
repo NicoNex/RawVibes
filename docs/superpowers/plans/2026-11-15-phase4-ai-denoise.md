@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust, wgpu 30 / WGSL, rayon; Python 3 + `onnx` only in the offline conversion script.
 
-**Spec:** `docs/superpowers/specs/2026-11-14-rawvalley-design.md` (Algorithms · Noise reduction (AI); UI · long-running stages). Feasibility report: burn-onnx imports both models; ops are Conv 3×3 (pad 1) ×18 + 1×1 ×1, LeakyRelu α 0.2 ×18, MaxPool 2×2 s2 ×4, ConvTranspose 2×2 s2 ×4, Concat axis 1 ×4, Bayer only DepthToSpace(2, CRD). ~7.76 M params; FP32 required (raw outputs reach 1e9).
+**Spec:** `docs/superpowers/specs/2026-11-14-rawvibes-design.md` (Algorithms · Noise reduction (AI); UI · long-running stages). Feasibility report: burn-onnx imports both models; ops are Conv 3×3 (pad 1) ×18 + 1×1 ×1, LeakyRelu α 0.2 ×18, MaxPool 2×2 s2 ×4, ConvTranspose 2×2 s2 ×4, Concat axis 1 ×4, Bayer only DepthToSpace(2, CRD). ~7.76 M params; FP32 required (raw outputs reach 1e9).
 
 ## Global Constraints
 
@@ -33,12 +33,12 @@
 
 **Files:**
 - Create: `tools/convert_rawnind.py`, `models/README.md` (credits, licence, source links)
-- Modify: `Makefile` (`models` target: download to `target/models/`, verify sha256, unzip, run converter into `models/rawnind/`; `install` copies `models/rawnind/*` to `$(PREFIX)/share/rawvalley/models/rawnind/`), `.gitignore` (`models/rawnind/`)
+- Modify: `Makefile` (`models` target: download to `target/models/`, verify sha256, unzip, run converter into `models/rawnind/`; `install` copies `models/rawnind/*` to `$(PREFIX)/share/rawvibes/models/rawnind/`), `.gitignore` (`models/rawnind/`)
 - Create: `core/src/ai/mod.rs`, `core/src/ai/weights.rs`; Modify: `core/Cargo.toml` (`[features] default = ["ai"]`, `ai = []`), `core/src/lib.rs`
 
 **Interfaces:**
 - Produces: converter writes `models/rawnind/{bayer,linear}.bin` (little-endian f32, layers in graph order) and `{bayer,linear}.json`: `{"layers":[{"op":"conv"|"convT"|"pool"|"concat"|"shuffle","name":..,"in":c,"out":c,"k":3|2|1,"offset":floats,"skip":layer_index?}],"input_channels":4|3,"output_channels":3,"scale":2|1}`; plus `{bayer,linear}_ref.bin`: a 64×64 (packed) deterministic input and the ONNX reference output (`onnx.reference.ReferenceEvaluator`).
-- Produces: `pub struct Weights { pub graph: Vec<Layer>, pub data: Vec<f32> }`, `pub fn Weights::load(dir: &Path, variant: Variant) -> Result<Weights, String>`, `pub enum Variant { Bayer, Linear }`, `pub fn models_dir() -> Option<PathBuf>` (env `RAWVALLEY_MODELS`, then `<exe>/../share/rawvalley/models`, then the repo `models/` in debug builds).
+- Produces: `pub struct Weights { pub graph: Vec<Layer>, pub data: Vec<f32> }`, `pub fn Weights::load(dir: &Path, variant: Variant) -> Result<Weights, String>`, `pub enum Variant { Bayer, Linear }`, `pub fn models_dir() -> Option<PathBuf>` (env `RAWVIBES_MODELS`, then `<exe>/../share/rawvibes/models`, then the repo `models/` in debug builds).
 
 - [x] **Step 1: Failing tests** `weights_load_both_variants` (skips with "no models, skipped" when `models_dir()` is None): 19 convs, 4 pools, 4 convT, 4 concats, parameter count within 1% of 7.76 M, every `offset + size` ≤ `data.len()`, channel counts chain.
 - [x] **Step 2:** write converter + loader; `make models` then PASS; commit `AI models: fetch, convert, load`.
@@ -61,7 +61,7 @@
 **Interfaces:**
 - Produces: `pub fn Gpu::ai_denoise(&self, raw: &RawData, net: &UNet, cancel: &AtomicBool, progress: &dyn Fn(f32)) -> Result<Option<wgpu::Buffer>, String>` — `Ok(None)` when cancelled; tile edge picked as the largest of 1024/512/256 packed px whose activations pass `fits()`; output clamped ≥ 0.
 - [x] **Step 1: Failing tests** `tiles_have_no_seams` (ramp mosaic over 3×3 tiles at forced 256-px tiles: max jump across a tile border ≤ 1% of the local value), `ai_keeps_the_mean` (flat noisy mosaic: mean within 1%), `ai_reduces_noise` (synthetic Poisson–Gaussian flat: std ≥ 3× lower), `dark_input_stays_finite` (all-black and 1e-4 mosaics: finite, ≥ 0), `cancel_returns_none`, `small_gpu_limit_uses_small_tiles`.
-- [x] **Step 2:** implement; PASS; sample test `ai_on_sample` (RAWVALLEY_RAW) prints time for a 24 MP RW2; commit `Tiled AI denoise of a RAW`.
+- [x] **Step 2:** implement; PASS; sample test `ai_on_sample` (RAWVIBES_RAW) prints time for a 24 MP RW2; commit `Tiled AI denoise of a RAW`.
 
 ### Task 4: AI noise reduction in the editor
 

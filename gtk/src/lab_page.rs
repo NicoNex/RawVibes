@@ -1,12 +1,12 @@
 //! LUT Lab page: a stack of LUTs, the current grade and profile conversions,
-//! chained or mixed into one LUT (maths in `rawvalley_core::lab`).
+//! chained or mixed into one LUT (maths in `rawvibes_core::lab`).
 
 use std::sync::Arc;
 
 use gettextrs::gettext;
-use rawvalley_core::lab::Blend;
-use rawvalley_core::lut::Lut3d;
-use rawvalley_core::profiles::Profile;
+use rawvibes_core::lab::Blend;
+use rawvibes_core::lut::Lut3d;
+use rawvibes_core::profiles::Profile;
 use relm4::adw::prelude::*;
 use relm4::gtk::gio;
 use relm4::{ComponentSender, adw, gtk};
@@ -235,7 +235,7 @@ pub fn build(sender: &ComponentSender<App>, export_menu: &gio::Menu) -> LabUi {
     for (label, size) in [("33³ .cube", 33), ("65³ .cube", 65)] {
         let b = gtk::Button::builder().label(label).css_classes(["suggested-action"]).build();
         let snd = sender.clone();
-        b.connect_clicked(move |_| snd.input(Msg::Export(rawvalley_core::lut::Format::Cube, size, crate::What::Lab)));
+        b.connect_clicked(move |_| snd.input(Msg::Export(rawvibes_core::lut::Format::Cube, size, crate::What::Lab)));
         row.append(&b);
     }
     let more = gtk::MenuButton::builder()

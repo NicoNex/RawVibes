@@ -1,11 +1,11 @@
 [Desktop Entry]
 Type=Application
-Name=RawValley
+Name=RawVibes
 GenericName=LUT Creator
 Comment=Color grade photos and export 3D LUTs (.cube)
 Comment[it]=Color grading da foto ed esportazione di LUT 3D (.cube)
-Exec=rawvalley %f
-Icon=io.github.rawvalley.RawValley
+Exec=rawvibes %f
+Icon=io.github.rawvibes.RawVibes
 Terminal=false
 Categories=Graphics;Photography;GTK;GNOME;
 Keywords=LUT;cube;color;grading;raw;lumix;

@@ -24,7 +24,7 @@ are. Rasters (JPEG/PNG/TIFF) keep the phase-1 CPU path.
 **Tech Stack:** Rust 2024, wgpu 30 (WGSL compute), rawler 0.8,
 relm4 0.11 / GTK4 / libadwaita, serde_json.
 
-**Spec:** `docs/superpowers/specs/2026-11-14-rawvalley-design.md`
+**Spec:** `docs/superpowers/specs/2026-11-14-rawvibes-design.md`
 (Goals → RAW development, "As in camera"; Architecture → Image pipeline,
 LUT boundary, Resolution and fluidity, Algorithms, Persistence, UI).
 
@@ -122,9 +122,9 @@ LUT boundary, Resolution and fluidity, Algorithms, Persistence, UI).
                                          // phase-1 Calibration + encode_scene result within 2e-4
 ```
 
-- [ ] **Step 2:** `cargo test -p rawvalley-core develop` → FAIL (module missing).
+- [ ] **Step 2:** `cargo test -p rawvibes-core develop` → FAIL (module missing).
 - [ ] **Step 3:** Implement; `Profile::from_rec2020()` = `from_rec709() · M(2020→709)`.
-- [ ] **Step 4:** `cargo test -p rawvalley-core develop` → PASS; `make check`.
+- [ ] **Step 4:** `cargo test -p rawvibes-core develop` → PASS; `make check`.
 - [ ] **Step 5:** Commit `Develop model: white balance, exposure, Rec.2020 working space`.
 
 ### Task 2: GPU RAW load — rescale, WB, highlight reconstruction
@@ -149,7 +149,7 @@ LUT boundary, Resolution and fluidity, Algorithms, Persistence, UI).
 #[test] fn xtrans_pattern_is_honoured()     // same as unclipped_pixels_are_untouched with a 6×6 X-Trans pattern
 ```
 
-- [ ] **Step 2:** `cargo test -p rawvalley-core raw::` → FAIL.
+- [ ] **Step 2:** `cargo test -p rawvibes-core raw::` → FAIL.
 - [ ] **Step 3:** Implement `read_raw`, the WGSL passes and `load_raw` up to the reconstructed CFA.
 - [ ] **Step 4:** Tests PASS; `make check`.
 - [ ] **Step 5:** Commit `GPU RAW load: rescale, white balance, highlight reconstruction`.
@@ -173,7 +173,7 @@ LUT boundary, Resolution and fluidity, Algorithms, Persistence, UI).
 #[test] fn sharp_edge_has_no_zipper()   // vertical black/white edge: |G − R| < 0.05 at 3 px either side
 #[test] fn every_bayer_phase_works()    // RGGB, BGGR, GRBG, GBRG pass flat_field_is_exact
 #[test] fn mips_preserve_the_mean()     // each level's mean equals level 0's within 1e-3
-#[test] #[ignore] fn open_time()        // RAWVALLEY_RAW: read_raw + load_raw on the sample, prints the time
+#[test] #[ignore] fn open_time()        // RAWVIBES_RAW: read_raw + load_raw on the sample, prints the time
 ```
 
 - [ ] **Step 2:** FAIL; **Step 3:** implement; **Step 4:** PASS, `make check`, run `open_time` in release and note it in the ledger.
@@ -241,7 +241,7 @@ LUT boundary, Resolution and fluidity, Algorithms, Persistence, UI).
   - No embedded preview → toast "This RAW has no camera JPEG to match"; all camera buttons insensitive for rasters.
 - `lightness_only` keeps the lightness curve and sets `ab` to the identity transfer; `colour_only` keeps `ab` and sets the lightness curve to `identity_curve()`.
 
-- [ ] **Step 1: Failing tests** `match_parts_split` (`lightness_only(m).ab` == identity, `colour_only(m).lightness` == `identity_curve()`, the other part unchanged); `embedded_preview_of_sample_raw` (`RAWVALLEY_RAW`, skips without it: longer side 640–1024, finite pixels in 0..1).
+- [ ] **Step 1: Failing tests** `match_parts_split` (`lightness_only(m).ab` == identity, `colour_only(m).lightness` == `identity_curve()`, the other part unchanged); `embedded_preview_of_sample_raw` (`RAWVIBES_RAW`, skips without it: longer side 640–1024, finite pixels in 0..1).
 - [ ] **Step 2:** FAIL; implement; PASS.
 - [ ] **Step 3:** Wire buttons and the preference; GUI check: global button on the S9 sample brings the histogram close to the embedded JPEG's; Tone-only changes lightness but not chroma (vectorscope unchanged); with the preference on, opening the RAW starts matched.
 - [ ] **Step 4:** Italian strings; `make check`; commit `As in camera per section, global and on open`.
@@ -255,16 +255,16 @@ LUT boundary, Resolution and fluidity, Algorithms, Persistence, UI).
 **Interfaces:**
 - Produces:
   - `pub struct Sidecar { pub develop: Develop, pub grade: Grade, pub crop: Crop, pub ratio: Ratio, pub looks: Vec<LookRef>, pub look_blend: Blend }`, `pub struct LookRef { pub path: PathBuf, pub intensity: f32, pub input: Profile, pub on: bool }`.
-  - `pub fn path_for(photo: &Path) -> PathBuf` → `<file>.rawvalley.json`.
+  - `pub fn path_for(photo: &Path) -> PathBuf` → `<file>.rawvibes.json`.
   - `Sidecar::load(photo: &Path) -> Result<Option<Sidecar>, String>` (`Ok(None)` when absent); `Sidecar::save(&self, photo: &Path) -> Result<(), String>` (write `<name>.tmp`, then rename).
-  - JSON `{"format":"rawvalley-sidecar","version":1, …}`; grade validated by `grade_from_json` (NaN, broken curves rejected as for presets).
+  - JSON `{"format":"rawvibes-sidecar","version":1, …}`; grade validated by `grade_from_json` (NaN, broken curves rejected as for presets).
 - Semantics: the active photo's Develop and crop load from its sidecar; Grade, looks and blend are shared by the roll and load from the first photo opened into an empty roll. Saves the active photo's sidecar 1 s after the last edit. Missing LUT files skipped with one toast; write failures toast once per session.
 
 - [ ] **Step 1: Failing tests**
 
 ```rust
 #[test] fn sidecar_round_trips()             // save then load (tempdir) → equal
-#[test] fn sidecar_path_is_next_to_the_file() // "/a/P1.RW2" → "/a/P1.RW2.rawvalley.json"
+#[test] fn sidecar_path_is_next_to_the_file() // "/a/P1.RW2" → "/a/P1.RW2.rawvibes.json"
 #[test] fn absent_sidecar_is_none()
 #[test] fn corrupt_or_newer_sidecar_is_an_error() // "{" and version 99 → Err
 #[test] fn nan_in_sidecar_is_rejected()       // develop.exposure NaN → Err

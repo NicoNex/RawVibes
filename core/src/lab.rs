@@ -151,7 +151,7 @@ pub fn compose(stack: &Stack, size: usize, bake: &dyn Fn(&Grade) -> Arc<Lut3d>) 
         .map(|v| v.clamp(0.0, 1.0))
     };
     let mut out = Lut3d::identity(size, Format::Cube);
-    out.title = "RawValley Lab".into();
+    out.title = "RawVibes Lab".into();
     // Lattice points are independent: split them across the CPU cores.
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     let chunk = out.data.len().div_ceil(threads).max(1);

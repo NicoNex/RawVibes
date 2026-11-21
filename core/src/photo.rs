@@ -42,7 +42,7 @@ pub fn is_raw(path: &Path) -> bool {
     path.extension().is_some_and(|e| RAW_EXTS.contains(&e.to_string_lossy().to_lowercase().as_str()))
 }
 
-/// A file RawValley opens as a photo (raster or camera RAW).
+/// A file RawVibes opens as a photo (raster or camera RAW).
 pub fn is_photo(path: &Path) -> bool {
     is_raw(path) || path.extension().is_some_and(|e| RASTER_EXTS.contains(&e.to_string_lossy().to_lowercase().as_str()))
 }
@@ -331,20 +331,20 @@ mod tests {
         assert!((0..3).all(|c| (lo[c] - hi[c]).abs() < 1e-3), "{lo:?} {hi:?}");
     }
 
-    /// The camera JPEG of a sample RAW (RAWVALLEY_RAW), when present.
+    /// The camera JPEG of a sample RAW (RAWVIBES_RAW), when present.
     #[test]
     fn embedded_preview_of_sample_raw() {
-        let Ok(path) = std::env::var("RAWVALLEY_RAW") else { return eprintln!("no sample, skipped") };
+        let Ok(path) = std::env::var("RAWVIBES_RAW") else { return eprintln!("no sample, skipped") };
         let p = embedded_preview(Path::new(&path)).unwrap();
         assert!((640..=1024).contains(&p.width.max(p.height)), "{}×{}", p.width, p.height);
         assert!(p.pixels.iter().all(|c| c.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v))));
     }
 
     /// Portrait RAWs must come out portrait. Uses local sample files when
-    /// present (set RAWVALLEY_PORTRAIT_RAW), otherwise skips.
+    /// present (set RAWVIBES_PORTRAIT_RAW), otherwise skips.
     #[test]
     fn portrait_raw_is_rotated() {
-        let Ok(path) = std::env::var("RAWVALLEY_PORTRAIT_RAW") else { return eprintln!("no sample, skipped") };
+        let Ok(path) = std::env::var("RAWVIBES_PORTRAIT_RAW") else { return eprintln!("no sample, skipped") };
         let d = Decoded::load(Path::new(&path)).unwrap();
         assert!(d.is_raw(), "not a RAW");
         let (w, h) = d.size();

@@ -1,10 +1,10 @@
-# RawValley — build, run and package.
+# RawVibes — build, run and package.
 #   make run FILE=photo.RW2     debug run, optionally opening a photo
 #   make release / run-release  optimised build
 #   make install PREFIX=~/.local
 #   make arch                   build an Arch Linux package with makepkg
 #   make dmg                    build a macOS .dmg (run on macOS, needs dylibbundler)
-#   make pot                    refresh po/rawvalley.pot and merge it into po/*.po
+#   make pot                    refresh po/rawvibes.pot and merge it into po/*.po
 #   make models                 fetch and convert the AI denoise weights (needs curl, unzip, python3 + onnx, numpy)
 
 PREFIX  ?= /usr/local
@@ -12,8 +12,8 @@ DESTDIR ?=
 CARGO   ?= cargo
 FILE    ?=
 
-APP_ID  := io.github.rawvalley.RawValley
-BIN     := rawvalley
+APP_ID  := io.github.rawvibes.RawVibes
+BIN     := rawvibes
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
 ARCHDIR := packaging/arch
 LINGUAS := $(basename $(notdir $(wildcard po/*.po)))
@@ -59,7 +59,7 @@ target/locale/%/LC_MESSAGES/$(BIN).mo: po/%.po
 
 pot:
 	xgettext -L Rust --from-code=UTF-8 -k --keyword=gettext --keyword='gettext!' \
-	  --package-name=RawValley -o po/$(BIN).pot gtk/src/*.rs
+	  --package-name=RawVibes -o po/$(BIN).pot gtk/src/*.rs
 	for l in $(LINGUAS); do msgmerge -U --backup=none po/$$l.po po/$(BIN).pot; done
 
 target/release/$(BIN):
@@ -107,7 +107,7 @@ arch:
 # ponytail: dylibbundler copies the linked dylibs only; GTK runtime data (pixbuf loaders,
 # Adwaita icon theme, schemas) still comes from Homebrew. Switch to gtk-mac-bundler if the
 # .app must run on Macs without Homebrew GTK.
-APP := target/RawValley.app
+APP := target/RawVibes.app
 dmg: release models
 	rm -rf $(APP) target/$(BIN)-$(VERSION).dmg
 	install -d $(APP)/Contents/MacOS $(APP)/Contents/libs
@@ -119,7 +119,7 @@ dmg: release models
 	printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
 	  '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
 	  '<plist version="1.0"><dict>' \
-	  '<key>CFBundleName</key><string>RawValley</string>' \
+	  '<key>CFBundleName</key><string>RawVibes</string>' \
 	  '<key>CFBundleIdentifier</key><string>$(APP_ID)</string>' \
 	  '<key>CFBundleExecutable</key><string>$(BIN)</string>' \
 	  '<key>CFBundleShortVersionString</key><string>$(VERSION)</string>' \
@@ -129,7 +129,7 @@ dmg: release models
 	dylibbundler -of -b -x $(APP)/Contents/MacOS/$(BIN) -d $(APP)/Contents/libs -p @executable_path/../libs/
 	# dylibbundler's install_name_tool edits break signatures; arm64 refuses to run unsigned code.
 	codesign --force --deep -s - $(APP)
-	hdiutil create -volname RawValley -srcfolder $(APP) -ov -format UDZO target/$(BIN)-$(VERSION).dmg
+	hdiutil create -volname RawVibes -srcfolder $(APP) -ov -format UDZO target/$(BIN)-$(VERSION).dmg
 
 clean:
 	$(CARGO) clean

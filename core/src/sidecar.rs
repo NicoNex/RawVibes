@@ -1,8 +1,8 @@
-//! Non-destructive edits saved next to the photo, `<file>.rawvalley.json`:
+//! Non-destructive edits saved next to the photo, `<file>.rawvibes.json`:
 //! development, grade, crop and looks.
 //!
 //! ```json
-//! { "format": "rawvalley-sidecar", "version": 2,
+//! { "format": "rawvibes-sidecar", "version": 2,
 //!   "develop": { "wb": [3200.0, 5.0], "exposure": 0.3, "detail": { "nr_luma": 20.0, … } },
 //!   "params": { … }, "curves": { … },
 //!   "crop": { "rect": [0, 0, 1, 1], "angle": 0 }, "ratio": "Free",
@@ -21,7 +21,7 @@ use crate::lab::Blend;
 use crate::preset::{Curves, grade_from};
 use crate::profiles::Profile;
 
-const FORMAT: &str = "rawvalley-sidecar";
+const FORMAT: &str = "rawvibes-sidecar";
 const VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -66,7 +66,7 @@ struct File {
 /// Where the sidecar of `photo` lives.
 pub fn path_for(photo: &Path) -> PathBuf {
     let mut name = photo.file_name().unwrap_or_default().to_owned();
-    name.push(".rawvalley.json");
+    name.push(".rawvibes.json");
     photo.with_file_name(name)
 }
 
@@ -108,10 +108,10 @@ impl Sidecar {
     pub fn from_json(text: &str) -> Result<Self, String> {
         let f: File = serde_json::from_str(text).map_err(|e| e.to_string())?;
         if f.format != FORMAT {
-            return Err(format!("not a RawValley sidecar ({})", f.format));
+            return Err(format!("not a RawVibes sidecar ({})", f.format));
         }
         if f.version > VERSION {
-            return Err(format!("made by a newer RawValley (sidecar version {})", f.version));
+            return Err(format!("made by a newer RawVibes (sidecar version {})", f.version));
         }
         // Out-of-range development values are brought into the sliders' range
         // (a whole sidecar is not worth losing over them); non-numbers are not.
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn sidecar_round_trips() {
-        let dir = std::env::temp_dir().join(format!("rawvalley-sidecar-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rawvibes-sidecar-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let photo = dir.join("P1.RW2");
         let s = sample();
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn sidecar_path_is_next_to_the_file() {
-        assert_eq!(path_for(Path::new("/a/P1.RW2")), PathBuf::from("/a/P1.RW2.rawvalley.json"));
+        assert_eq!(path_for(Path::new("/a/P1.RW2")), PathBuf::from("/a/P1.RW2.rawvibes.json"));
     }
 
     #[test]
@@ -231,7 +231,7 @@ mod tests {
     /// Phase 2 sidecars (version 1) have no detail tools: they load neutral.
     #[test]
     fn sidecar_v1_loads_with_neutral_detail() {
-        let v1 = r#"{ "format": "rawvalley-sidecar", "version": 1,
+        let v1 = r#"{ "format": "rawvibes-sidecar", "version": 1,
             "develop": { "wb": [3200.0, 5.0], "exposure": 0.3 } }"#;
         let s = Sidecar::from_json(v1).unwrap();
         assert_eq!(s.develop.detail, crate::develop::Detail::default());

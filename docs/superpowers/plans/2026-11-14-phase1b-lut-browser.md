@@ -17,7 +17,7 @@ Escape drops it. Thumbnails always render on the graded photo.
 
 **Tech Stack:** Rust 2024, relm4 0.11 / GTK4 / libadwaita, wgpu.
 
-**Spec:** `docs/superpowers/specs/2026-11-14-rawvalley-design.md` (UI → "LUT browsing lives in the editor").
+**Spec:** `docs/superpowers/specs/2026-11-14-rawvibes-design.md` (UI → "LUT browsing lives in the editor").
 
 ## Global Constraints
 

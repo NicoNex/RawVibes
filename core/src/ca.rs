@@ -986,10 +986,10 @@ mod tests {
     }
 
     /// Time on a real RAW:
-    /// `RAWVALLEY_RAW=photo.RW2 cargo test --release -p rawvalley-core ca_on_sample -- --nocapture`.
+    /// `RAWVIBES_RAW=photo.RW2 cargo test --release -p rawvibes-core ca_on_sample -- --nocapture`.
     #[test]
     fn ca_on_sample() {
-        let Ok(path) = std::env::var("RAWVALLEY_RAW") else { return eprintln!("RAWVALLEY_RAW unset, skipped") };
+        let Ok(path) = std::env::var("RAWVIBES_RAW") else { return eprintln!("RAWVIBES_RAW unset, skipped") };
         let raw = crate::raw::read_raw(std::path::Path::new(&path)).unwrap();
         let start = std::time::Instant::now();
         let out = corrected(&raw);

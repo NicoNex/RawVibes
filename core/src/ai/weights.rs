@@ -83,13 +83,13 @@ fn layer_names() -> impl Iterator<Item = String> {
     per_level.chain(["bottom.0", "bottom.2", "output_module.0"].map(String::from))
 }
 
-/// Where the models are: `RAWVALLEY_MODELS`, then the install's
-/// `share/rawvalley/models`, then this checkout's `models` (development).
+/// Where the models are: `RAWVIBES_MODELS`, then the install's
+/// `share/rawvibes/models`, then this checkout's `models` (development).
 pub fn models_dir() -> Option<PathBuf> {
     let installed =
-        std::env::current_exe().ok().and_then(|e| Some(e.parent()?.parent()?.join("share/rawvalley/models")));
+        std::env::current_exe().ok().and_then(|e| Some(e.parent()?.parent()?.join("share/rawvibes/models")));
     let dev = Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("../models"));
-    std::env::var_os("RAWVALLEY_MODELS")
+    std::env::var_os("RAWVIBES_MODELS")
         .map(PathBuf::from)
         .into_iter()
         .chain(installed)

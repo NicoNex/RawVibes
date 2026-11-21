@@ -200,7 +200,7 @@ impl Lut3d {
 
     pub fn to_cube(&self) -> String {
         let mut s = String::with_capacity(self.data.len() * 28 + 128);
-        let _ = writeln!(s, "# Created with RawValley");
+        let _ = writeln!(s, "# Created with RawVibes");
         let _ = writeln!(s, "TITLE \"{}\"", self.title.replace('"', "'"));
         let _ = writeln!(s, "LUT_3D_SIZE {}", self.size);
         let _ = writeln!(s, "DOMAIN_MIN 0.0 0.0 0.0");
@@ -389,7 +389,7 @@ mod tests {
         assert_eq!((back.size, back.data[1]), (17, [256.0 / 4095.0, 0.0, 0.0]));
 
         // HALD level 4: 16³ cube in a 64×64 PNG.
-        let path = std::env::temp_dir().join(format!("rawvalley-hald-{}.png", std::process::id()));
+        let path = std::env::temp_dir().join(format!("rawvibes-hald-{}.png", std::process::id()));
         Lut3d::identity(16, Format::Hald).save(&path).unwrap();
         assert!(Lut3d::is_hald(&path));
         let back = Lut3d::load(&path).unwrap();
@@ -401,7 +401,7 @@ mod tests {
 
     #[test]
     fn load_dir_recurses_into_subfolders() {
-        let root = std::env::temp_dir().join(format!("rawvalley-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rawvibes-test-{}", std::process::id()));
         let cube = Lut3d { title: String::new(), size: 2, data: vec![[0.0; 3]; 8], format: Format::Cube }.to_cube();
         for rel in ["b.cube", "Film/Kodak/a.CUBE", "Film/z.cube", ".hidden/x.cube"] {
             let p = root.join(rel);

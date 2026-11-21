@@ -92,7 +92,7 @@ impl Gpu {
         .map_err(|e| format!("no Vulkan/Metal GPU: {e}"))?;
         let info = adapter.get_info();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("rawvalley"),
+            label: Some("rawvibes"),
             required_limits: adapter.limits(),
             ..Default::default()
         }))
@@ -1208,11 +1208,11 @@ mod tests {
     }
 
     /// Full export of a real RAW with AI on, timed:
-    /// `RAWVALLEY_RAW=x.RW2 RAWVALLEY_OUT=dir cargo test --release -p rawvalley-core export_sample -- --ignored --nocapture`.
+    /// `RAWVIBES_RAW=x.RW2 RAWVIBES_OUT=dir cargo test --release -p rawvibes-core export_sample -- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn export_sample() {
-        let (Ok(raw), Ok(out)) = (std::env::var("RAWVALLEY_RAW"), std::env::var("RAWVALLEY_OUT")) else { return };
+        let (Ok(raw), Ok(out)) = (std::env::var("RAWVIBES_RAW"), std::env::var("RAWVIBES_OUT")) else { return };
         let gpu = Gpu::new().unwrap();
         let path = PathBuf::from(raw);
         let decoded = Decoded::load(&path).unwrap();

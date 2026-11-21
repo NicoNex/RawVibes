@@ -25,7 +25,7 @@ LUTs (not in the LUT export, which bakes per-pixel colour only).
 
 **Tech Stack:** Rust 2024, wgpu 30 (WGSL compute), relm4 0.11 / GTK4 / libadwaita.
 
-**Spec:** `docs/superpowers/specs/2026-11-14-rawvalley-design.md`
+**Spec:** `docs/superpowers/specs/2026-11-14-rawvibes-design.md`
 (Goals → RAW development; Architecture → Image pipeline, Resolution and
 fluidity, Algorithms; UI).
 
@@ -36,7 +36,7 @@ fluidity, Algorithms; UI).
 - Laggy sliders are an anti-goal: a detail slider drag stays interactive on a 24 MP RAW (drafts of the Preview while editing preference apply: Fast also halves the noise-reduction search window).
 - Every stage at its neutral value is the identity (bit-exact passthrough, not "close").
 - Develop never enters a LUT; the creative vignette neither.
-- GPU tests skip with "no GPU, skipped"; sample-file tests use `RAWVALLEY_RAW` and skip without it.
+- GPU tests skip with "no GPU, skipped"; sample-file tests use `RAWVIBES_RAW` and skip without it.
 - Code review + simplify once, at the end of the phase.
 
 ## Review Focus

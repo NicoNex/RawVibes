@@ -1,4 +1,4 @@
-//! RawValley GTK4/libadwaita front-end over `rawvalley-core`.
+//! RawVibes GTK4/libadwaita front-end over `rawvibes-core`.
 
 /// `gettext` with `{}` placeholders filled in order (translations may not reorder them).
 macro_rules! gettext {
@@ -28,32 +28,32 @@ use filmstrip::{Filmstrip, MAX_ROLL, ROLL_PX};
 use gettextrs::gettext;
 use lab_page::{LabAdd, LabKind, LabLayer, LabUi, Layers, caption};
 use presets_ui::PresetsUi;
-use rawvalley_core::chart::test_chart;
-use rawvalley_core::crop::{self, Crop, PRESETS, Ratio};
-use rawvalley_core::develop::{Camera, Detail, Develop, KELVIN, WB_PRESETS};
-use rawvalley_core::export::{self, PhotoFormat};
-use rawvalley_core::gpu::{self, Done, Job, PhotoExport, ThumbBase};
-use rawvalley_core::grade::{
+use rawvibes_core::chart::test_chart;
+use rawvibes_core::crop::{self, Crop, PRESETS, Ratio};
+use rawvibes_core::develop::{Camera, Detail, Develop, KELVIN, WB_PRESETS};
+use rawvibes_core::export::{self, PhotoFormat};
+use rawvibes_core::gpu::{self, Done, Job, PhotoExport, ThumbBase};
+use rawvibes_core::grade::{
     BAND_HUE_RANGE, BAND_HUES, Curve, Grade, HUE_HUE, HUE_SAT, LUM_SAT, LUMA, MASTER, Params, Stage, neutral_curve,
 };
-use rawvalley_core::lab::{Blend, Layer, Source, Stack, oklch_to_srgb};
-use rawvalley_core::lut::{self, Format, Lut3d, LutEntry, MAX_LIBRARY};
-use rawvalley_core::makernote::CameraLut;
-use rawvalley_core::matching::{self, Match};
-use rawvalley_core::photo::{Decoded, PREVIEW_MAX, Photo, RASTER_EXTS, RAW_EXTS, is_photo, is_raw};
-use rawvalley_core::preset::{self, Preset};
-use rawvalley_core::profiles::Profile;
-use rawvalley_core::raw::{RawData, read_raw};
-use rawvalley_core::scopes::{HIST_H, HIST_W, Scopes, VEC_SIZE};
-use rawvalley_core::sidecar::{LookRef, Sidecar};
-use rawvalley_core::view::{Region, Zoom};
+use rawvibes_core::lab::{Blend, Layer, Source, Stack, oklch_to_srgb};
+use rawvibes_core::lut::{self, Format, Lut3d, LutEntry, MAX_LIBRARY};
+use rawvibes_core::makernote::CameraLut;
+use rawvibes_core::matching::{self, Match};
+use rawvibes_core::photo::{Decoded, PREVIEW_MAX, Photo, RASTER_EXTS, RAW_EXTS, is_photo, is_raw};
+use rawvibes_core::preset::{self, Preset};
+use rawvibes_core::profiles::Profile;
+use rawvibes_core::raw::{RawData, read_raw};
+use rawvibes_core::scopes::{HIST_H, HIST_W, Scopes, VEC_SIZE};
+use rawvibes_core::sidecar::{LookRef, Sidecar};
+use rawvibes_core::view::{Region, Zoom};
 use relm4::adw::prelude::*;
 use relm4::gtk::{gdk, gio, glib};
 use relm4::{ComponentParts, ComponentSender, RelmApp, SimpleComponent, adw, gtk};
 use widgets::{ColorWheel, CurveEditor, Slider};
 use zoom_ui::{ZoomCmd, ZoomUi};
 
-const APP_ID: &str = "io.github.rawvalley.RawValley";
+const APP_ID: &str = "io.github.rawvibes.RawVibes";
 
 type Field = fn(&mut Params) -> &mut f32;
 
@@ -1150,15 +1150,15 @@ impl App {
             let cached = self.camera_jpeg.clone().filter(|c| c.0 == path).map(|c| c.1);
             let s = sender.input_sender().clone();
             std::thread::spawn(move || {
-                let jpeg = cached.or_else(|| rawvalley_core::photo::embedded_preview(&path).ok().map(Arc::new));
+                let jpeg = cached.or_else(|| rawvibes_core::photo::embedded_preview(&path).ok().map(Arc::new));
                 let curve = jpeg.as_ref().and_then(|jpeg| {
                     // The master curve works on display values: Standard is the display encoding whatever the input profile.
                     let neutral = as_shot_render(&d, &develop, Profile::Standard);
-                    rawvalley_core::histmatch::auto_tone_curve(&neutral, jpeg, d.size().0)
+                    rawvibes_core::histmatch::auto_tone_curve(&neutral, jpeg, d.size().0)
                 });
                 s.emit(Msg::CameraCurve(path.clone(), jpeg, curve));
                 // The Real Time LUTs are offered in place of the curve, not on top of it.
-                for lut in rawvalley_core::makernote::real_time_luts(&path) {
+                for lut in rawvibes_core::makernote::real_time_luts(&path) {
                     let remembered = settings::value(&camera_lut_key(&lut.name)).map(PathBuf::from);
                     let file = remembered
                         .filter(|p| p.is_file())
@@ -1177,7 +1177,7 @@ impl App {
         self.ui.sidebar.matching.stack.set_visible_child_name("busy");
         let s = sender.input_sender().clone();
         std::thread::spawn(move || {
-            let r = rawvalley_core::photo::embedded_preview(&path).map(Arc::new);
+            let r = rawvibes_core::photo::embedded_preview(&path).map(Arc::new);
             s.emit(Msg::CameraJpeg(path, r));
         });
     }
@@ -1490,7 +1490,7 @@ fn as_shot_render(d: &Decoded, as_shot: &Develop, profile: Profile) -> Arc<Photo
     d.encode_fit(&Region::whole(w, h), 1024, profile, as_shot)
 }
 
-/// File extensions of the LUT files RawValley reads.
+/// File extensions of the LUT files RawVibes reads.
 const LUT_EXTENSIONS: [&str; 3] = ["cube", "vlt", "png"];
 
 /// Settings key remembering where the camera LUT `name` was found.
@@ -2459,7 +2459,7 @@ impl SimpleComponent for App {
             .default_height(900)
             .width_request(360)
             .height_request(300)
-            .title("RawValley")
+            .title("RawVibes")
             .build()
     }
 
@@ -2771,7 +2771,7 @@ impl SimpleComponent for App {
         let section_menu = gio::Menu::new();
         section_menu.append(Some(gettext("Preferences").as_str()), Some("win.preferences"));
         section_menu.append(Some(gettext("Keyboard Shortcuts").as_str()), Some("win.show-help-overlay"));
-        section_menu.append(Some(gettext("About RawValley").as_str()), Some("win.about"));
+        section_menu.append(Some(gettext("About RawVibes").as_str()), Some("win.about"));
         menu.append_section(None, &section_menu);
         header.pack_end(
             &gtk::MenuButton::builder()
@@ -2896,7 +2896,7 @@ impl SimpleComponent for App {
         let w = window.clone();
         about.connect_activate(move |_, _| {
             adw::AboutDialog::builder()
-                .application_name("RawValley")
+                .application_name("RawVibes")
                 .application_icon(APP_ID)
                 .version(env!("CARGO_PKG_VERSION"))
                 .comments(gettext(
@@ -3289,7 +3289,7 @@ impl SimpleComponent for App {
                     self.load_gen += 1;
                     self.cancel_match();
                     (self.decoded, self.photo, self.path) = (None, None, None);
-                    self.ui.window.set_title(Some("RawValley"));
+                    self.ui.window.set_title(Some("RawVibes"));
                     self.show_source();
                 } else if was_active {
                     self.load_active(i.min(self.roll.len() - 1), &sender);
@@ -3466,7 +3466,7 @@ impl SimpleComponent for App {
                 self.apply_grade(Grade::default());
                 self.ui.sidebar.look_blend_toggle.set_active_name(Some("chain"));
                 self.ui.sidebar.develop.picker.set_active(false);
-                self.ui.window.set_title(Some(&format!("{} — RawValley", file_label(&path))));
+                self.ui.window.set_title(Some(&format!("{} — RawVibes", file_label(&path))));
                 self.zoom = None;
                 self.reset_crop();
                 self.decoded = Some(decoded);
@@ -4643,12 +4643,12 @@ fn fill(template: &str, args: &[String]) -> String {
     out
 }
 
-/// Installed: `<prefix>/bin/rawvalley` → `<prefix>/share/locale`; dev: `make` puts catalogs in `target/locale`.
+/// Installed: `<prefix>/bin/rawvibes` → `<prefix>/share/locale`; dev: `make` puts catalogs in `target/locale`.
 fn locale_dir() -> PathBuf {
     std::env::current_exe()
         .ok()
         .and_then(|exe| Some(exe.parent()?.parent()?.join("share/locale")))
-        .filter(|d| d.join("it/LC_MESSAGES/rawvalley.mo").exists())
+        .filter(|d| d.join("it/LC_MESSAGES/rawvibes.mo").exists())
         .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/locale")))
 }
 
@@ -4680,11 +4680,11 @@ thread_local! {
 
 fn main() {
     // gtk_init calls setlocale; a missing catalog just leaves the English source strings.
-    let _ = gettextrs::bindtextdomain("rawvalley", locale_dir());
-    let _ = gettextrs::bind_textdomain_codeset("rawvalley", "UTF-8");
-    let _ = gettextrs::textdomain("rawvalley");
+    let _ = gettextrs::bindtextdomain("rawvibes", locale_dir());
+    let _ = gettextrs::bind_textdomain_codeset("rawvibes", "UTF-8");
+    let _ = gettextrs::textdomain("rawvibes");
     // HANDLES_OPEN: files from the command line or a file manager ("Open With")
-    // arrive here, also when RawValley is already running.
+    // arrive here, also when RawVibes is already running.
     let app = adw::Application::builder().application_id(APP_ID).flags(gio::ApplicationFlags::HANDLES_OPEN).build();
     app.connect_open(|app, files, _| {
         let paths: Vec<PathBuf> = files.iter().filter_map(|f| f.path()).collect();
@@ -4693,7 +4693,7 @@ fn main() {
         }
         app.activate();
     });
-    // When RawValley is already running this process only forwards the files,
+    // When RawVibes is already running this process only forwards the files,
     // and RelmApp::run then blocks on one last main-loop iteration: keep waking
     // the loop until we turn out to be the primary instance (startup).
     static STARTED: AtomicBool = AtomicBool::new(false);
@@ -4725,7 +4725,7 @@ fn photo_dialog(title: &str) -> gtk::FileDialog {
 }
 
 fn preset_dialog(title: &str) -> gtk::FileDialog {
-    let filters = file_filters(&gettext("RawValley presets"), &[preset::EXT]);
+    let filters = file_filters(&gettext("RawVibes presets"), &[preset::EXT]);
     gtk::FileDialog::builder().title(title).filters(&filters).modal(true).build()
 }
 

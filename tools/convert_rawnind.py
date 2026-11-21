@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Convert darktable's RawNIND UtNet2 ONNX models (rawdenoise-nind.dtmodel)
-into the flat weights RawValley loads (core/src/ai/weights.rs).
+into the flat weights RawVibes loads (core/src/ai/weights.rs).
 
 For each variant (bayer, linear) it writes:
   <variant>.bin   little-endian f32: every Conv/ConvTranspose weight then

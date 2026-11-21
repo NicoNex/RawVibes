@@ -424,10 +424,10 @@ mod tests {
         assert!(gpu.ai_denoise(&raw, &net, &AtomicBool::new(true), &|_| {}).unwrap().is_none());
     }
 
-    /// `RAWVALLEY_RAW=<file.rw2>`: time of a whole sample photo.
+    /// `RAWVIBES_RAW=<file.rw2>`: time of a whole sample photo.
     #[test]
     fn ai_on_sample() {
-        let Ok(path) = std::env::var("RAWVALLEY_RAW") else { return };
+        let Ok(path) = std::env::var("RAWVIBES_RAW") else { return };
         let Some((gpu, net)) = setup() else { return };
         let raw = crate::raw::read_raw(std::path::Path::new(&path)).unwrap();
         let start = std::time::Instant::now();
@@ -590,7 +590,7 @@ mod quality {
             let p: Vec<String> =
                 bands.iter().map(|(_, ys)| format!("{:5.1}", psnr(&remosaiced, &truth, ys.clone()))).collect();
             eprintln!("  {:<20} {}", "AI remosaic + RCD", p.join("  "));
-            if let Ok(out) = std::env::var("RAWVALLEY_OUT") {
+            if let Ok(out) = std::env::var("RAWVIBES_OUT") {
                 img.save(format!("{out}/synthetic_{name}.png")).unwrap();
             }
             for (label, dev) in [
@@ -644,12 +644,12 @@ mod quality {
         }
     }
 
-    /// `RAWVALLEY_RAW=<file> RAWVALLEY_OUT=<dir>`: 1:1 crops none | classic 50/50 | AI, side by side.
+    /// `RAWVIBES_RAW=<file> RAWVIBES_OUT=<dir>`: 1:1 crops none | classic 50/50 | AI, side by side.
     #[test]
     #[ignore]
     fn ai_crops() {
         let (Ok(path), Ok(out), Some(dir), Ok(gpu)) =
-            (std::env::var("RAWVALLEY_RAW"), std::env::var("RAWVALLEY_OUT"), models_dir(), Gpu::new())
+            (std::env::var("RAWVIBES_RAW"), std::env::var("RAWVIBES_OUT"), models_dir(), Gpu::new())
         else {
             return;
         };

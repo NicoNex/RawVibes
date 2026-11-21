@@ -1,4 +1,4 @@
-//! Tiny persisted preferences under `$XDG_CONFIG_HOME/rawvalley/`.
+//! Tiny persisted preferences under `$XDG_CONFIG_HOME/rawvibes/`.
 // ponytail: one file per value; switch to GSettings once there are many.
 
 use std::path::{Path, PathBuf};
@@ -11,7 +11,7 @@ pub const LUT_FOLDER: &str = "lut-folder";
 pub const PHOTO_FOLDER: &str = "photo-folder";
 
 fn file(name: &str) -> PathBuf {
-    glib::user_config_dir().join("rawvalley").join(name)
+    glib::user_config_dir().join("rawvibes").join(name)
 }
 
 /// "1": RAWs without edits open as in camera.
@@ -32,7 +32,7 @@ pub const SCOPES_PINNED: &str = "scopes-pinned";
 /// Height of the scopes in logical pixels.
 pub const SCOPES_HEIGHT: &str = "scopes-height";
 
-/// The stored value; until RawValley stores its own, VibingLUT's (same keys).
+/// The stored value; until RawVibes stores its own, VibingLUT's (same keys).
 pub fn value(key: &str) -> Option<String> {
     let vibinglut = glib::user_config_dir().join("vibinglut").join(key);
     let text = std::fs::read_to_string(file(key)).or_else(|_| std::fs::read_to_string(vibinglut)).ok()?;
@@ -53,7 +53,7 @@ pub fn set_folder(key: &str, dir: &Path) -> std::io::Result<()> {
     set_value(key, &dir.to_string_lossy())
 }
 
-/// Where presets are saved (`rawvalley_core::preset` JSON files).
+/// Where presets are saved (`rawvibes_core::preset` JSON files).
 pub fn presets_dir() -> PathBuf {
     file("presets")
 }

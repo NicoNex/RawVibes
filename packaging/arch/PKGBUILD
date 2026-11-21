@@ -1,5 +1,5 @@
 # Maintainer: Nicolò Santamaria <nicolo.santamaria@gmail.com>
-pkgname=rawvalley
+pkgname=rawvibes
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Color grade photos (JPEG/RAW) and export 3D LUTs (.cube), GPU accelerated"

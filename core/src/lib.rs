@@ -1,4 +1,4 @@
-//! RawValley engine: UI-agnostic photo loading, GPU grading, LUT baking and
+//! RawVibes engine: UI-agnostic photo loading, GPU grading, LUT baking and
 //! scopes. Front-ends talk to it through [`gpu::spawn`] jobs/results.
 
 #[cfg(feature = "ai")]

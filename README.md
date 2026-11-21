@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="data/io.github.rawvalley.RawValley.svg" width="112" alt="RawValley app icon">
+<img src="data/io.github.rawvibes.RawVibes.svg" width="112" alt="RawVibes app icon">
 
-# RawValley
+# RawVibes
 
 ### Develop your RAW photos and take the look back to the camera.
 
@@ -18,18 +18,18 @@ Free and open source under the GPL-3.0.
 ![GPU: Vulkan · Metal](https://img.shields.io/badge/GPU-Vulkan%20·%20Metal-8b5cf6)
 ![RAW: RW2 · CR3 · NEF · ARW · RAF · DNG](https://img.shields.io/badge/RAW-RW2%20·%20CR3%20·%20NEF%20·%20ARW%20·%20RAF%20·%20DNG-22c55e)
 
-<img src="docs/screenshots/grade.jpg" alt="RawValley grading a Lumix S9 RAW of the Salento coast: before/after split, histogram and the LUT browser rendering every LUT on the photo" width="100%">
+<img src="docs/screenshots/grade.jpg" alt="RawVibes grading a Lumix S9 RAW of the Salento coast: before/after split, histogram and the LUT browser rendering every LUT on the photo" width="100%">
 
 </div>
 
 ---
 
-## Why RawValley?
+## Why RawVibes?
 
-RawValley started as VibingLUT, a workbench for building and converting 3D LUTs.
+RawVibes started as VibingLUT, a workbench for building and converting 3D LUTs.
 Its author shoots a Lumix S9 and wanted one app that goes from the RW2 to the
 finished photo, and from the look built on that photo to a LUT loaded into the
-camera. RawValley adds a full RAW development stage in front of the grade.
+camera. RawVibes adds a full RAW development stage in front of the grade.
 
 - **One photo, two outputs.** The Photo tab holds what only a still can have:
   noise reduction, sharpening, crop, vignetting. The Grade tab holds what a LUT can
@@ -43,7 +43,7 @@ camera. RawValley adds a full RAW development stage in front of the grade.
   AI denoise run on the GPU through wgpu (Vulkan on Linux, Metal on macOS).
   Sliders draw a fast draft while you drag and the full-quality frame when you stop.
 - **Your files stay as they are.** Edits live in a small sidecar next to the photo
-  (`photo.RW2.rawvalley.json`) and come back when you reopen it.
+  (`photo.RW2.rawvibes.json`) and come back when you reopen it.
 
 ---
 
@@ -87,7 +87,7 @@ camera. RawValley adds a full RAW development stage in front of the grade.
 - **Curves:** master and R/G/B, monotone (Fritsch–Carlson) so they never overshoot.
 - **Soft light** and a **creative vignette** with amount, midpoint, roundness and
   feather.
-- **Reference match:** pick a photo whose colour you like and RawValley fits the
+- **Reference match:** pick a photo whose colour you like and RawVibes fits the
   grade to it. On a RAW, *Camera JPEG* fits the grade to the JPEG the camera
   embedded, so you can start from the camera's own rendering.
 - **LUTs on the photo.** Press `B` and every LUT in your folder is rendered on the
@@ -193,7 +193,7 @@ and the others as well as on V-Log.
 
 ## How it works
 
-1. **Open a photo:** drag it in, press `Ctrl+O`, or choose *Open With → RawValley*
+1. **Open a photo:** drag it in, press `Ctrl+O`, or choose *Open With → RawVibes*
    in your file manager.
 2. **Develop it** in the Photo tab: white balance, exposure, noise, detail, crop.
 3. **Grade it** in the Grade tab: tone, colour, curves, LUTs from your library.
@@ -217,12 +217,12 @@ and the others as well as on V-Log.
 - **Slider audit.** A test sweeps every grade and development slider and every
   curve over its full range on images with a known answer: identity at neutral,
   monotone, no dead zones, balanced around zero, finite output.
-- **Separate engine.** `rawvalley-core` has no UI dependency, so another front end
+- **Separate engine.** `rawvibes-core` has no UI dependency, so another front end
   (a CLI, a plug-in) can reuse it.
 
 ```
-core/    rawvalley-core: RAW development, colour science, profiles, LUT I/O, GPU engine (wgpu + WGSL), AI denoise
-gtk/     rawvalley: GTK4 / libadwaita desktop app (Relm4)
+core/    rawvibes-core: RAW development, colour science, profiles, LUT I/O, GPU engine (wgpu + WGSL), AI denoise
+gtk/     rawvibes: GTK4 / libadwaita desktop app (Relm4)
 models/  RawNIND denoise weights (fetched with `make models`)
 po/      translations (gettext)
 ```
@@ -235,7 +235,7 @@ po/      translations (gettext)
 
 ```sh
 make arch                       # builds a package from the committed HEAD
-sudo pacman -U packaging/arch/rawvalley-*.pkg.tar.zst
+sudo pacman -U packaging/arch/rawvibes-*.pkg.tar.zst
 ```
 
 ### From source (any Linux)
@@ -290,7 +290,7 @@ regularly yet.
 ## Translations
 
 The interface is in English, with an Italian translation. Translations use
-gettext: copy `po/rawvalley.pot` to `po/<language>.po`, translate it, and `make`
+gettext: copy `po/rawvibes.pot` to `po/<language>.po`, translate it, and `make`
 picks it up. Pull requests for new languages are welcome.
 
 ## FAQ
@@ -312,7 +312,7 @@ Any Vulkan-capable GPU runs the editor. AI denoise is much faster on a discrete
 GPU.
 
 **Is it free?**
-Yes. RawValley is free software under the GPL-3.0. The RawNIND weights are
+Yes. RawVibes is free software under the GPL-3.0. The RawNIND weights are
 GPL-3.0 / CC-BY-4.0 (see [models/README.md](models/README.md)).
 
 ## License

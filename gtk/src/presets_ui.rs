@@ -1,5 +1,5 @@
 //! Presets popover in the header bar: apply, save, delete, import, export.
-//! The files are `rawvalley_core::preset` JSON under the config directory.
+//! The files are `rawvibes_core::preset` JSON under the config directory.
 
 use std::path::PathBuf;
 

@@ -23,6 +23,8 @@ MODELS_URL := https://github.com/darktable-org/darktable-ai/releases/download/re
 MODELS_SHA := d71b5f1e727c85a359e6f74dca9e2016c9d8fc3e2f7ac3e9b347d80ceca969af
 MODELS     := $(foreach v,bayer linear,models/rawnind/$(v).bin models/rawnind/$(v).json)
 DTMODEL    := target/models/rawdenoise-nind.dtmodel
+# macOS has shasum but no sha256sum.
+SHA256     := $(shell command -v sha256sum >/dev/null && echo sha256sum || echo shasum -a 256)
 
 .PHONY: all build run release run-release test check fmt clean install uninstall arch dmg pot locale models
 
@@ -70,12 +72,12 @@ models: $(MODELS)
 # Downloaded unless already there (the PKGBUILD puts makepkg's copy there).
 $(DTMODEL):
 	mkdir -p target/models
-	curl -L --fail -o $@.part $(MODELS_URL)
+	curl -LsS --fail -o $@.part $(MODELS_URL)
 	mv $@.part $@
 
 # One run writes every file; a failed one leaves none behind to look done.
 $(MODELS) &: $(DTMODEL)
-	echo "$(MODELS_SHA)  $(DTMODEL)" | sha256sum -c
+	echo "$(MODELS_SHA)  $(DTMODEL)" | $(SHA256) -c
 	unzip -o -q $(DTMODEL) -d target/models
 	python3 tools/convert_rawnind.py target/models/rawdenoise-nind models/rawnind || { rm -rf models/rawnind; exit 1; }
 

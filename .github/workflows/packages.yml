@@ -5,6 +5,9 @@ on:
     branches: [master]
   workflow_dispatch:
 
+env:
+  CARGO_TERM_COLOR: never
+
 concurrency:
   group: packages-${{ github.ref }}
   cancel-in-progress: true

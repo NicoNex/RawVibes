@@ -944,9 +944,11 @@ impl Worker {
 
 /// Spawns the render thread. Previews and gallery passes are coalesced to
 /// the latest request so slider drags never queue up stale frames.
-pub fn spawn(notify: impl Fn(Done) + Send + 'static) -> mpsc::Sender<Job> {
+/// The worker ends when the sender is dropped; join it before the process
+/// exits, so the Vulkan device is torn down before the driver unloads.
+pub fn spawn(notify: impl Fn(Done) + Send + 'static) -> (mpsc::Sender<Job>, std::thread::JoinHandle<()>) {
     let (tx, rx) = mpsc::channel::<Job>();
-    std::thread::Builder::new()
+    let handle = std::thread::Builder::new()
         .name("gpu".into())
         .spawn(move || {
             let gpu = match Gpu::new() {
@@ -958,7 +960,11 @@ pub fn spawn(notify: impl Fn(Done) + Send + 'static) -> mpsc::Sender<Job> {
             loop {
                 // Block for work only when no thumbnail pass or AI run is pending.
                 let first = if thumbs_left || ai_left {
-                    rx.try_recv().ok()
+                    match rx.try_recv() {
+                        Ok(job) => Some(job),
+                        Err(mpsc::TryRecvError::Empty) => None,
+                        Err(mpsc::TryRecvError::Disconnected) => return,
+                    }
                 } else {
                     match rx.recv() {
                         Ok(job) => Some(job),
@@ -983,7 +989,7 @@ pub fn spawn(notify: impl Fn(Done) + Send + 'static) -> mpsc::Sender<Job> {
             }
         })
         .expect("spawn gpu thread");
-    tx
+    (tx, handle)
 }
 
 #[cfg(test)]

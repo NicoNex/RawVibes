@@ -505,6 +505,7 @@ struct App {
     show_chart: bool,
     selected: Option<usize>,
     jobs: mpsc::Sender<Job>,
+    gpu_thread: Option<std::thread::JoinHandle<()>>,
     /// The running photo export's stop flag.
     exporting: Option<Arc<AtomicBool>>,
     /// The frame the JPEG size estimate encodes (`Done::ExportFrame`), and its generation.
@@ -2930,7 +2931,7 @@ impl SimpleComponent for App {
         adw::StyleManager::default().set_color_scheme(adw::ColorScheme::PreferDark);
 
         let snd = sender.clone();
-        let jobs = gpu::spawn(move |d| snd.input(Msg::Gpu(d)));
+        let (jobs, gpu_thread) = gpu::spawn(move |d| snd.input(Msg::Gpu(d)));
 
         // ---------------- grade page
         let grade_pic = gtk::Picture::builder()
@@ -3649,6 +3650,7 @@ impl SimpleComponent for App {
             show_chart: false,
             selected: None,
             jobs,
+            gpu_thread: Some(gpu_thread),
             exporting: None,
             export_frame: None,
             export_gen: 0,
@@ -3840,6 +3842,11 @@ impl SimpleComponent for App {
             Msg::WriteSidecar(_) => {}
             Msg::Close => {
                 self.save_now();
+                // The GPU worker ends with its channel; NVIDIA's exit handlers segfault if it is still tearing down.
+                self.jobs = mpsc::channel().0;
+                if let Some(t) = self.gpu_thread.take() {
+                    let _ = t.join();
+                }
                 self.ui.window.destroy();
             }
             // Another photo was opened, or the looks reset, meanwhile.

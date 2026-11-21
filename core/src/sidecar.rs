@@ -1,5 +1,5 @@
 //! Non-destructive edits saved next to the photo, `<file>.rawvibes.json`:
-//! development, grade, crop and looks.
+//! development, grade, crop, looks, star rating and colour label.
 //!
 //! ```json
 //! { "format": "rawvibes-sidecar", "version": 2,
@@ -7,7 +7,7 @@
 //!   "params": { … }, "curves": { … },
 //!   "crop": { "rect": [0, 0, 1, 1], "angle": 0 }, "ratio": "Free",
 //!   "looks": [{ "path": "/luts/Kodak.cube", "intensity": 0.8, "input": "Standard", "on": true }],
-//!   "look_blend": "Chain" }
+//!   "look_blend": "Chain", "rating": 4, "label": "Green" }
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -32,6 +32,25 @@ pub struct Sidecar {
     pub ratio: Ratio,
     pub looks: Vec<LookRef>,
     pub look_blend: Blend,
+    /// Stars, 0 (unrated) to 5.
+    pub rating: u8,
+    pub label: Label,
+}
+
+/// Colour label of a photo, for sorting a shoot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Label {
+    #[default]
+    None,
+    Red,
+    Yellow,
+    Green,
+    Blue,
+    Purple,
+}
+
+impl Label {
+    pub const ALL: [Label; 6] = [Label::None, Label::Red, Label::Yellow, Label::Green, Label::Blue, Label::Purple];
 }
 
 /// A look LUT by file, with its settings.
@@ -61,6 +80,10 @@ struct File {
     looks: Vec<LookRef>,
     #[serde(default)]
     look_blend: Blend,
+    #[serde(default)]
+    rating: u8,
+    #[serde(default)]
+    label: Label,
 }
 
 /// Where the sidecar of `photo` lives.
@@ -100,6 +123,8 @@ impl Sidecar {
             ratio: self.ratio,
             looks: self.looks.clone(),
             look_blend: self.look_blend,
+            rating: self.rating,
+            label: self.label,
         };
         serde_json::to_string_pretty(&file).expect("sidecars always serialise")
     }
@@ -150,6 +175,8 @@ impl Sidecar {
             ratio: f.ratio,
             looks: f.looks,
             look_blend: f.look_blend,
+            rating: f.rating.min(5),
+            label: f.label,
         })
     }
 }
@@ -172,6 +199,8 @@ mod tests {
             ratio: Ratio::Fixed(3.0, 2.0),
             looks: vec![LookRef { path: "/luts/a.cube".into(), intensity: 0.8, input: Profile::VLog, on: false }],
             look_blend: Blend::Mix,
+            rating: 4,
+            label: Label::Green,
         }
     }
 

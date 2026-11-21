@@ -109,6 +109,17 @@ and after.
   of gamut.
 - **Zoom** to fit or to 100 % (`Ctrl+1`), and pan by dragging.
 - **Filmstrip** to move between photos, and a grid of all of them (`G`).
+
+### Sort and sync a shoot
+
+- **Star ratings** (`1`–`5`, `0` clears) and **colour labels** (`6` red, `7`
+  yellow, `8` green, `9` blue, or purple from the header), saved in the photo's
+  sidecar. The filmstrip filter shows only the photos with enough stars or a given
+  label.
+- **Undo and redo** every edit of a photo (`Ctrl+Z`, `Ctrl+Shift+Z`).
+- **Copy and paste edits** between photos (`Ctrl+Shift+C`, `Ctrl+Shift+V`), or
+  paste them onto every photo in the filmstrip at once. Each photo keeps its own
+  crop, stars and label.
 - **Test chart** (`T`): grey ramps, a full hue sweep and the 24 ColorChecker
   patches, so a LUT that tints neutrals or bends skin tones shows at once.
 
@@ -128,6 +139,10 @@ and after.
 
 The file is written to a temporary copy first, so stopping an export leaves the
 old file untouched.
+
+**Batch export:** switch on *All photos in the filmstrip* and choose a folder.
+Each photo the filmstrip shows (filter included) is exported with its own edits,
+as `<name>_edit.jpg` (or `.png`, `.tif`).
 
 ### LUT Lab: combine LUTs and convert them between log profiles
 
@@ -279,6 +294,10 @@ run `make dmg`.
 | Action | Shortcut |
 |---|---|
 | Open photo | `Ctrl+O` |
+| Undo / redo | `Ctrl+Z` / `Ctrl+Shift+Z` |
+| Copy / paste edits | `Ctrl+Shift+C` / `Ctrl+Shift+V` |
+| Stars / colour label | `0`–`5` / `6`–`9` |
+| Fullscreen | `F11` |
 | Export photo | `Ctrl+E` |
 | Export LUT (33³ `.cube`) | `Ctrl+Shift+E` |
 | Photo / Grade / LUT Lab | `Alt+1` / `Alt+2` / `Alt+3` |
@@ -297,8 +316,6 @@ run `make dmg`.
 
 - Lens correction profiles (distortion, chromatic aberration, vignetting from a
   lens database).
-- Undo history.
-- Batch export of several photos.
 - HDR output.
 
 ## Translations

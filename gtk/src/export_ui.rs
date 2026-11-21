@@ -14,6 +14,8 @@ pub struct ExportUi {
     quality: adw::SpinRow,
     size: adw::ActionRow,
     estimate: adw::ActionRow,
+    /// Every photo the filmstrip shows, each with its own edits, into a folder.
+    all: adw::SwitchRow,
     bar: gtk::ProgressBar,
     go: gtk::Button,
 }
@@ -48,12 +50,22 @@ pub fn build(sender: &ComponentSender<App>) -> ExportUi {
     quality_row.connect_value_notify(move |_| snd.input(Msg::ExportSettings));
     let size = adw::ActionRow::builder().title(gettext("Size")).css_classes(["property"]).build();
     let estimate = adw::ActionRow::builder().title(gettext("File size")).css_classes(["property"]).build();
+    let all = adw::SwitchRow::builder().title(gettext("All photos in the filmstrip")).visible(false).build();
+    let (sz, est) = (size.clone(), estimate.clone());
+    all.connect_active_notify(move |r| {
+        sz.set_visible(!r.is_active());
+        est.set_visible(!r.is_active());
+    });
     let group = adw::PreferencesGroup::builder()
         .description(gettext("Full resolution of the crop, with every edit, in sRGB."))
         .build();
-    for row in
-        [format_row.upcast_ref::<gtk::Widget>(), quality_row.upcast_ref(), size.upcast_ref(), estimate.upcast_ref()]
-    {
+    for row in [
+        format_row.upcast_ref::<gtk::Widget>(),
+        quality_row.upcast_ref(),
+        all.upcast_ref(),
+        size.upcast_ref(),
+        estimate.upcast_ref(),
+    ] {
         group.add(row);
     }
 
@@ -85,7 +97,7 @@ pub fn build(sender: &ComponentSender<App>) -> ExportUi {
         .build();
     let snd = sender.clone();
     dialog.connect_closed(move |_| snd.input(Msg::ExportClosed));
-    let ui = ExportUi { dialog, format: format_row, quality: quality_row, size, estimate, bar, go };
+    let ui = ExportUi { dialog, format: format_row, quality: quality_row, size, estimate, all, bar, go };
     ui.set_format(format);
     ui
 }
@@ -106,6 +118,21 @@ impl ExportUi {
         self.quality.set_visible(f == PhotoFormat::Jpeg);
     }
 
+    /// Offers exporting all `n` photos the filmstrip shows, when there are several.
+    pub fn set_roll(&self, n: usize) {
+        self.all.set_visible(n > 1);
+        self.all.set_subtitle(&gettext!("{} photos, each with its own edits, into a folder", n));
+    }
+
+    pub fn all(&self) -> bool {
+        self.all.is_visible() && self.all.is_active()
+    }
+
+    /// Which photo of a batch is exporting.
+    pub fn set_step(&self, text: &str) {
+        self.bar.set_text(Some(text));
+    }
+
     pub fn set_size(&self, w: u32, h: u32) {
         self.size.set_subtitle(&gettext!("{} × {} px", w, h));
     }
@@ -120,7 +147,7 @@ impl ExportUi {
         self.bar.set_visible(busy);
         self.bar.set_fraction(0.0);
         self.bar.set_text(Some(&gettext("Developing…")));
-        for w in [self.format.upcast_ref::<gtk::Widget>(), self.quality.upcast_ref()] {
+        for w in [self.format.upcast_ref::<gtk::Widget>(), self.quality.upcast_ref(), self.all.upcast_ref()] {
             w.set_sensitive(!busy);
         }
         self.go.set_label(&if busy { gettext("Stop") } else { gettext("Export…") });
@@ -129,7 +156,7 @@ impl ExportUi {
 
     pub fn set_progress(&self, f: f32) {
         self.bar.set_fraction(f as f64);
-        if f >= 1.0 {
+        if f >= 1.0 && !self.all() {
             self.bar.set_text(Some(&gettext("Saving…")));
         }
     }

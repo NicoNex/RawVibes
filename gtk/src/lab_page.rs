@@ -119,6 +119,8 @@ fn mix_hint() -> String {
 
 pub struct LabUi {
     pub root: adw::OverlaySplitView,
+    /// The side panel, for the section tabs.
+    pub pane: gtk::Box,
     pub list: gtk::ListBox,
     pub stack: gtk::Stack,
     pub pic: gtk::Picture,
@@ -256,6 +258,10 @@ pub fn build(sender: &ComponentSender<App>, export_menu: &gio::Menu) -> LabUi {
         .css_classes(["sidebar-pane"])
         .build();
 
+    let pane = vbox(0);
+    pane.add_css_class("sidebar-pane");
+    pane.append(&scroll);
+
     let pic = gtk::Picture::builder()
         .content_fit(gtk::ContentFit::Contain)
         .can_shrink(true)
@@ -284,9 +290,9 @@ pub fn build(sender: &ComponentSender<App>, export_menu: &gio::Menu) -> LabUi {
         .min_sidebar_width(320.0)
         .max_sidebar_width(400.0)
         .content(&stack)
-        .sidebar(&scroll)
+        .sidebar(&pane)
         .build();
-    LabUi { root, list, stack, pic, canvas, export, summary }
+    LabUi { root, pane, list, stack, pic, canvas, export, summary }
 }
 
 impl LabUi {

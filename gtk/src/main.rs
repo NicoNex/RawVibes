@@ -48,7 +48,7 @@ use rawvibes_core::preset::{self, Preset};
 use rawvibes_core::profiles::Profile;
 use rawvibes_core::raw::{RawData, read_raw};
 use rawvibes_core::scopes::{HIST_H, HIST_W, Scopes, VEC_SIZE};
-use rawvibes_core::sidecar::{LookRef, Sidecar};
+use rawvibes_core::sidecar::{Label, LookRef, Sidecar};
 use rawvibes_core::view::{Region, Zoom};
 use relm4::adw::prelude::*;
 use relm4::gtk::{gdk, gio, glib};
@@ -235,6 +235,41 @@ enum Msg {
     CropAngle(f32),
     CropRect([f32; 4]),
     CropReset,
+    /// Steps back or forward through the open photo's edits (Ctrl+Z, Ctrl+Shift+Z).
+    Undo,
+    Redo,
+    /// Stars of the open photo; `true` clears them when they are already set (a star clicked twice).
+    Rate(u8, bool),
+    Mark(Label),
+    /// Copies the open photo's edits; pastes them onto it, or onto every filmstrip photo.
+    CopyEdits,
+    PasteEdits,
+    PasteEditsAll,
+    /// The filmstrip filter changed.
+    RollFilter,
+    /// Exports every photo the filmstrip shows into this folder.
+    BatchTo(PathBuf),
+    Fullscreen,
+}
+
+/// A photo's edits and its look layers (those without a file too).
+type Edits = (Sidecar, Vec<LabLayer>);
+
+/// Most undo steps kept per photo.
+const HISTORY_MAX: usize = 100;
+
+/// A batch export in progress: photos still to export (last first), where to, and how it went.
+struct Batch {
+    left: Vec<PathBuf>,
+    dir: PathBuf,
+    total: usize,
+    failed: Vec<String>,
+    /// The photo open before the batch, reopened at the end.
+    back: Option<PathBuf>,
+    /// Waiting for this photo to load before exporting it.
+    waiting: Option<PathBuf>,
+    /// Stop pressed: ends once the photo exporting now is done.
+    stop: bool,
 }
 
 /// A photo of the filmstrip: its file, a small decoded copy once read, and
@@ -245,6 +280,8 @@ struct RollItem {
     grade: Grade,
     /// Its look layers when last left this session: the sidecar keeps only those with a file.
     looks: Vec<LabLayer>,
+    rating: u8,
+    label: Label,
     small: Option<Decoded>,
     encoded: Option<(Profile, Arc<Photo>)>,
 }
@@ -392,6 +429,14 @@ struct Ui {
     chart_btn: gtk::ToggleButton,
     /// Header "As in camera" (RAWs only).
     camera_btn: gtk::Button,
+    /// Header: the open photo's name, undo and redo, its stars and colour label, paste.
+    title: adw::WindowTitle,
+    undo: gtk::Button,
+    redo: gtk::Button,
+    stars: Vec<gtk::Button>,
+    label_btn: gtk::MenuButton,
+    paste: gtk::Button,
+    paste_all: gtk::Button,
     presets: PresetsUi,
     filmstrip: Filmstrip,
     /// Single photo or the grid of the filmstrip.
@@ -523,6 +568,15 @@ struct App {
     save_failed: bool,
     encode_again: bool,
     encoded: Option<Region>,
+    /// The open photo's stars and colour label.
+    rating: u8,
+    label: Label,
+    /// Undo history of the open photo's edits; `undo_at` is the step shown.
+    history: Vec<Edits>,
+    undo_at: usize,
+    /// Edits copied with Copy edits.
+    clipboard: Option<Edits>,
+    batch: Option<Batch>,
     ui: Ui,
 }
 
@@ -620,8 +674,203 @@ impl App {
                 Some(LookRef { path, intensity: l.intensity, input: l.input, on: l.on })
             })
             .collect();
-        let (grade, look_blend) = (self.grade.clone(), self.look_blend);
-        Sidecar { develop: self.develop, grade, crop: self.crop, ratio: self.ratio, looks, look_blend }
+        let (mut grade, look_blend) = (self.grade.clone(), self.look_blend);
+        // The input decoding belongs to the photo, not its edits (`apply_grade` keeps it).
+        let neutral = Grade::default().params;
+        (grade.params.input, grade.params.gamut) = (neutral.input, neutral.gamut);
+        let (rating, label) = (self.rating, self.label);
+        Sidecar { develop: self.develop, grade, crop: self.crop, ratio: self.ratio, looks, look_blend, rating, label }
+    }
+
+    /// Adds the open photo's edits to its undo history when they changed since the step shown.
+    /// Stars and labels are not edits: they never make a step.
+    fn record_edits(&mut self) {
+        if self.path.is_none() || self.saved.is_none() || self.looks_loading {
+            return;
+        }
+        let now = self.sidecar_state();
+        let same = |s: &Sidecar| Sidecar { rating: now.rating, label: now.label, ..s.clone() } == now;
+        if self.history.get(self.undo_at).is_some_and(|(s, _)| same(s)) {
+            return;
+        }
+        self.history.truncate(self.undo_at + 1);
+        self.history.push((now, self.looks.clone()));
+        if self.history.len() > HISTORY_MAX {
+            self.history.remove(0);
+        }
+        self.undo_at = self.history.len() - 1;
+        self.sync_undo();
+    }
+
+    /// A fresh history for the photo just opened, starting from its edits as read.
+    fn reset_history(&mut self) {
+        (self.history, self.undo_at) = (Vec::new(), 0);
+        self.record_edits();
+        self.sync_undo();
+    }
+
+    fn sync_undo(&self) {
+        self.ui.undo.set_sensitive(self.undo_at > 0);
+        self.ui.redo.set_sensitive(self.undo_at + 1 < self.history.len());
+    }
+
+    /// Shows undo step `back` (true) or forward, keeping the photo's stars and label.
+    fn step_history(&mut self, back: bool, sender: &ComponentSender<Self>) {
+        self.record_edits(); // an edit made under a second ago is a step too
+        let to = if back { self.undo_at.checked_sub(1) } else { Some(self.undo_at + 1) };
+        let Some((i, (mut sc, looks))) = to.and_then(|i| Some((i, self.history.get(i)?.clone()))) else { return };
+        self.undo_at = i;
+        (sc.rating, sc.label) = (self.rating, self.label);
+        self.restore_edits((sc, looks), sender);
+        self.sync_undo();
+    }
+
+    /// Puts `edits` on the open photo: develop, grade, crop and looks.
+    fn restore_edits(&mut self, (mut sc, looks): Edits, sender: &ComponentSender<Self>) {
+        let develop = self.develop;
+        // Only onto a cleared photo, so its grade and looks come back too.
+        self.apply_grade(Grade::default());
+        sc.looks.clear();
+        self.restore_sidecar(sc, sender);
+        self.replace_looks(looks, sender);
+        if self.develop != develop {
+            self.develop_changed(sender);
+        }
+        self.crop_changed(sender);
+    }
+
+    /// The stars and label of the open photo in the header, and of every photo in the filmstrip.
+    fn show_marks(&mut self) {
+        let (rating, label) = (self.rating, self.label);
+        // By path: while another photo loads, `active` already points at it.
+        if let Some(it) = self.roll.iter_mut().find(|it| Some(&it.path) == self.path.as_ref()) {
+            (it.rating, it.label) = (rating, label);
+        }
+        for (i, b) in self.ui.stars.iter().enumerate() {
+            b.set_icon_name(if i < rating as usize { "starred-symbolic" } else { "non-starred-symbolic" });
+        }
+        filmstrip::set_label_class(&self.ui.label_btn, label);
+        self.ui.label_btn.set_tooltip_text(Some(&gettext!("Colour label: {}", filmstrip::label_name(label))));
+        let marks: Vec<(u8, Label)> = self.roll.iter().map(|it| (it.rating, it.label)).collect();
+        self.ui.filmstrip.set_marks(&marks);
+    }
+
+    /// Pastes the copied edits onto every photo the filmstrip shows but the open one,
+    /// straight into their sidecars. Returns how many took them, and the failures.
+    fn paste_all(&mut self, (edits, looks): &Edits) -> (usize, Vec<String>) {
+        let (mut n, mut failed) = (0, Vec::new());
+        for (i, it) in self.roll.iter_mut().enumerate() {
+            if Some(i) == self.active || !self.ui.filmstrip.shows(it.rating, it.label) {
+                continue;
+            }
+            let r = Sidecar::load(&it.path).and_then(|sc| {
+                let sc = pasted(edits, &sc.unwrap_or_default());
+                sc.save(&it.path).map(|_| sc)
+            });
+            match r {
+                Ok(sc) => {
+                    (it.grade, it.looks) = (sc.grade, looks.clone());
+                    n += 1;
+                }
+                Err(e) => failed.push(format!("{}: {e}", file_label(&it.path))),
+            }
+        }
+        (n, failed)
+    }
+
+    /// Ends the batch early and reopens the photo open before it.
+    fn batch_stop(&mut self, sender: &ComponentSender<Self>) {
+        self.batch_end(&gettext("Export stopped"), sender);
+    }
+
+    /// Ends the batch with `toast`, and reopens the photo open before it.
+    fn batch_end(&mut self, toast: &str, sender: &ComponentSender<Self>) {
+        let Some(b) = self.batch.take() else { return };
+        self.ui.export_photo.set_busy(false);
+        self.toast(toast);
+        if let Some(i) = b.back.and_then(|p| self.roll.iter().position(|it| it.path == p))
+            && Some(i) != self.active
+        {
+            self.load_active(i, sender);
+        }
+    }
+
+    /// Exports the next photo of the batch, or ends it.
+    fn batch_next(&mut self, sender: &ComponentSender<Self>) {
+        if self.batch.as_ref().is_some_and(|b| b.stop) {
+            return self.batch_stop(sender);
+        }
+        let Some(b) = self.batch.as_mut() else { return };
+        let Some(path) = b.left.pop() else {
+            let done = b.total - b.failed.len();
+            let toast = if b.failed.is_empty() {
+                gettext!("{} photos exported to {}", done, b.dir.display())
+            } else {
+                gettext!("{} photos exported, {} failed: {}", done, b.failed.len(), b.failed.join("; "))
+            };
+            self.batch_end(&toast, sender);
+            self.ui.export_photo.dialog.close();
+            return;
+        };
+        let i = b.total - b.left.len();
+        self.ui.export_photo.set_step(&gettext!("Photo {} of {}", i, b.total));
+        b.waiting = Some(path.clone());
+        match self.roll.iter().position(|it| it.path == path) {
+            Some(i) if Some(i) != self.active || self.decoded.is_none() => self.load_active(i, sender),
+            Some(_) => self.batch_ready(sender),
+            None => {
+                b.failed.push(gettext!("{}: no longer in the filmstrip", file_label(&path)));
+                self.batch_next(sender);
+            }
+        }
+    }
+
+    /// Exports the batch's photo once it is open, its looks loaded.
+    fn batch_ready(&mut self, sender: &ComponentSender<Self>) {
+        let Some(b) = self.batch.as_mut() else { return };
+        if b.waiting.is_none() || b.waiting != self.path || self.looks_loading || self.decoded.is_none() {
+            return;
+        }
+        let path = b.waiting.take().expect("checked above");
+        let ext = self.ui.export_photo.format().ext();
+        let stem = stem_label(&path).unwrap_or_default();
+        // Never over an existing file: a RAW+JPEG pair, or a photo of the strip itself.
+        let out = (1..)
+            .map(|n| if n == 1 { edit_name(&stem, ext) } else { edit_name(&format!("{stem}-{n}"), ext) })
+            .map(|name| b.dir.join(name))
+            .find(|p| !p.exists())
+            .expect("unbounded");
+        if !self.export_to(out) {
+            self.batch.as_mut().expect("checked above").failed.push(gettext!("{}: cannot export", file_label(&path)));
+            self.batch_next(sender);
+        }
+    }
+
+    /// Starts exporting the open photo to `path`; false if there is none.
+    fn export_to(&mut self, path: PathBuf) -> bool {
+        let (Some(decoded), Some(crop)) = (self.decoded.clone(), self.crop_region()) else { return false };
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.exporting = Some(cancel.clone());
+        let ui = &self.ui.export_photo;
+        if self.batch.is_none() {
+            ui.set_busy(true);
+        }
+        // Remembered as used, not per spin tick.
+        let _ = settings::set_value(settings::EXPORT_FORMAT, ui.format().tag());
+        let _ = settings::set_value(settings::JPEG_QUALITY, &ui.quality().to_string());
+        self.send(Job::ExportPhoto(PhotoExport {
+            decoded,
+            crop,
+            develop: self.develop,
+            profile: self.profile,
+            grade: self.graded(),
+            look: self.look_stack(self.look_layers()),
+            format: ui.format(),
+            quality: ui.quality(),
+            path,
+            cancel,
+        }));
+        true
     }
 
     /// Replaces the look stack: a sidecar load still in flight becomes stale.
@@ -662,6 +911,7 @@ impl App {
 
     /// The photo's sidecar into the editor, onto a neutral grade without looks.
     fn restore_sidecar(&mut self, sc: Sidecar, sender: &ComponentSender<Self>) {
+        (self.rating, self.label) = (sc.rating, sc.label);
         self.develop = sc.develop;
         self.sync_develop();
         let row = crop::PRESETS
@@ -797,6 +1047,8 @@ impl App {
     fn roll_changed(&mut self, sender: &ComponentSender<Self>) {
         let names: Vec<String> = self.roll.iter().map(|it| file_label(&it.path)).collect();
         self.ui.filmstrip.rebuild(&names, self.active, sender);
+        self.show_marks();
+        self.ui.paste_all.set_sensitive(self.clipboard.is_some() && self.roll.len() > 1);
         self.ui.grid_btn.set_sensitive(self.roll.len() > 1);
         if self.roll.len() < 2 && self.ui.grid_btn.is_active() {
             self.ui.grid_btn.set_active(false);
@@ -1371,6 +1623,71 @@ fn texture(width: u32, height: u32, rgba: Vec<u8>) -> gdk::MemoryTexture {
     gdk::MemoryTexture::new(width as i32, height as i32, gdk::MemoryFormat::R8g8b8a8, &bytes, width as usize * 4)
 }
 
+/// Name of an exported photo: never the original's own.
+fn edit_name(stem: &str, ext: &str) -> String {
+    format!("{stem}_edit.{ext}")
+}
+
+/// `clip`'s edits onto `target`, which keeps its crop, stars and label.
+fn pasted(clip: &Sidecar, target: &Sidecar) -> Sidecar {
+    Sidecar { crop: target.crop, ratio: target.ratio, rating: target.rating, label: target.label, ..clip.clone() }
+}
+
+/// Header button sending `msg`.
+fn header_button(icon: &str, tip: &str, msg: impl Fn() -> Msg + 'static, sender: &ComponentSender<App>) -> gtk::Button {
+    let b = gtk::Button::builder().icon_name(icon).tooltip_text(tip).build();
+    b.update_property(&[gtk::accessible::Property::Label(tip)]);
+    let snd = sender.clone();
+    b.connect_clicked(move |_| snd.input(msg()));
+    b
+}
+
+/// Colour label picker: a dot that takes the label's colour, and a popover of the labels.
+fn label_menu(sender: &ComponentSender<App>) -> gtk::MenuButton {
+    let list = vbox(2);
+    let popover = gtk::Popover::builder().child(&list).build();
+    for l in Label::ALL {
+        let row = gtk::Box::builder().spacing(8).build();
+        let dot = gtk::Box::builder().css_classes(["label-dot", filmstrip::label_class(l)]).build();
+        dot.set_valign(gtk::Align::Center);
+        row.append(&dot);
+        row.append(&gtk::Label::new(Some(&filmstrip::label_name(l))));
+        let b = gtk::Button::builder().child(&row).css_classes(["flat"]).build();
+        let (snd, p) = (sender.clone(), popover.clone());
+        b.connect_clicked(move |_| {
+            p.popdown();
+            snd.input(Msg::Mark(l));
+        });
+        list.append(&b);
+    }
+    let dot =
+        gtk::Box::builder().css_classes(["label-dot"]).valign(gtk::Align::Center).halign(gtk::Align::Center).build();
+    let b = gtk::MenuButton::builder()
+        .child(&dot)
+        .popover(&popover)
+        .css_classes(["flat", "label-btn"])
+        .tooltip_text(gettext("Colour label"))
+        .build();
+    b.update_property(&[gtk::accessible::Property::Label(&gettext("Colour label"))]);
+    b
+}
+
+/// The Photo / Grade / LUT Lab switch: icon tabs atop each side panel, bound to the page shown.
+fn section_tabs(stack: &adw::ViewStack, panes: &[&gtk::Box]) {
+    for pane in panes {
+        let tabs = adw::ToggleGroup::builder().halign(gtk::Align::Center).margin_top(8).margin_bottom(2).build();
+        for (name, icon, tip) in [
+            ("photo", "camera-photo-symbolic", gettext("Photo: develop the RAW (Alt+1)")),
+            ("grade", "color-select-symbolic", gettext("Grade: colour and looks (Alt+2)")),
+            ("lab", "view-list-symbolic", gettext("LUT Lab: combine and convert LUTs (Alt+3)")),
+        ] {
+            tabs.add(adw::Toggle::builder().name(name).icon_name(icon).tooltip(&tip).build());
+        }
+        stack.bind_property("visible-child-name", &tabs, "active-name").bidirectional().sync_create().build();
+        pane.prepend(&tabs);
+    }
+}
+
 /// Card with a collapsible header, like the sections of a grading panel.
 fn section(title: &str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
     section_with(title, child, &[], true)
@@ -1422,15 +1739,9 @@ fn bypassable_with(
 
 /// "As in camera" button for a section header.
 fn camera_button(tip: &str, msg: fn() -> Msg, sender: &ComponentSender<App>) -> gtk::Button {
-    let b = gtk::Button::builder()
-        .icon_name("camera-photo-symbolic")
-        .tooltip_text(tip)
-        .valign(gtk::Align::Center)
-        .css_classes(["flat", "circular"])
-        .build();
-    b.update_property(&[gtk::accessible::Property::Label(tip)]);
-    let snd = sender.clone();
-    b.connect_clicked(move |_| snd.input(msg()));
+    let b = header_button("camera-photo-symbolic", tip, msg, sender);
+    b.set_valign(gtk::Align::Center);
+    b.set_css_classes(&["flat", "circular"]);
     b
 }
 
@@ -1514,7 +1825,7 @@ fn vbox(spacing: i32) -> gtk::Box {
 
 /// Segmented control (libadwaita ≥ 1.7) returning the group.
 fn toggles(names: &[(&str, &str)]) -> adw::ToggleGroup {
-    let group = adw::ToggleGroup::builder().css_classes(["round"]).homogeneous(true).build();
+    let group = adw::ToggleGroup::builder().homogeneous(true).build();
     for (name, label) in names {
         group.add(adw::Toggle::builder().name(*name).label(*label).build());
     }
@@ -1619,6 +1930,15 @@ scale.track-film-sat trough highlight, scale.track-film-density trough highlight
   background-color: color-mix(in srgb, var(--accent-bg-color) 18%, transparent); }
 .roll-remove { min-width: 22px; min-height: 22px; padding: 0; opacity: 0; transition: opacity 150ms ease; }
 .roll-item:hover .roll-remove, .roll-remove:focus-visible { opacity: 1; }
+.star { padding: 4px 3px; min-width: 22px; }
+.label-red { color: #e5534b; }
+.label-yellow { color: #e5c04b; }
+.label-green { color: #57c46a; }
+.label-blue { color: #5b8def; }
+.label-purple { color: #a66be0; }
+.label-dot { min-width: 12px; min-height: 12px; border-radius: 99px; background-color: currentColor; }
+.label-dot.label-none, .label-btn.label-none .label-dot { background: none; box-shadow: inset 0 0 0 1.5px alpha(currentColor, 0.55); }
+.roll-mark { opacity: 0.85; letter-spacing: 1px; }
 @media (prefers-contrast: more) {
   .roll-card.active, .grid-card.active { box-shadow: inset 0 0 0 3px currentColor; }
   .roll-remove { opacity: 1; }
@@ -2386,11 +2706,14 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         .vexpand(true)
         .css_classes(["sidebar-pane"])
         .build();
+    let body = vbox(0);
+    body.append(&scroll);
+    // The section tabs go above `body`, and the pinned scopes atop it.
     let pane = vbox(0);
     pane.add_css_class("sidebar-pane");
-    pane.append(&scroll);
+    pane.append(&body);
     // Pinned: the scopes card leaves the scrolled panel for the top of the pane.
-    let (p, sc) = (pane.clone(), panel.clone());
+    let (p, sc) = (body.clone(), panel.clone());
     pin.connect_toggled(move |b| {
         let on = b.is_active();
         let m = if on { 12 } else { 0 };
@@ -2729,8 +3052,9 @@ impl SimpleComponent for App {
         });
 
         let header = adw::HeaderBar::new();
-        let switcher = adw::ViewSwitcher::builder().stack(&stack).policy(adw::ViewSwitcherPolicy::Wide).build();
-        header.set_title_widget(Some(&switcher));
+        let title = adw::WindowTitle::new("RawVibes", "");
+        header.set_title_widget(Some(&title));
+        section_tabs(&stack, &[&sidebar.pane, &lab.pane]);
 
         let open = gtk::Button::builder()
             .icon_name("document-open-symbolic")
@@ -2739,15 +3063,38 @@ impl SimpleComponent for App {
         let snd = sender.clone();
         open.connect_clicked(move |_| snd.input(Msg::Open));
         header.pack_start(&open);
+        let history = gtk::Box::builder().css_classes(["linked"]).build();
+        let undo = header_button("edit-undo-symbolic", &gettext("Undo (Ctrl+Z)"), || Msg::Undo, &sender);
+        let redo = header_button("edit-redo-symbolic", &gettext("Redo (Ctrl+Shift+Z)"), || Msg::Redo, &sender);
+        for b in [&undo, &redo] {
+            b.set_sensitive(false);
+            history.append(b);
+        }
+        header.pack_start(&history);
+        let marks = gtk::Box::builder().spacing(0).build();
+        let stars: Vec<gtk::Button> = (1..=5u8)
+            .map(|n| {
+                let tip = gettext!("{} stars ({})", n, n);
+                let b = header_button("non-starred-symbolic", &tip, move || Msg::Rate(n, true), &sender);
+                b.add_css_class("flat");
+                b.add_css_class("star");
+                marks.append(&b);
+                b
+            })
+            .collect();
+        let label_btn = label_menu(&sender);
+        marks.append(&label_btn);
+        header.pack_start(&marks);
         let chart_btn = gtk::ToggleButton::builder()
             .icon_name("applications-science-symbolic")
             .tooltip_text(gettext("Test chart: shows what the LUT does to neutrals, hues and skin (T)"))
             .build();
         let snd = sender.clone();
         chart_btn.connect_toggled(move |b| snd.input(Msg::Chart(b.is_active())));
-        header.pack_start(&chart_btn);
+        let tools = gtk::Box::builder().css_classes(["linked"]).build();
+        tools.append(&chart_btn);
         let presets = presets_ui::build(&sender);
-        header.pack_start(&presets.button);
+        tools.append(&presets.button);
         let camera_btn = gtk::Button::builder()
             .icon_name("camera-photo-symbolic")
             .tooltip_text(gettext("As in camera: white balance and exposure as shot"))
@@ -2755,15 +3102,7 @@ impl SimpleComponent for App {
             .build();
         let snd = sender.clone();
         camera_btn.connect_clicked(move |_| snd.input(Msg::AsInCamera(CameraPart::All)));
-        header.pack_start(&camera_btn);
-        let clear_btn = gtk::Button::builder()
-            .icon_name("edit-clear-all-symbolic")
-            .tooltip_text(gettext("Reset all: clear every edit of this photo"))
-            .build();
-        clear_btn.update_property(&[gtk::accessible::Property::Label(&gettext("Reset all"))]);
-        let snd = sender.clone();
-        clear_btn.connect_clicked(move |_| snd.input(Msg::ResetAll));
-        header.pack_start(&clear_btn);
+        tools.append(&camera_btn);
 
         let menu = gio::Menu::new();
         let bg_menu = gio::Menu::new();
@@ -2771,6 +3110,12 @@ impl SimpleComponent for App {
         bg_menu.append(Some(gettext("Black").as_str()), Some("win.background::black"));
         bg_menu.append(Some(gettext("White").as_str()), Some("win.background::white"));
         menu.append_section(Some(gettext("Preview background").as_str()), &bg_menu);
+        let edits_menu = gio::Menu::new();
+        edits_menu.append(Some(gettext("Copy Edits").as_str()), Some("win.copy-edits"));
+        edits_menu.append(Some(gettext("Paste Edits").as_str()), Some("win.paste-edits"));
+        edits_menu.append(Some(gettext("Paste Edits to All Photos").as_str()), Some("win.paste-edits-all"));
+        edits_menu.append(Some(gettext("Reset All Edits").as_str()), Some("win.reset-all"));
+        menu.append_section(None, &edits_menu);
         let section_menu = gio::Menu::new();
         section_menu.append(Some(gettext("Preferences").as_str()), Some("win.preferences"));
         section_menu.append(Some(gettext("Keyboard Shortcuts").as_str()), Some("win.show-help-overlay"));
@@ -2804,7 +3149,31 @@ impl SimpleComponent for App {
             .build();
         let snd = sender.clone();
         compare_btn.connect_toggled(move |b| snd.input(Msg::Compare(b.is_active())));
-        header.pack_end(&compare_btn);
+        let copy =
+            header_button("edit-copy-symbolic", &gettext("Copy edits (Ctrl+Shift+C)"), || Msg::CopyEdits, &sender);
+        let paste =
+            header_button("edit-paste-symbolic", &gettext("Paste edits (Ctrl+Shift+V)"), || Msg::PasteEdits, &sender);
+        let paste_all = header_button(
+            "edit-select-all-symbolic",
+            &gettext("Paste edits to every photo in the filmstrip, crops kept"),
+            || Msg::PasteEditsAll,
+            &sender,
+        );
+        paste.set_sensitive(false);
+        paste_all.set_sensitive(false);
+        let full = header_button("view-fullscreen-symbolic", &gettext("Fullscreen (F11)"), || Msg::Fullscreen, &sender);
+        let edit = gtk::Box::builder().css_classes(["linked"]).build();
+        for b in [
+            compare_btn.upcast_ref::<gtk::Widget>(),
+            copy.upcast_ref(),
+            paste.upcast_ref(),
+            paste_all.upcast_ref(),
+            full.upcast_ref(),
+        ] {
+            edit.append(b);
+        }
+        header.pack_end(&edit);
+        header.pack_end(&tools);
 
         let sidebar_btn = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-right-symbolic")
@@ -2830,6 +3199,15 @@ impl SimpleComponent for App {
         bp.add_setter(&lab.root, "collapsed", Some(&true.to_value()));
         bp.add_setter(&sidebar_btn, "visible", Some(&true.to_value()));
         bp.add_setter(&header, "title-widget", Some(&None::<gtk::Widget>.to_value()));
+        for w in [
+            tools.upcast_ref::<gtk::Widget>(),
+            marks.upcast_ref(),
+            copy.upcast_ref(),
+            paste_all.upcast_ref(),
+            full.upcast_ref(),
+        ] {
+            bp.add_setter(w, "visible", Some(&false.to_value()));
+        }
         bp.add_setter(&switcher_bar, "reveal", Some(&true.to_value()));
         window.add_breakpoint(bp);
 
@@ -2973,6 +3351,17 @@ impl SimpleComponent for App {
         prefs_page.add(&view_group);
         let prefs = adw::PreferencesDialog::new();
         prefs.add(&prefs_page);
+        for (name, msg) in [
+            ("copy-edits", (|| Msg::CopyEdits) as fn() -> Msg),
+            ("paste-edits", || Msg::PasteEdits),
+            ("paste-edits-all", || Msg::PasteEditsAll),
+            ("reset-all", || Msg::ResetAll),
+        ] {
+            let action = gio::SimpleAction::new(name, None);
+            let snd = sender.clone();
+            action.connect_activate(move |_, _| snd.input(msg()));
+            window.add_action(&action);
+        }
         let help = gio::SimpleAction::new("show-help-overlay", None);
         let w = window.clone();
         help.connect_activate(move |_, _| shortcuts_dialog().present(Some(&w)));
@@ -2991,6 +3380,25 @@ impl SimpleComponent for App {
         };
         let snd = sender.clone();
         shortcut("<Control>o", Box::new(move || snd.input(Msg::Open)));
+        for (accel, msg) in [
+            ("<Control>z", (|| Msg::Undo) as fn() -> Msg),
+            ("<Control><Shift>z", || Msg::Redo),
+            ("<Control>y", || Msg::Redo),
+            ("<Control><Shift>c", || Msg::CopyEdits),
+            ("<Control><Shift>v", || Msg::PasteEdits),
+            ("F11", || Msg::Fullscreen),
+        ] {
+            let snd = sender.clone();
+            shortcut(accel, Box::new(move || snd.input(msg())));
+        }
+        for n in 0..=5u8 {
+            let snd = sender.clone();
+            shortcut(&n.to_string(), Box::new(move || snd.input(Msg::Rate(n, false))));
+        }
+        for (key, label) in [("6", Label::Red), ("7", Label::Yellow), ("8", Label::Green), ("9", Label::Blue)] {
+            let snd = sender.clone();
+            shortcut(key, Box::new(move || snd.input(Msg::Mark(label))));
+        }
         let e = export.clone();
         shortcut("<Control>e", Box::new(move || e.emit_clicked()));
         let snd = sender.clone();
@@ -3143,6 +3551,12 @@ impl SimpleComponent for App {
             save_failed: false,
             encode_again: false,
             encoded: None,
+            rating: 0,
+            label: Label::None,
+            history: Vec::new(),
+            undo_at: 0,
+            clipboard: None,
+            batch: None,
             ui: Ui {
                 window: window.clone(),
                 toasts,
@@ -3163,6 +3577,13 @@ impl SimpleComponent for App {
                 export_photo: export_ui::build(&sender),
                 chart_btn,
                 camera_btn,
+                title,
+                undo,
+                redo,
+                stars,
+                label_btn,
+                paste,
+                paste_all,
                 presets,
                 filmstrip,
                 canvas_stack,
@@ -3209,10 +3630,12 @@ impl SimpleComponent for App {
                         None if self.roll.len() < MAX_ROLL => {
                             show = show.or(Some(self.roll.len()));
                             // shortcut: sidecars read on the main thread, small JSON; move to the loader if it shows.
-                            let grade = Sidecar::load(&p).ok().flatten().map(|sc| sc.grade).unwrap_or_default();
+                            let sc = Sidecar::load(&p).ok().flatten().unwrap_or_default();
                             self.roll.push(RollItem {
                                 path: p.clone(),
-                                grade,
+                                grade: sc.grade,
+                                rating: sc.rating,
+                                label: sc.label,
                                 looks: Vec::new(),
                                 small: None,
                                 encoded: None,
@@ -3293,6 +3716,9 @@ impl SimpleComponent for App {
                     self.cancel_match();
                     (self.decoded, self.photo, self.path) = (None, None, None);
                     self.ui.window.set_title(Some("RawVibes"));
+                    self.ui.title.set_title("RawVibes");
+                    (self.history, self.undo_at) = (Vec::new(), 0);
+                    self.sync_undo();
                     self.show_source();
                 } else if was_active {
                     self.load_active(i.min(self.roll.len() - 1), &sender);
@@ -3305,7 +3731,10 @@ impl SimpleComponent for App {
                 }
             }
             Msg::Develop(edit) => self.edit_develop(edit, &sender),
-            Msg::SaveSidecar(tick) if tick == self.save_tick => self.save_now(),
+            Msg::SaveSidecar(tick) if tick == self.save_tick => {
+                self.record_edits();
+                self.save_now();
+            }
             Msg::SaveSidecar(_) => {}
             Msg::Close => {
                 self.save_now();
@@ -3332,6 +3761,8 @@ impl SimpleComponent for App {
                 self.layers_changed(Layers::Look, true, &sender);
                 self.looks_loading = false;
                 self.saved = Some(self.sidecar_state());
+                self.reset_history();
+                self.batch_ready(&sender);
             }
             Msg::AsInCamera(part) => self.as_in_camera(part, &sender),
             Msg::CameraCurve(path, ..) if Some(&path) != self.path.as_ref() => {}
@@ -3475,6 +3906,7 @@ impl SimpleComponent for App {
                 self.decoded = Some(decoded);
                 self.path = Some(path);
                 self.develop = Develop::default();
+                (self.rating, self.label) = (0, Label::None);
                 self.drafting = false;
                 self.sync_develop();
                 let path = self.path.clone().expect("set above");
@@ -3495,6 +3927,10 @@ impl SimpleComponent for App {
                 }
                 // Nothing is written until something changes from what was just read.
                 self.saved = Some(self.sidecar_state());
+                self.show_marks();
+                self.ui.title.set_title(&file_label(&path));
+                self.reset_history();
+                self.batch_ready(&sender);
                 // Opening a photo means you want to see it.
                 if self.show_chart {
                     self.show_chart = false;
@@ -3504,10 +3940,15 @@ impl SimpleComponent for App {
             }
             // RollLoaded already reported the error and took the photo out of the
             // strip; the photo still on screen (if any) stays the one edited.
-            Msg::Loaded(_, _, Err(_)) => {
+            Msg::Loaded(_, path, Err(e)) => {
                 self.active = self.path.as_ref().and_then(|p| self.roll.iter().position(|it| it.path == *p));
                 self.ui.filmstrip.set_active(self.active);
                 self.show_source();
+                if let Some(b) = self.batch.as_mut().filter(|b| b.waiting.as_ref() == Some(&path)) {
+                    b.waiting = None;
+                    b.failed.push(format!("{}: {e}", file_label(&path)));
+                    self.batch_next(&sender);
+                }
             }
             Msg::Encoded(profile, photo) => {
                 self.encoding = false;
@@ -3560,18 +4001,69 @@ impl SimpleComponent for App {
                 self.replace_looks(Vec::new(), &sender);
                 self.undo_toast(&gettext("All edits cleared"), move || Msg::RestoreEdits(Box::new(before.clone())));
             }
-            Msg::RestoreEdits(edits) => {
-                let (mut sc, looks) = *edits;
-                let develop = self.develop;
-                // Only onto a cleared photo, so its grade and looks come back too.
-                self.apply_grade(Grade::default());
-                sc.looks.clear();
-                self.restore_sidecar(sc, &sender);
-                self.replace_looks(looks, &sender);
-                if self.develop != develop {
-                    self.develop_changed(&sender);
+            Msg::RestoreEdits(edits) => self.restore_edits(*edits, &sender),
+            Msg::Undo => self.step_history(true, &sender),
+            Msg::Redo => self.step_history(false, &sender),
+            Msg::Rate(..) | Msg::Mark(_) if self.path.is_none() => {}
+            Msg::Rate(r, toggle) => {
+                self.rating = if toggle && r == self.rating { 0 } else { r };
+                self.show_marks();
+                self.schedule_save();
+            }
+            Msg::Mark(l) => {
+                self.label = l;
+                self.show_marks();
+                self.schedule_save();
+            }
+            Msg::RollFilter => self.show_marks(),
+            Msg::CopyEdits if self.path.is_some() => {
+                self.clipboard = Some((self.sidecar_state(), self.looks.clone()));
+                self.ui.paste.set_sensitive(true);
+                self.ui.paste_all.set_sensitive(self.roll.len() > 1);
+                self.toast(&gettext("Edits copied"));
+            }
+            Msg::CopyEdits => {}
+            Msg::PasteEdits => {
+                let Some((sc, looks)) = self.clipboard.clone().filter(|_| self.path.is_some()) else { return };
+                self.record_edits();
+                let sc = pasted(&sc, &self.sidecar_state());
+                self.restore_edits((sc, looks), &sender);
+                self.toast(&gettext("Edits pasted: Ctrl+Z undoes it"));
+            }
+            Msg::PasteEditsAll => {
+                let Some(clip) = self.clipboard.clone() else { return };
+                // The open photo too, unless the filter hides it.
+                if self.path.is_some() && self.ui.filmstrip.shows(self.rating, self.label) {
+                    sender.input(Msg::PasteEdits);
                 }
-                self.crop_changed(&sender);
+                match self.paste_all(&clip) {
+                    (n, failed) if failed.is_empty() => {
+                        self.toast(&gettext!("Edits pasted onto {} more photos (crops kept)", n))
+                    }
+                    (n, failed) => self.toast(&gettext!(
+                        "Edits pasted onto {} more photos, {} failed: {}",
+                        n,
+                        failed.len(),
+                        failed.join("; ")
+                    )),
+                }
+                self.roll_sent = None;
+                self.render_roll();
+            }
+            Msg::Fullscreen => self.ui.window.set_fullscreened(!self.ui.window.is_fullscreen()),
+            Msg::BatchTo(dir) => {
+                let left: Vec<PathBuf> = self
+                    .roll
+                    .iter()
+                    .filter(|it| self.ui.filmstrip.shows(it.rating, it.label))
+                    .map(|it| it.path.clone())
+                    .rev()
+                    .collect();
+                let total = left.len();
+                let back = self.path.clone();
+                self.batch = Some(Batch { left, dir, total, failed: Vec::new(), back, waiting: None, stop: false });
+                self.ui.export_photo.set_busy(true);
+                self.batch_next(&sender);
             }
             Msg::RestoreGrade(grade) => self.apply_grade(*grade),
             Msg::MixerMono(on) => {
@@ -3798,6 +4290,8 @@ impl SimpleComponent for App {
                 };
                 let ui = &self.ui.export_photo;
                 ui.set_format(format.unwrap_or_else(|| export_ui::remembered().0));
+                let shown = self.roll.iter().filter(|it| self.ui.filmstrip.shows(it.rating, it.label)).count();
+                ui.set_roll(shown);
                 let (w, h) = Decoded::fit_size(&crop, u32::MAX);
                 ui.set_size(w, h);
                 // The JPEG estimate waits for the frame (Done::ExportFrame).
@@ -3826,15 +4320,35 @@ impl SimpleComponent for App {
             }
             Msg::ExportEstimate(..) => {}
             Msg::ExportGo => {
+                if let Some(b) = self.batch.as_mut() {
+                    b.stop = true;
+                }
                 if let Some(cancel) = &self.exporting {
                     return cancel.store(true, Ordering::Relaxed);
+                }
+                if self.batch.is_some() {
+                    // Stopped between two photos.
+                    return self.batch_stop(&sender);
+                }
+                if self.ui.export_photo.all() {
+                    let dialog = gtk::FileDialog::builder().title(gettext("Export Photos To")).modal(true).build();
+                    dialog.set_initial_folder(
+                        self.path.as_ref().and_then(|p| p.parent()).map(gio::File::for_path).as_ref(),
+                    );
+                    let s = sender.clone();
+                    dialog.select_folder(Some(&self.ui.window), gio::Cancellable::NONE, move |r| {
+                        if let Some(p) = r.ok().and_then(|f| f.path()) {
+                            s.input(Msg::BatchTo(p));
+                        }
+                    });
+                    return;
                 }
                 let (Some(path), format) = (&self.path, self.ui.export_photo.format()) else { return };
                 let stem = stem_label(path).unwrap_or_default();
                 let dialog = gtk::FileDialog::builder()
                     .title(gettext("Export Photo"))
                     // Never the original's own name: a JPEG source sits in the same folder.
-                    .initial_name(format!("{stem}_edit.{}", format.ext()))
+                    .initial_name(edit_name(&stem, format.ext()))
                     .filters(&file_filters(&format.ext().to_uppercase(), &[format.ext()]))
                     .modal(true)
                     .build();
@@ -3847,31 +4361,18 @@ impl SimpleComponent for App {
                 });
             }
             Msg::ExportPhotoTo(path) => {
-                let (Some(decoded), Some(crop)) = (self.decoded.clone(), self.crop_region()) else { return };
-                let cancel = Arc::new(AtomicBool::new(false));
-                self.exporting = Some(cancel.clone());
-                let ui = &self.ui.export_photo;
-                ui.set_busy(true);
-                // Remembered as used, not per spin tick.
-                let _ = settings::set_value(settings::EXPORT_FORMAT, ui.format().tag());
-                let _ = settings::set_value(settings::JPEG_QUALITY, &ui.quality().to_string());
-                self.send(Job::ExportPhoto(PhotoExport {
-                    decoded,
-                    crop,
-                    develop: self.develop,
-                    profile: self.profile,
-                    grade: self.graded(),
-                    look: self.look_stack(self.look_layers()),
-                    format: ui.format(),
-                    quality: ui.quality(),
-                    path,
-                    cancel,
-                }));
+                self.export_to(path);
             }
             // Closing the dialog stops the export.
             Msg::ExportClosed => {
                 if let Some(cancel) = &self.exporting {
                     cancel.store(true, Ordering::Relaxed);
+                }
+                if let Some(b) = self.batch.as_mut() {
+                    b.stop = true;
+                    if self.exporting.is_none() {
+                        self.batch_stop(&sender);
+                    }
                 }
             }
             Msg::ChooseFolder => {
@@ -4464,12 +4965,28 @@ impl App {
                 self.toast(&gettext!("LUT saved: {}", p.file_name().unwrap_or_default().to_string_lossy()))
             }
             Done::Exported(Err(e)) => self.toast(&gettext!("Export failed: {}", e)),
-            Done::ExportProgress(f) => self.ui.export_photo.set_progress(f),
+            Done::ExportProgress(f) => {
+                // A batch shows its own progress: the photos done plus this one's part.
+                let f = self.batch.as_ref().map_or(f, |b| ((b.total - b.left.len() - 1) as f32 + f) / b.total as f32);
+                self.ui.export_photo.set_progress(f);
+            }
             Done::ExportFrame(w, h, rgb) => {
                 self.export_frame = Some((w, h, Arc::new(rgb)));
                 if self.ui.export_photo.format() == PhotoFormat::Jpeg {
                     self.export_estimate(sender);
                 }
+            }
+            Done::PhotoExported(r) if self.batch.is_some() => {
+                self.exporting = None;
+                match r {
+                    Ok(Some(_)) => {}
+                    Ok(None) => return self.batch_stop(sender),
+                    Err(e) => {
+                        let name = self.path.as_deref().map(file_label).unwrap_or_default();
+                        self.batch.as_mut().expect("guarded").failed.push(format!("{name}: {e}"));
+                    }
+                }
+                self.batch_next(sender);
             }
             Done::PhotoExported(r) => {
                 self.exporting = None;
@@ -4606,6 +5123,14 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
     let section = adw::ShortcutsSection::new(None);
     for (title, accel) in [
         (gettext("Open Photo"), "<Control>o"),
+        (gettext("Undo"), "<Control>z"),
+        (gettext("Redo"), "<Control><Shift>z"),
+        (gettext("Copy edits"), "<Control><Shift>c"),
+        (gettext("Paste edits"), "<Control><Shift>v"),
+        (gettext("Stars"), "1"),
+        (gettext("No stars"), "0"),
+        (gettext("Colour label: red, yellow, green, blue"), "6"),
+        (gettext("Fullscreen"), "F11"),
         (gettext("Export photo"), "<Control>e"),
         (gettext("Export LUT · 33³ .cube"), "<Control><Shift>e"),
         (gettext("Before / after"), "backslash"),
@@ -4761,6 +5286,17 @@ fn rgba8(pixels: &[[f32; 4]]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A paste brings the edits but leaves the photo's crop, stars and label.
+    #[test]
+    fn paste_keeps_crop_and_marks() {
+        let mut clip = Sidecar { rating: 5, label: Label::Red, ..Default::default() };
+        clip.develop.exposure = 1.0;
+        clip.crop.angle = 3.0;
+        let target = Sidecar { rating: 2, label: Label::Blue, ..Default::default() };
+        let p = pasted(&clip, &target);
+        assert_eq!((p.develop.exposure, p.crop, p.rating, p.label), (1.0, target.crop, 2, Label::Blue));
+    }
 
     /// The catalogs `make` builds are found and read (needs the it_IT.UTF-8 locale).
     #[cfg(target_os = "linux")]

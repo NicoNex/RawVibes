@@ -12,6 +12,39 @@ use crate::profiles::{Profile, rec2020_to_rec709, rec2020_to_xyz};
 
 type M3 = [[f32; 3]; 3];
 
+/// A Develop section an eye toggle switches off: left out of preview and
+/// export, while its values stay in the sidecar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DevPart {
+    WhiteBalance,
+    Exposure,
+    Noise,
+    Presence,
+    Detail,
+    Lens,
+}
+
+impl DevPart {
+    pub const ALL: [DevPart; 6] =
+        [Self::WhiteBalance, Self::Exposure, Self::Noise, Self::Presence, Self::Detail, Self::Lens];
+
+    /// Puts this section of `d` back to neutral.
+    pub fn neutral(self, d: &mut Develop) {
+        let (n, x) = (Detail::default(), &mut d.detail);
+        match self {
+            Self::WhiteBalance => d.wb = Develop::default().wb,
+            Self::Exposure => d.exposure = Develop::default().exposure,
+            Self::Noise => (x.nr_luma, x.nr_chroma, x.nr_ai) = (n.nr_luma, n.nr_chroma, n.nr_ai),
+            Self::Presence => (x.dehaze, x.local_contrast) = (n.dehaze, n.local_contrast),
+            Self::Detail => {
+                (x.sharpen, x.usm) = (n.sharpen, n.usm);
+                (x.defringe, x.defringe_green) = (n.defringe, n.defringe_green);
+            }
+            Self::Lens => (x.lens_vignette, x.ca_correct) = (n.lens_vignette, n.ca_correct),
+        }
+    }
+}
+
 /// What the user set in the Develop group.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Develop {
@@ -327,6 +360,28 @@ fn xyz_to_xy(c: [f32; 3]) -> [f32; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every section switched off leaves no development tool at work.
+    #[test]
+    fn develop_parts_off_are_neutral() {
+        let x = Detail {
+            nr_luma: 30.0,
+            nr_chroma: 30.0,
+            sharpen: 30.0,
+            usm: 30.0,
+            defringe: 30.0,
+            defringe_green: 30.0,
+            dehaze: 30.0,
+            local_contrast: 30.0,
+            lens_vignette: 30.0,
+            ca_correct: true,
+            nr_ai: true,
+            ..Detail::default()
+        };
+        let mut d = Develop { wb: Some([4000.0, 5.0]), exposure: 1.0, detail: x };
+        DevPart::ALL.iter().for_each(|p| p.neutral(&mut d));
+        assert_eq!(d, Develop::default());
+    }
     use crate::profiles::Profile;
 
     /// A plausible mirrorless-camera XYZ → camera matrix (D65), and as-shot

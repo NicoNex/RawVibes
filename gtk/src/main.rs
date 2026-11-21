@@ -33,7 +33,7 @@ use lab_page::{LabAdd, LabKind, LabLayer, LabUi, Layers, caption};
 use presets_ui::PresetsUi;
 use rawvibes_core::chart::test_chart;
 use rawvibes_core::crop::{self, Crop, PRESETS, Ratio};
-use rawvibes_core::develop::{Camera, Detail, Develop, KELVIN, WB_PRESETS};
+use rawvibes_core::develop::{Camera, Detail, DevPart, Develop, KELVIN, WB_PRESETS};
 use rawvibes_core::export::{self, PhotoFormat};
 use rawvibes_core::gpu::{self, Done, Job, PhotoExport, ThumbBase};
 use rawvibes_core::grade::{
@@ -48,7 +48,7 @@ use rawvibes_core::preset::{self, Preset};
 use rawvibes_core::profiles::Profile;
 use rawvibes_core::raw::{RawData, read_raw};
 use rawvibes_core::scopes::{HIST_H, HIST_W, Scopes, VEC_SIZE};
-use rawvibes_core::sidecar::{Label, LookRef, Sidecar};
+use rawvibes_core::sidecar::{Label, LookRef, Off, Sidecar};
 use rawvibes_core::view::{Region, Zoom};
 use relm4::adw::prelude::*;
 use relm4::gtk::{gdk, gio, glib};
@@ -94,6 +94,8 @@ enum Msg {
     AsInCameraOnOpen(bool),
     /// Write the sidecar if tick `u64` is still the last edit.
     SaveSidecar(u64),
+    /// Same, without adding an undo step.
+    WriteSidecar(u64),
     /// The window is closing: write pending edits, then close.
     Close,
     /// Look LUTs named by a sidecar, read.
@@ -128,11 +130,8 @@ enum Msg {
     Search(String),
     /// Rescans the LUT folder.
     Reload,
-    /// A sidebar section switched off/on (`None` = the LUTs after the grade).
-    Bypass(Option<Stage>, bool),
-    /// A Photo-tab section switched off/on.
-    DevelopOff(DevPart, bool),
-    CropOff(bool),
+    /// A sidebar section switched off/on with its eye toggle.
+    Off(Off, bool),
     /// LUT browser shown or hidden.
     Browse(bool),
     /// LUT browser: preview library LUT i on the photo (None: none), its
@@ -376,6 +375,8 @@ impl PreviewQuality {
 
 /// Quiet time after the last edit before the sidecar is written.
 const SAVE_SETTLE: std::time::Duration = std::time::Duration::from_millis(1000);
+/// Edits reach the sidecar this long after the last one, so a crash loses next to nothing.
+const WRITE_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// GPU time a draft frame may take under Automatic preview quality: a 60 Hz
 /// frame, less what the grade and the redraw need.
@@ -686,7 +687,7 @@ impl App {
         let neutral = Grade::default().params;
         (grade.params.input, grade.params.gamut) = (neutral.input, neutral.gamut);
         let (rating, label) = (self.rating, self.label);
-        let profile = Some(self.profile);
+        let (profile, off) = (Some(self.profile), self.offs());
         Sidecar {
             develop: self.develop,
             grade,
@@ -697,6 +698,7 @@ impl App {
             rating,
             label,
             profile,
+            off,
         }
     }
 
@@ -908,6 +910,8 @@ impl App {
         }
         self.save_tick += 1;
         let (s, tick) = (self.input.clone(), self.save_tick);
+        let w = s.clone();
+        glib::timeout_add_local_once(WRITE_SETTLE, move || w.emit(Msg::WriteSidecar(tick)));
         glib::timeout_add_local_once(SAVE_SETTLE, move || s.emit(Msg::SaveSidecar(tick)));
     }
 
@@ -930,6 +934,7 @@ impl App {
     /// The photo's sidecar into the editor, onto a neutral grade without looks.
     fn restore_sidecar(&mut self, sc: Sidecar, sender: &ComponentSender<Self>) {
         (self.rating, self.label) = (sc.rating, sc.label);
+        self.set_offs(&sc.off);
         if let Some(p) = sc.profile {
             // Set now, so the state read back matches; the dropdown's Msg::Profile echo re-encodes.
             self.profile = p;
@@ -1068,6 +1073,7 @@ impl App {
 
     /// Rebuilds the filmstrip cards after photos were added or removed.
     fn roll_changed(&mut self, sender: &ComponentSender<Self>) {
+        self.save_session();
         let names: Vec<String> = self.roll.iter().map(|it| file_label(&it.path)).collect();
         self.ui.filmstrip.rebuild(&names, self.active, sender);
         self.show_marks();
@@ -1135,11 +1141,21 @@ impl App {
         }
     }
 
+    /// The filmstrip and the open photo, for the next start.
+    fn save_session(&self) {
+        let roll: Vec<String> = self.roll.iter().map(|it| it.path.to_string_lossy().into_owned()).collect();
+        let last = self.roll.get(self.active.unwrap_or(usize::MAX)).map(|it| it.path.to_string_lossy().into_owned());
+        // ponytail: a failed write only loses the resume.
+        let _ = settings::set_value(settings::ROLL, &roll.join("\n"));
+        let _ = settings::set_value(settings::LAST_PHOTO, &last.unwrap_or_default());
+    }
+
     /// Opens filmstrip photo `i` for editing (full-size decode off the main thread).
     fn load_active(&mut self, i: usize, sender: &ComponentSender<Self>) {
         let Some(path) = self.roll.get(i).map(|it| it.path.clone()) else { return };
         self.active = Some(i);
         self.ui.filmstrip.set_active(self.active);
+        self.save_session();
         // ponytail: a failed save only loses the dialog's start folder.
         if let Some(dir) = path.parent() {
             let _ = settings::set_folder(settings::PHOTO_FOLDER, dir);
@@ -1374,6 +1390,26 @@ impl App {
 
     fn camera(&self) -> Option<&Camera> {
         self.decoded.as_ref()?.camera()
+    }
+
+    /// The sections switched off, as the sidecar keeps them.
+    fn offs(&self) -> Vec<Off> {
+        let grade = self.bypassed.iter().map(|&s| Off::Grade(s));
+        let develop = self.develop_off.iter().map(|&p| Off::Develop(p));
+        let rest = [(self.looks_off, Off::Looks), (self.crop_off, Off::Crop)].into_iter().filter(|o| o.0).map(|o| o.1);
+        grade.chain(develop).chain(rest).collect()
+    }
+
+    fn set_off_state(&mut self, offs: &[Off]) {
+        self.bypassed = offs.iter().filter_map(|o| if let Off::Grade(s) = o { Some(*s) } else { None }).collect();
+        self.develop_off = offs.iter().filter_map(|o| if let Off::Develop(p) = o { Some(*p) } else { None }).collect();
+        (self.looks_off, self.crop_off) = (offs.contains(&Off::Looks), offs.contains(&Off::Crop));
+    }
+
+    /// Switches the sections in `offs` off and the others on; the eyes' echoes re-render what changed.
+    fn set_offs(&mut self, offs: &[Off]) {
+        self.set_off_state(offs);
+        EYES.with(|e| e.borrow().iter().for_each(|(p, eye)| eye.set_active(offs.contains(p))));
     }
 
     /// The development the preview and export use: `develop` without the sections switched off.
@@ -1782,36 +1818,6 @@ fn section_tabs(stack: &adw::ViewStack, panes: &[&gtk::Box]) {
     }
 }
 
-/// A Photo-tab section an eye toggle switches off: left out of preview and
-/// export, while its values stay in the sidecar.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum DevPart {
-    WhiteBalance,
-    Exposure,
-    Noise,
-    Presence,
-    Detail,
-    Lens,
-}
-
-impl DevPart {
-    /// Puts this section of `d` back to neutral.
-    fn neutral(self, d: &mut Develop) {
-        let (n, x) = (Detail::default(), &mut d.detail);
-        match self {
-            Self::WhiteBalance => d.wb = Develop::default().wb,
-            Self::Exposure => d.exposure = Develop::default().exposure,
-            Self::Noise => (x.nr_luma, x.nr_chroma, x.nr_ai) = (n.nr_luma, n.nr_chroma, n.nr_ai),
-            Self::Presence => (x.dehaze, x.local_contrast) = (n.dehaze, n.local_contrast),
-            Self::Detail => {
-                (x.sharpen, x.usm) = (n.sharpen, n.usm);
-                (x.defringe, x.defringe_green) = (n.defringe, n.defringe_green);
-            }
-            Self::Lens => (x.lens_vignette, x.ca_correct) = (n.lens_vignette, n.ca_correct),
-        }
-    }
-}
-
 /// Card with a collapsible header, like the sections of a grading panel.
 fn section(title: &str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
     section_with(title, child, &[], true)
@@ -1826,17 +1832,17 @@ fn bypassable(
     open: bool,
     sender: &ComponentSender<App>,
 ) -> gtk::Box {
-    eye_section(title, child, open, &[], sender, move |off| Msg::Bypass(which, off))
+    eye_section(title, child, open, &[], sender, which.map_or(Off::Looks, Off::Grade))
 }
 
-/// Section with an eye toggle that sends `msg(off)`, after the `extra` header buttons (e.g. "As in camera").
+/// Section with an eye toggle that switches `part` off, after the `extra` header buttons (e.g. "As in camera").
 fn eye_section(
     title: &str,
     child: &impl IsA<gtk::Widget>,
     open: bool,
     extra: &[gtk::Widget],
     sender: &ComponentSender<App>,
-    msg: impl Fn(bool) -> Msg + 'static,
+    part: Off,
 ) -> gtk::Box {
     let eye = gtk::ToggleButton::builder()
         .icon_name("view-reveal-symbolic")
@@ -1854,8 +1860,9 @@ fn eye_section(
         } else {
             content.remove_css_class("bypassed")
         }
-        snd.input(msg(off));
+        snd.input(Msg::Off(part, off));
     });
+    EYES.with(|e| e.borrow_mut().push((part, eye.clone())));
     let mut header: Vec<gtk::Widget> = extra.to_vec();
     header.push(eye.upcast());
     section_with(title, child, &header, open)
@@ -2243,7 +2250,7 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     let as_shot =
         camera_button(&gettext("As in camera: white balance as shot"), || Msg::Develop(DevelopEdit::AsShot), sender);
     let dev_section = |title: &str, child: &gtk::Box, extra: &[gtk::Widget], part: DevPart| {
-        eye_section(title, child, true, extra, sender, move |off| Msg::DevelopOff(part, off))
+        eye_section(title, child, true, extra, sender, Off::Develop(part))
     };
     root.append(&dev_section(&gettext("White balance"), &wb, &[as_shot.upcast()], DevPart::WhiteBalance));
 
@@ -3829,12 +3836,10 @@ impl SimpleComponent for App {
                 self.save_now();
             }
             Msg::SaveSidecar(_) => {}
+            Msg::WriteSidecar(tick) if tick == self.save_tick => self.save_now(),
+            Msg::WriteSidecar(_) => {}
             Msg::Close => {
                 self.save_now();
-                let roll: Vec<String> = self.roll.iter().map(|it| it.path.to_string_lossy().into_owned()).collect();
-                let last = self.path.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-                let _ = settings::set_value(settings::ROLL, &roll.join("\n"));
-                let _ = settings::set_value(settings::LAST_PHOTO, &last);
                 self.ui.window.destroy();
             }
             // Another photo was opened, or the looks reset, meanwhile.
@@ -4004,6 +4009,7 @@ impl SimpleComponent for App {
                 self.path = Some(path);
                 self.develop = Develop::default();
                 (self.rating, self.label) = (0, Label::None);
+                self.set_offs(&[]);
                 self.drafting = false;
                 self.sync_develop();
                 let path = self.path.clone().expect("set above");
@@ -4096,6 +4102,7 @@ impl SimpleComponent for App {
                 self.crop_changed(&sender);
                 self.ui.sidebar.look_blend_toggle.set_active_name(Some("chain"));
                 self.replace_looks(Vec::new(), &sender);
+                self.set_offs(&[]);
                 self.undo_toast(&gettext("All edits cleared"), move || Msg::RestoreEdits(Box::new(before.clone())));
             }
             Msg::RestoreEdits(edits) => self.restore_edits(*edits, &sender),
@@ -4591,29 +4598,21 @@ impl SimpleComponent for App {
                 self.filter_gallery();
                 self.hide_filtered_selection();
             }
-            Msg::Bypass(Some(stage), off) => {
-                self.bypassed.retain(|&s| s != stage);
+            Msg::Off(part, off) => {
+                let mut offs = self.offs();
+                offs.retain(|&p| p != part);
                 if off {
-                    self.bypassed.push(stage);
+                    offs.push(part);
                 }
-                self.render();
-            }
-            Msg::DevelopOff(part, off) => {
-                self.develop_off.retain(|&p| p != part);
-                if off {
-                    self.develop_off.push(part);
+                self.set_off_state(&offs);
+                match part {
+                    Off::Grade(_) => self.render(),
+                    Off::Looks => self.layers_changed(Layers::Look, false, &sender),
+                    Off::Develop(_) if self.camera().is_some() => self.develop_changed(&sender),
+                    Off::Develop(_) => {}
+                    Off::Crop => self.crop_changed(&sender),
                 }
-                if self.camera().is_some() {
-                    self.develop_changed(&sender);
-                }
-            }
-            Msg::CropOff(off) => {
-                self.crop_off = off;
-                self.crop_changed(&sender);
-            }
-            Msg::Bypass(None, off) => {
-                self.looks_off = off;
-                self.layers_changed(Layers::Look, false, &sender);
+                self.schedule_save();
             }
             Msg::Browse(on) => {
                 self.browsing = on;
@@ -5317,6 +5316,8 @@ impl PartialEq for BaseKey {
 thread_local! {
     /// The window's input, for files opened through the application (see `main`).
     static OPEN: std::cell::OnceCell<relm4::Sender<Msg>> = const { std::cell::OnceCell::new() };
+    /// Every section's eye toggle, to show a photo's switched-off sections.
+    static EYES: std::cell::RefCell<Vec<(Off, gtk::ToggleButton)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// The interface's translation of `msgid`, or `msgid` itself.
@@ -5399,37 +5400,6 @@ fn rgba8(pixels: &[[f32; 4]]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Every Photo section switched off leaves no development tool at work.
-    #[test]
-    fn develop_parts_off_are_neutral() {
-        let x = Detail {
-            nr_luma: 30.0,
-            nr_chroma: 30.0,
-            sharpen: 30.0,
-            usm: 30.0,
-            defringe: 30.0,
-            defringe_green: 30.0,
-            dehaze: 30.0,
-            local_contrast: 30.0,
-            lens_vignette: 30.0,
-            ca_correct: true,
-            nr_ai: true,
-            ..Detail::default()
-        };
-        let mut d = Develop { wb: Some([4000.0, 5.0]), exposure: 1.0, detail: x };
-        for p in [
-            DevPart::WhiteBalance,
-            DevPart::Exposure,
-            DevPart::Noise,
-            DevPart::Presence,
-            DevPart::Detail,
-            DevPart::Lens,
-        ] {
-            p.neutral(&mut d);
-        }
-        assert_eq!(d, Develop::default());
-    }
 
     /// A paste brings the edits but leaves the photo's crop, stars and label.
     #[test]

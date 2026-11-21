@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use crate::gettext;
 use rawvibes_core::crop::{self, Crop, Handle, PRESETS};
+use rawvibes_core::sidecar::Off;
 use relm4::gtk::prelude::*;
 use relm4::{ComponentSender, gtk};
 
@@ -121,7 +122,7 @@ impl CropUi {
         body.append(&ratio_row);
         body.append(&angle.root);
         body.append(&buttons);
-        let section = eye_section(&gettext("Crop"), &body, true, &[], sender, Msg::CropOff);
+        let section = eye_section(&gettext("Crop"), &body, true, &[], sender, Off::Crop);
 
         let overlay = gtk::DrawingArea::builder().visible(false).build();
         // The line being dragged with the level tool, in overlay pixels.

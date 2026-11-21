@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::crop::{Crop, Ratio};
-use crate::develop::{Develop, EXPOSURE, KELVIN, TINT};
-use crate::grade::{Grade, Params};
+use crate::develop::{DevPart, Develop, EXPOSURE, KELVIN, TINT};
+use crate::grade::{Grade, Params, Stage};
 use crate::lab::Blend;
 use crate::preset::{Curves, grade_from};
 use crate::profiles::Profile;
@@ -37,6 +37,18 @@ pub struct Sidecar {
     pub label: Label,
     /// The input profile the photo was graded in; `None` in older sidecars.
     pub profile: Option<Profile>,
+    /// Sections switched off with their eye toggle.
+    pub off: Vec<Off>,
+}
+
+/// A sidebar section switched off with its eye toggle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Off {
+    Grade(Stage),
+    Develop(DevPart),
+    /// The LUTs applied after the grade.
+    Looks,
+    Crop,
 }
 
 /// Colour label of a photo, for sorting a shoot.
@@ -88,6 +100,8 @@ struct File {
     label: Label,
     #[serde(default)]
     profile: Option<Profile>,
+    #[serde(default)]
+    off: Vec<Off>,
 }
 
 /// Where the sidecar of `photo` lives.
@@ -130,6 +144,7 @@ impl Sidecar {
             rating: self.rating,
             label: self.label,
             profile: self.profile,
+            off: self.off.clone(),
         };
         serde_json::to_string_pretty(&file).expect("sidecars always serialise")
     }
@@ -181,6 +196,7 @@ impl Sidecar {
             looks: f.looks,
             look_blend: f.look_blend,
             profile: f.profile,
+            off: f.off,
             rating: f.rating.min(5),
             label: f.label,
         })
@@ -208,6 +224,7 @@ mod tests {
             rating: 4,
             label: Label::Green,
             profile: Some(Profile::VLog),
+            off: vec![Off::Grade(Stage::Tone), Off::Develop(DevPart::Noise), Off::Looks, Off::Crop],
         }
     }
 

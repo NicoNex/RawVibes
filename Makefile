@@ -106,7 +106,7 @@ uninstall:
 arch:
 	git archive --format=tar.gz --prefix=$(BIN)-$(VERSION)/ -o $(ARCHDIR)/$(BIN)-$(VERSION).tar.gz HEAD
 	sed -i 's/^pkgver=.*/pkgver=$(VERSION)/' $(ARCHDIR)/PKGBUILD
-	cd $(ARCHDIR) && makepkg -f
+	cd $(ARCHDIR) && makepkg -sf --needed
 	@echo "Install with: sudo pacman -U $(ARCHDIR)/$(BIN)-$(VERSION)-*.pkg.tar.zst"
 
 # Self-contained .app: dylibbundler copies the linked dylibs, and the GTK runtime data

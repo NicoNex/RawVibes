@@ -18,10 +18,11 @@ use crate::view::{Pyramid, Region};
 pub const PREVIEW_MAX: u32 = 2048;
 pub const THUMB_MAX: u32 = 256;
 
-pub const RASTER_EXTS: &[&str] = &["jpg", "jpeg", "png", "tif", "tiff"];
+pub const RASTER_EXTS: &[&str] = &["jpg", "jpeg", "png", "tif", "tiff", "webp"];
+/// Every extension rawler decodes (`rawler::decoders::supported_extensions`), plus Sony's SR2/SRF.
 pub const RAW_EXTS: &[&str] = &[
-    "rw2", "cr2", "cr3", "nef", "nrw", "arw", "srf", "sr2", "raf", "orf", "dng", "pef", "srw", "iiq", "3fr", "erf",
-    "kdc", "mrw", "rwl",
+    "rw2", "cr2", "cr3", "crw", "crm", "nef", "nrw", "arw", "srf", "sr2", "raf", "orf", "ori", "dng", "pef", "srw",
+    "iiq", "3fr", "fff", "erf", "kdc", "dcr", "dcs", "mrw", "mef", "mos", "rwl", "raw", "x3f", "ari", "qtk",
 ];
 
 #[derive(Clone)]
@@ -321,6 +322,14 @@ pub fn inverse_view_transform(display_linear: [f32; 3]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rawler update that adds a format shows up here.
+    #[test]
+    fn every_rawler_format_opens() {
+        for e in rawler::decoders::supported_extensions() {
+            assert!(is_raw(Path::new(&format!("a.{e}"))), "{e}");
+        }
+    }
 
     /// A clipped colour comes out neutral, and the fade has no step.
     #[test]

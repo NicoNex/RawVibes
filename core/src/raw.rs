@@ -127,7 +127,10 @@ pub(crate) fn cpu_rgb(raw: &rawler::RawImage) -> Result<CpuRgb, String> {
             let cal = four_colour(raw);
             Ok((px.data.iter().map(cal).collect(), px.width, px.height, Camera::neutral()))
         }
-        Intermediate::Monochrome(_) => Err("unsupported sensor layout".into()),
+        // Monochrome sensors (Leica Monochrom and the like): grey in all three channels.
+        Intermediate::Monochrome(px) => {
+            Ok((px.data.iter().map(|&v| [v; 3]).collect(), px.width, px.height, Camera::neutral()))
+        }
     }
 }
 

@@ -2,7 +2,7 @@
 pkgname=rawvibes
 pkgver=0.1.0
 pkgrel=1
-pkgdesc="Color grade photos (JPEG/RAW) and export 3D LUTs (.cube), GPU accelerated"
+pkgdesc="RAW photo editor with color grading and 3D LUT export, GPU accelerated"
 arch=('x86_64' 'aarch64')
 license=('GPL-3.0-or-later')
 depends=('gtk4' 'libadwaita' 'vulkan-icd-loader')

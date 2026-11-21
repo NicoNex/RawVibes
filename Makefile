@@ -87,6 +87,9 @@ install: target/release/$(BIN) locale
 	install -Dm644 data/$(APP_ID).desktop $(DESTDIR)$(PREFIX)/share/applications/$(APP_ID).desktop
 	install -Dm644 data/$(APP_ID).svg $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/$(APP_ID).svg
 	install -Dm644 LICENSE $(DESTDIR)$(PREFIX)/share/licenses/$(BIN)/LICENSE
+	# A package manager refreshes these caches itself; a plain install must, or Open With misses the app.
+	if [ -z "$(DESTDIR)" ]; then update-desktop-database -q $(PREFIX)/share/applications || true; \
+	  gtk-update-icon-cache -q -t $(PREFIX)/share/icons/hicolor || true; fi
 	if [ -f models/rawnind/bayer.bin ]; then for f in $(MODELS) models/README.md; do \
 	  install -Dm644 $$f $(DESTDIR)$(PREFIX)/share/$(BIN)/$$f; done; fi
 
@@ -104,32 +107,44 @@ arch:
 	cd $(ARCHDIR) && makepkg -f
 	@echo "Install with: sudo pacman -U $(ARCHDIR)/$(BIN)-$(VERSION)-*.pkg.tar.zst"
 
-# ponytail: dylibbundler copies the linked dylibs only; GTK runtime data (pixbuf loaders,
-# Adwaita icon theme, schemas) still comes from Homebrew. Switch to gtk-mac-bundler if the
-# .app must run on Macs without Homebrew GTK.
-APP := target/RawVibes.app
+# Self-contained .app: dylibbundler copies the linked dylibs, and the GTK runtime data
+# (schemas, icon themes, pixbuf loaders) comes from Homebrew into the bundle; the
+# launcher points GTK at it. Needs Homebrew gtk4, libadwaita, adwaita-icon-theme,
+# librsvg and dylibbundler.
+APP  := target/RawVibes.app
+BREW  = $(shell brew --prefix)
+PIXBUF = lib/gdk-pixbuf-2.0/2.10.0
 dmg: release models
-	rm -rf $(APP) target/$(BIN)-$(VERSION).dmg
-	install -d $(APP)/Contents/MacOS $(APP)/Contents/libs
-	install -m755 target/release/$(BIN) $(APP)/Contents/MacOS/$(BIN)
+	rm -rf $(APP) target/dmg target/$(BIN)-$(VERSION).dmg
+	install -d $(APP)/Contents/MacOS $(APP)/Contents/libs $(APP)/Contents/Resources $(APP)/Contents/share/glib-2.0/schemas
+	install -m755 target/release/$(BIN) $(APP)/Contents/MacOS/$(BIN)-bin
+	install -m755 packaging/macos/launcher $(APP)/Contents/MacOS/$(BIN)
+	sed 's/@VERSION@/$(VERSION)/g' packaging/macos/Info.plist > $(APP)/Contents/Info.plist
 	for f in $(MODELS) models/README.md; do install -d $(APP)/Contents/share/$(BIN)/$$(dirname $$f) && \
 	  install -m644 $$f $(APP)/Contents/share/$(BIN)/$$f; done
 	for l in $(LINGUAS); do install -d $(APP)/Contents/share/locale/$$l/LC_MESSAGES && \
 	  install -m644 target/locale/$$l/LC_MESSAGES/$(BIN).mo $(APP)/Contents/share/locale/$$l/LC_MESSAGES/; done
-	printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
-	  '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
-	  '<plist version="1.0"><dict>' \
-	  '<key>CFBundleName</key><string>RawVibes</string>' \
-	  '<key>CFBundleIdentifier</key><string>$(APP_ID)</string>' \
-	  '<key>CFBundleExecutable</key><string>$(BIN)</string>' \
-	  '<key>CFBundleShortVersionString</key><string>$(VERSION)</string>' \
-	  '<key>CFBundlePackageType</key><string>APPL</string>' \
-	  '<key>NSHighResolutionCapable</key><true/>' \
-	  '</dict></plist>' > $(APP)/Contents/Info.plist
-	dylibbundler -of -b -x $(APP)/Contents/MacOS/$(BIN) -d $(APP)/Contents/libs -p @executable_path/../libs/
+	install -m644 $(BREW)/share/glib-2.0/schemas/gschemas.compiled $(APP)/Contents/share/glib-2.0/schemas/
+	cp -RL $(BREW)/share/icons $(APP)/Contents/share/
+	install -d $(APP)/Contents/$(PIXBUF)/loaders
+	cp $(BREW)/$(PIXBUF)/loaders/*.so $(APP)/Contents/$(PIXBUF)/loaders/
+	# Queried before dylibbundler: afterwards the loaders only load from inside the app.
+	gdk-pixbuf-query-loaders $(APP)/Contents/$(PIXBUF)/loaders/*.so \
+	  | sed 's|$(abspath $(APP))/Contents|@CONTENTS@|g' > $(APP)/Contents/Resources/loaders.cache.in
+	dylibbundler -of -b -d $(APP)/Contents/libs -p @executable_path/../libs/ -x $(APP)/Contents/MacOS/$(BIN)-bin \
+	  $(foreach f,$(wildcard $(BREW)/$(PIXBUF)/loaders/*.so),-x $(APP)/Contents/$(PIXBUF)/loaders/$(notdir $(f)))
+	install -d target/RawVibes.iconset
+	for s in 16 32 128 256 512; do \
+	  rsvg-convert -w $$s -h $$s data/$(APP_ID).svg -o target/RawVibes.iconset/icon_$${s}x$${s}.png; \
+	  rsvg-convert -w $$((s*2)) -h $$((s*2)) data/$(APP_ID).svg -o target/RawVibes.iconset/icon_$${s}x$${s}@2x.png; done
+	iconutil -c icns target/RawVibes.iconset -o $(APP)/Contents/Resources/RawVibes.icns
 	# dylibbundler's install_name_tool edits break signatures; arm64 refuses to run unsigned code.
 	codesign --force --deep -s - $(APP)
-	hdiutil create -volname RawVibes -srcfolder $(APP) -ov -format UDZO target/$(BIN)-$(VERSION).dmg
+	install -d target/dmg
+	cp -R $(APP) target/dmg/
+	ln -s /Applications target/dmg/Applications
+	install -m644 packaging/macos/README.txt target/dmg/README.txt
+	hdiutil create -volname RawVibes -srcfolder target/dmg -ov -format UDZO target/$(BIN)-$(VERSION).dmg
 
 clean:
 	$(CARGO) clean

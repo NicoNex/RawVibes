@@ -130,6 +130,9 @@ enum Msg {
     Reload,
     /// A sidebar section switched off/on (`None` = the LUTs after the grade).
     Bypass(Option<Stage>, bool),
+    /// A Photo-tab section switched off/on.
+    DevelopOff(DevPart, bool),
+    CropOff(bool),
     /// LUT browser shown or hidden.
     Browse(bool),
     /// LUT browser: preview library LUT i on the photo (None: none), its
@@ -468,6 +471,8 @@ struct App {
     /// Sections switched off with their eye toggle; they are left out of preview and export.
     bypassed: Vec<Stage>,
     looks_off: bool,
+    develop_off: Vec<DevPart>,
+    crop_off: bool,
     /// The LUT browser is open (its thumbnails follow the grade).
     browsing: bool,
     /// Library LUT previewed after the looks (not part of them until
@@ -861,7 +866,7 @@ impl App {
         self.send(Job::ExportPhoto(PhotoExport {
             decoded,
             crop,
-            develop: self.develop,
+            develop: self.applied_develop(),
             profile: self.profile,
             grade: self.graded(),
             look: self.look_stack(self.look_layers()),
@@ -1276,7 +1281,7 @@ impl App {
                 _ => PREVIEW_MAX,
             };
             let (width, height) = self.draft_size(Decoded::fit_size(&r, max));
-            let develop = self.develop;
+            let develop = self.applied_develop();
             return self.send(Job::DevelopRaw {
                 generation: 0,
                 region: r,
@@ -1295,6 +1300,13 @@ impl App {
 
     fn camera(&self) -> Option<&Camera> {
         self.decoded.as_ref()?.camera()
+    }
+
+    /// The development the preview and export use: `develop` without the sections switched off.
+    fn applied_develop(&self) -> Develop {
+        let mut d = self.develop;
+        self.develop_off.iter().for_each(|p| p.neutral(&mut d));
+        d
     }
 
     /// Applies a Develop edit; re-develops only when something changed.
@@ -1688,6 +1700,36 @@ fn section_tabs(stack: &adw::ViewStack, panes: &[&gtk::Box]) {
     }
 }
 
+/// A Photo-tab section an eye toggle switches off: left out of preview and
+/// export, while its values stay in the sidecar.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DevPart {
+    WhiteBalance,
+    Exposure,
+    Noise,
+    Presence,
+    Detail,
+    Lens,
+}
+
+impl DevPart {
+    /// Puts this section of `d` back to neutral.
+    fn neutral(self, d: &mut Develop) {
+        let (n, x) = (Detail::default(), &mut d.detail);
+        match self {
+            Self::WhiteBalance => d.wb = Develop::default().wb,
+            Self::Exposure => d.exposure = Develop::default().exposure,
+            Self::Noise => (x.nr_luma, x.nr_chroma, x.nr_ai) = (n.nr_luma, n.nr_chroma, n.nr_ai),
+            Self::Presence => (x.dehaze, x.local_contrast) = (n.dehaze, n.local_contrast),
+            Self::Detail => {
+                (x.sharpen, x.usm) = (n.sharpen, n.usm);
+                (x.defringe, x.defringe_green) = (n.defringe, n.defringe_green);
+            }
+            Self::Lens => (x.lens_vignette, x.ca_correct) = (n.lens_vignette, n.ca_correct),
+        }
+    }
+}
+
 /// Card with a collapsible header, like the sections of a grading panel.
 fn section(title: &str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
     section_with(title, child, &[], true)
@@ -1702,17 +1744,17 @@ fn bypassable(
     open: bool,
     sender: &ComponentSender<App>,
 ) -> gtk::Box {
-    bypassable_with(title, child, which, open, &[], sender)
+    eye_section(title, child, open, &[], sender, move |off| Msg::Bypass(which, off))
 }
 
-/// [`bypassable`] with `extra` header buttons before the eye (e.g. "As in camera").
-fn bypassable_with(
+/// Section with an eye toggle that sends `msg(off)`, after the `extra` header buttons (e.g. "As in camera").
+fn eye_section(
     title: &str,
     child: &impl IsA<gtk::Widget>,
-    which: Option<Stage>,
     open: bool,
     extra: &[gtk::Widget],
     sender: &ComponentSender<App>,
+    msg: impl Fn(bool) -> Msg + 'static,
 ) -> gtk::Box {
     let eye = gtk::ToggleButton::builder()
         .icon_name("view-reveal-symbolic")
@@ -1730,7 +1772,7 @@ fn bypassable_with(
         } else {
             content.remove_css_class("bypassed")
         }
-        snd.input(Msg::Bypass(which, off));
+        snd.input(msg(off));
     });
     let mut header: Vec<gtk::Widget> = extra.to_vec();
     header.push(eye.upcast());
@@ -2117,7 +2159,10 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     wb.append(&tint.root);
     let as_shot =
         camera_button(&gettext("As in camera: white balance as shot"), || Msg::Develop(DevelopEdit::AsShot), sender);
-    root.append(&section_with(&gettext("White balance"), &wb, &[as_shot.upcast()], true));
+    let dev_section = |title: &str, child: &gtk::Box, extra: &[gtk::Widget], part: DevPart| {
+        eye_section(title, child, true, extra, sender, move |off| Msg::DevelopOff(part, off))
+    };
+    root.append(&dev_section(&gettext("White balance"), &wb, &[as_shot.upcast()], DevPart::WhiteBalance));
 
     let exp = vbox(4);
     let exposure = Slider::new(&gettext("Exposure"), -3.0, 3.0, 0.0, 2, None);
@@ -2128,7 +2173,7 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
         || Msg::Develop(DevelopEdit::CameraExposure),
         sender,
     );
-    root.append(&section_with(&gettext("Exposure"), &exp, &[cam_ev.upcast()], true));
+    root.append(&dev_section(&gettext("Exposure"), &exp, &[cam_ev.upcast()], DevPart::Exposure));
 
     let mut detail = Vec::new();
     let mut detail_slider = |bx: &gtk::Box, label: &str, range: (f64, f64), field: DetailField| {
@@ -2179,11 +2224,11 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     let nr_detail = detail_slider(&nr, &gettext("Detail"), (0.0, 100.0), |d| &mut d.nr_detail);
     // AI leaves some colour noise: chrominance stays in both methods.
     detail_slider(&nr, &gettext("Chrominance"), (0.0, 100.0), |d| &mut d.nr_chroma);
-    root.append(&section(&gettext("Noise reduction"), &nr));
+    root.append(&dev_section(&gettext("Noise reduction"), &nr, &[], DevPart::Noise));
     let haze = vbox(4);
     detail_slider(&haze, &gettext("Dehaze"), (-100.0, 100.0), |d| &mut d.dehaze);
     detail_slider(&haze, &gettext("Local contrast"), (0.0, 100.0), |d| &mut d.local_contrast);
-    root.append(&section(&gettext("Presence"), &haze));
+    root.append(&dev_section(&gettext("Presence"), &haze, &[], DevPart::Presence));
     let sharp = vbox(4);
     // Capture restores the lens's softness; output sharpening is the visible, creative kind.
     detail_slider(&sharp, &gettext("Capture sharpening"), (0.0, 100.0), |d| &mut d.sharpen);
@@ -2193,7 +2238,7 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     detail_slider(&sharp, &gettext("Sharpening threshold"), (0.0, 100.0), |d| &mut d.usm_threshold);
     detail_slider(&sharp, &gettext("Purple fringe"), (0.0, 100.0), |d| &mut d.defringe);
     detail_slider(&sharp, &gettext("Green fringe"), (0.0, 100.0), |d| &mut d.defringe_green);
-    root.append(&section(&gettext("Detail"), &sharp));
+    root.append(&dev_section(&gettext("Detail"), &sharp, &[], DevPart::Detail));
     let lens = vbox(4);
     detail_slider(&lens, &gettext("Lens vignetting"), (-100.0, 100.0), |d| &mut d.lens_vignette);
     let ca = adw::SwitchRow::builder()
@@ -2209,7 +2254,7 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
     list.append(&ca);
     lens.append(&list);
-    root.append(&section(&gettext("Lens"), &lens));
+    root.append(&dev_section(&gettext("Lens"), &lens, &[], DevPart::Lens));
     // Greyed out until a RAW opens (`sync_develop`).
     root.set_sensitive(false);
     root.set_tooltip_text(Some(&gettext("RAW development: open a RAW file to use it")));
@@ -3492,6 +3537,8 @@ impl SimpleComponent for App {
             looks: Vec::new(),
             bypassed: Vec::new(),
             looks_off: false,
+            develop_off: Vec::new(),
+            crop_off: false,
             browsing: false,
             candidate: None,
             preview_req: None,
@@ -4501,6 +4548,19 @@ impl SimpleComponent for App {
                 }
                 self.render();
             }
+            Msg::DevelopOff(part, off) => {
+                self.develop_off.retain(|&p| p != part);
+                if off {
+                    self.develop_off.push(part);
+                }
+                if self.camera().is_some() {
+                    self.develop_changed(&sender);
+                }
+            }
+            Msg::CropOff(off) => {
+                self.crop_off = off;
+                self.crop_changed(&sender);
+            }
             Msg::Bypass(None, off) => {
                 self.looks_off = off;
                 self.layers_changed(Layers::Look, false, &sender);
@@ -4811,15 +4871,17 @@ impl App {
     /// The crop in full-resolution pixels of the open photo.
     fn crop_region(&self) -> Option<Region> {
         let (w, h) = self.size()?;
-        Some(crop::region(&self.crop, w, h))
+        Some(crop::region(&if self.crop_off { Crop::default() } else { self.crop }, w, h))
     }
 
     /// What the preview shows: the whole straightened frame while editing
     /// the crop, otherwise the crop.
     fn shown_region(&self) -> Option<Region> {
+        if self.editing.is_none() {
+            return self.crop_region();
+        }
         let (w, h) = self.size()?;
-        let c = if self.editing.is_some() { crop::frame(self.crop) } else { self.crop };
-        Some(crop::region(&c, w, h))
+        Some(crop::region(&crop::frame(self.crop), w, h))
     }
 
     /// Crop state and its controls, state first so the controls' echoes
@@ -4873,7 +4935,7 @@ impl App {
         self.view_gen += 1;
         let (s, generation, profile) = (self.input.clone(), self.view_gen, self.profile);
         if d.is_raw() {
-            let ((width, height), develop) = (self.draft_size((w, h)), self.develop);
+            let ((width, height), develop) = (self.draft_size((w, h)), self.applied_develop());
             return self.send(Job::DevelopRaw { generation, region: r, width, height, develop, profile, view: true });
         }
         // shortcut: one thread per request; a scroll burst resamples views nobody sees. Pool them if it shows.
@@ -5286,6 +5348,37 @@ fn rgba8(pixels: &[[f32; 4]]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every Photo section switched off leaves no development tool at work.
+    #[test]
+    fn develop_parts_off_are_neutral() {
+        let x = Detail {
+            nr_luma: 30.0,
+            nr_chroma: 30.0,
+            sharpen: 30.0,
+            usm: 30.0,
+            defringe: 30.0,
+            defringe_green: 30.0,
+            dehaze: 30.0,
+            local_contrast: 30.0,
+            lens_vignette: 30.0,
+            ca_correct: true,
+            nr_ai: true,
+            ..Detail::default()
+        };
+        let mut d = Develop { wb: Some([4000.0, 5.0]), exposure: 1.0, detail: x };
+        for p in [
+            DevPart::WhiteBalance,
+            DevPart::Exposure,
+            DevPart::Noise,
+            DevPart::Presence,
+            DevPart::Detail,
+            DevPart::Lens,
+        ] {
+            p.neutral(&mut d);
+        }
+        assert_eq!(d, Develop::default());
+    }
 
     /// A paste brings the edits but leaves the photo's crop, stars and label.
     #[test]

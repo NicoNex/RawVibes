@@ -286,9 +286,11 @@ pub fn build(sender: &ComponentSender<App>, export_menu: &gio::Menu) -> LabUi {
     stack.add_named(&canvas, Some("image"));
 
     let root = adw::OverlaySplitView::builder()
-        .sidebar_position(gtk::PackType::Start)
-        .min_sidebar_width(320.0)
-        .max_sidebar_width(400.0)
+        // Same side and size as the Photo and Grade sidebar.
+        .sidebar_position(gtk::PackType::End)
+        .min_sidebar_width(340.0)
+        .max_sidebar_width(420.0)
+        .sidebar_width_fraction(0.28)
         .content(&stack)
         .sidebar(&pane)
         .build();

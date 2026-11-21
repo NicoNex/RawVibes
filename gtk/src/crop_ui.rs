@@ -9,7 +9,7 @@ use relm4::gtk::prelude::*;
 use relm4::{ComponentSender, gtk};
 
 use crate::widgets::Slider;
-use crate::{App, CANVAS_MARGIN, Msg, section};
+use crate::{App, CANVAS_MARGIN, Msg, eye_section};
 
 /// A drag in progress: the handle, the crop at its start, and the
 /// frame's logical pixels per normalised unit.
@@ -121,7 +121,7 @@ impl CropUi {
         body.append(&ratio_row);
         body.append(&angle.root);
         body.append(&buttons);
-        let section = section(&gettext("Crop"), &body);
+        let section = eye_section(&gettext("Crop"), &body, true, &[], sender, Msg::CropOff);
 
         let overlay = gtk::DrawingArea::builder().visible(false).build();
         // The line being dragged with the level tool, in overlay pixels.

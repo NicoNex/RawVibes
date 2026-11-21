@@ -166,9 +166,13 @@ the app.
 
 ## Supported cameras and profiles
 
-**RAW in:** RW2, CR2, CR3, NEF, ARW, RAF, ORF, DNG, PEF, SRW and the other formats
-[rawler](https://crates.io/crates/rawler) decodes. The Lumix S9 is tuned and tested
-first. JPEG, PNG and TIFF open too, with the Grade, LUT and crop tools.
+**RAW in:** every format [rawler](https://crates.io/crates/rawler) decodes: Panasonic
+RW2 and RAW, Canon CR3, CR2 and CRW, Nikon NEF and NRW, Sony ARW, SR2 and SRF,
+Fujifilm RAF (X-Trans too), Olympus / OM System ORF, Pentax PEF, Samsung SRW, Leica
+RWL, Hasselblad 3FR and FFF, Phase One IIQ, Sigma X3F, Kodak, Minolta, Mamiya, Leaf,
+Epson and ARRI files, and DNG from any camera or phone. Monochrome sensors open too.
+The Lumix S9 is tuned and tested first. JPEG, PNG, TIFF and WebP open with the
+Grade, LUT and crop tools.
 
 **Log profiles** for grading, LUT export and LUT conversion:
 
@@ -235,6 +239,12 @@ po/      translations (gettext)
 
 ## Install
 
+Every push to `master` builds an Arch Linux package and a macOS disk image:
+download them from the latest
+[Packages run](https://github.com/NicoNex/RawVibes/actions/workflows/packages.yml)
+(Artifacts, at the bottom of the run page; needs a GitHub login). Once installed,
+RawVibes shows up under *Open With* when you right-click a photo or a RAW.
+
 ### Arch Linux
 
 ```sh
@@ -256,11 +266,13 @@ sudo make install               # installs to /usr/local; use PREFIX=~/.local fo
 Other targets: `make test`, `make check` (format, clippy and tests), `make pot`
 (refresh translations), `make clean`.
 
-### macOS
+### macOS (Apple silicon)
 
-The GPU engine has a native Metal backend and the app uses only cross-platform
-GTK. `make dmg` builds a disk image on a Mac; macOS builds are not tested
-regularly yet.
+Open the `.dmg`, drag RawVibes to Applications, and follow its `README.txt`: the
+app is not signed with an Apple Developer ID, so you clear the quarantine flag once
+with `xattr -cr /Applications/RawVibes.app`. To build the disk image yourself, install
+`gtk4 libadwaita adwaita-icon-theme librsvg gettext dylibbundler` with Homebrew and
+run `make dmg`.
 
 ---
 

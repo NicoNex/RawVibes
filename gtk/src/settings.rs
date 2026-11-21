@@ -14,6 +14,10 @@ fn file(name: &str) -> PathBuf {
     glib::user_config_dir().join("rawvibes").join(name)
 }
 
+/// The filmstrip when RawVibes closed, one path per line, and the photo open then.
+pub const ROLL: &str = "roll";
+pub const LAST_PHOTO: &str = "last-photo";
+
 /// "1": RAWs without edits open as in camera.
 pub const AS_IN_CAMERA: &str = "as-in-camera";
 

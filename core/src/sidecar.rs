@@ -35,6 +35,8 @@ pub struct Sidecar {
     /// Stars, 0 (unrated) to 5.
     pub rating: u8,
     pub label: Label,
+    /// The input profile the photo was graded in; `None` in older sidecars.
+    pub profile: Option<Profile>,
 }
 
 /// Colour label of a photo, for sorting a shoot.
@@ -84,6 +86,8 @@ struct File {
     rating: u8,
     #[serde(default)]
     label: Label,
+    #[serde(default)]
+    profile: Option<Profile>,
 }
 
 /// Where the sidecar of `photo` lives.
@@ -125,6 +129,7 @@ impl Sidecar {
             look_blend: self.look_blend,
             rating: self.rating,
             label: self.label,
+            profile: self.profile,
         };
         serde_json::to_string_pretty(&file).expect("sidecars always serialise")
     }
@@ -175,6 +180,7 @@ impl Sidecar {
             ratio: f.ratio,
             looks: f.looks,
             look_blend: f.look_blend,
+            profile: f.profile,
             rating: f.rating.min(5),
             label: f.label,
         })
@@ -201,6 +207,7 @@ mod tests {
             look_blend: Blend::Mix,
             rating: 4,
             label: Label::Green,
+            profile: Some(Profile::VLog),
         }
     }
 

@@ -216,6 +216,8 @@ enum Msg {
     /// Filmstrip: add photos, a photo decoded small (already encoded for
     /// `Profile`), re-encoded for a new profile, pick or drop one, grid view.
     RollAddPaths(Vec<PathBuf>),
+    /// The filmstrip and the photo open when RawVibes last closed.
+    Resume(Vec<PathBuf>, Option<PathBuf>),
     RollLoaded(PathBuf, Result<(Decoded, Profile, Arc<Photo>), String>),
     RollEncoded(Profile, Vec<(PathBuf, Arc<Photo>)>),
     /// The grade settled (debounced): render the filmstrip if this is the latest tick.
@@ -684,7 +686,18 @@ impl App {
         let neutral = Grade::default().params;
         (grade.params.input, grade.params.gamut) = (neutral.input, neutral.gamut);
         let (rating, label) = (self.rating, self.label);
-        Sidecar { develop: self.develop, grade, crop: self.crop, ratio: self.ratio, looks, look_blend, rating, label }
+        let profile = Some(self.profile);
+        Sidecar {
+            develop: self.develop,
+            grade,
+            crop: self.crop,
+            ratio: self.ratio,
+            looks,
+            look_blend,
+            rating,
+            label,
+            profile,
+        }
     }
 
     /// Adds the open photo's edits to its undo history when they changed since the step shown.
@@ -917,6 +930,11 @@ impl App {
     /// The photo's sidecar into the editor, onto a neutral grade without looks.
     fn restore_sidecar(&mut self, sc: Sidecar, sender: &ComponentSender<Self>) {
         (self.rating, self.label) = (sc.rating, sc.label);
+        if let Some(p) = sc.profile {
+            // Set now, so the state read back matches; the dropdown's Msg::Profile echo re-encodes.
+            self.profile = p;
+            self.ui.sidebar.profile_sel.set_selected(Profile::ALL.iter().position(|&q| q == p).unwrap_or(0) as u32);
+        }
         self.develop = sc.develop;
         self.sync_develop();
         let row = crop::PRESETS
@@ -1059,6 +1077,62 @@ impl App {
             self.ui.grid_btn.set_active(false);
         }
         self.upload_roll(true);
+    }
+
+    /// Adds `paths` to the filmstrip and opens `open_at`, or else the first of them.
+    fn add_to_roll(&mut self, paths: Vec<PathBuf>, open_at: Option<PathBuf>, sender: &ComponentSender<Self>) {
+        // Already in the strip: just show it. New ones are appended, the
+        // first of them is opened, and all are decoded small in one thread.
+        let (photos, others): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().partition(|p| is_photo(p));
+        if !others.is_empty() {
+            self.toast(&gettext!("{} files skipped: not JPEG, TIFF, PNG or camera RAW", others.len()));
+        }
+        let mut fresh = Vec::new();
+        let mut show = None;
+        for p in photos {
+            match self.roll.iter().position(|it| it.path == p) {
+                Some(i) => show = show.or(Some(i)),
+                None if self.roll.len() < MAX_ROLL => {
+                    show = show.or(Some(self.roll.len()));
+                    // shortcut: sidecars read on the main thread, small JSON; move to the loader if it shows.
+                    let sc = Sidecar::load(&p).ok().flatten().unwrap_or_default();
+                    self.roll.push(RollItem {
+                        path: p.clone(),
+                        grade: sc.grade,
+                        rating: sc.rating,
+                        label: sc.label,
+                        looks: Vec::new(),
+                        small: None,
+                        encoded: None,
+                    });
+                    fresh.push(p);
+                }
+                None => {
+                    self.toast(&gettext!("The filmstrip holds up to {} photos", MAX_ROLL));
+                    break;
+                }
+            }
+        }
+        if let Some(p) = open_at {
+            show = self.roll.iter().position(|it| it.path == p).or(show);
+        }
+        let open = show.filter(|&i| Some(i) != self.active || !self.has_source());
+        if !fresh.is_empty() {
+            self.roll_changed(sender);
+            // The photo about to be opened gets its small copy from that decode.
+            let opening = open.map(|i| self.roll[i].path.clone());
+            fresh.retain(|p| Some(p) != opening.as_ref());
+            let (s, profile) = (sender.input_sender().clone(), self.profile);
+            std::thread::spawn(move || {
+                for p in fresh {
+                    let small = Decoded::load_max(&p, Some(ROLL_PX)).map(|d| roll_copy(&d, profile));
+                    s.emit(Msg::RollLoaded(p, small));
+                }
+            });
+        }
+        if let Some(i) = open {
+            self.load_active(i, sender);
+        }
     }
 
     /// Opens filmstrip photo `i` for editing (full-size decode off the main thread).
@@ -1642,7 +1716,15 @@ fn edit_name(stem: &str, ext: &str) -> String {
 
 /// `clip`'s edits onto `target`, which keeps its crop, stars and label.
 fn pasted(clip: &Sidecar, target: &Sidecar) -> Sidecar {
-    Sidecar { crop: target.crop, ratio: target.ratio, rating: target.rating, label: target.label, ..clip.clone() }
+    // The input profile, like the crop, belongs to the photo pasted onto.
+    Sidecar {
+        crop: target.crop,
+        ratio: target.ratio,
+        rating: target.rating,
+        label: target.label,
+        profile: target.profile,
+        ..clip.clone()
+    }
 }
 
 /// Header button sending `msg`.
@@ -2073,6 +2155,7 @@ struct Sidebar {
     /// Chain / Mix of the looks, shown with two or more.
     look_blend: gtk::Box,
     look_blend_toggle: adw::ToggleGroup,
+    profile_sel: gtk::DropDown,
     /// The LUT browser, revealed under the look stack.
     browse: gtk::Revealer,
     browse_btn: gtk::ToggleButton,
@@ -2796,6 +2879,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         browse_btn,
         develop,
         look_blend_toggle,
+        profile_sel,
     }
 }
 
@@ -3641,6 +3725,17 @@ impl SimpleComponent for App {
             },
         };
         OPEN.with(|o| o.set(sender.input_sender().clone()).ok());
+        // Pick up where the last session left: its filmstrip and open photo (files since moved are skipped).
+        let roll: Vec<PathBuf> = settings::value(settings::ROLL)
+            .unwrap_or_default()
+            .lines()
+            .map(PathBuf::from)
+            .filter(|p| p.is_file())
+            .collect();
+        if !roll.is_empty() {
+            let last = settings::value(settings::LAST_PHOTO).map(PathBuf::from);
+            sender.input(Msg::Resume(roll, last));
+        }
         if let Some(dir) = settings::folder(settings::LUT_FOLDER) {
             sender.input(Msg::Folder(dir));
         }
@@ -3662,57 +3757,8 @@ impl SimpleComponent for App {
                     }
                 });
             }
-            Msg::RollAddPaths(paths) => {
-                // Already in the strip: just show it. New ones are appended, the
-                // first of them is opened, and all are decoded small in one thread.
-                let (photos, others): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().partition(|p| is_photo(p));
-                if !others.is_empty() {
-                    self.toast(&gettext!("{} files skipped: not JPEG, TIFF, PNG or camera RAW", others.len()));
-                }
-                let mut fresh = Vec::new();
-                let mut show = None;
-                for p in photos {
-                    match self.roll.iter().position(|it| it.path == p) {
-                        Some(i) => show = show.or(Some(i)),
-                        None if self.roll.len() < MAX_ROLL => {
-                            show = show.or(Some(self.roll.len()));
-                            // shortcut: sidecars read on the main thread, small JSON; move to the loader if it shows.
-                            let sc = Sidecar::load(&p).ok().flatten().unwrap_or_default();
-                            self.roll.push(RollItem {
-                                path: p.clone(),
-                                grade: sc.grade,
-                                rating: sc.rating,
-                                label: sc.label,
-                                looks: Vec::new(),
-                                small: None,
-                                encoded: None,
-                            });
-                            fresh.push(p);
-                        }
-                        None => {
-                            self.toast(&gettext!("The filmstrip holds up to {} photos", MAX_ROLL));
-                            break;
-                        }
-                    }
-                }
-                let open = show.filter(|&i| Some(i) != self.active || !self.has_source());
-                if !fresh.is_empty() {
-                    self.roll_changed(&sender);
-                    // The photo about to be opened gets its small copy from that decode.
-                    let opening = open.map(|i| self.roll[i].path.clone());
-                    fresh.retain(|p| Some(p) != opening.as_ref());
-                    let (s, profile) = (sender.input_sender().clone(), self.profile);
-                    std::thread::spawn(move || {
-                        for p in fresh {
-                            let small = Decoded::load_max(&p, Some(ROLL_PX)).map(|d| roll_copy(&d, profile));
-                            s.emit(Msg::RollLoaded(p, small));
-                        }
-                    });
-                }
-                if let Some(i) = open {
-                    self.load_active(i, &sender);
-                }
-            }
+            Msg::RollAddPaths(paths) => self.add_to_roll(paths, None, &sender),
+            Msg::Resume(paths, last) => self.add_to_roll(paths, last, &sender),
             Msg::RollLoaded(path, Ok((small, profile, photo))) => {
                 if let Some(it) = self.roll.iter_mut().find(|it| it.path == path) {
                     (it.small, it.encoded) = (Some(small), Some((profile, photo)));
@@ -3785,6 +3831,10 @@ impl SimpleComponent for App {
             Msg::SaveSidecar(_) => {}
             Msg::Close => {
                 self.save_now();
+                let roll: Vec<String> = self.roll.iter().map(|it| it.path.to_string_lossy().into_owned()).collect();
+                let last = self.path.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                let _ = settings::set_value(settings::ROLL, &roll.join("\n"));
+                let _ = settings::set_value(settings::LAST_PHOTO, &last);
                 self.ui.window.destroy();
             }
             // Another photo was opened, or the looks reset, meanwhile.
@@ -4649,6 +4699,7 @@ impl SimpleComponent for App {
             }
             Msg::Profile(profile) => {
                 self.profile = profile;
+                self.schedule_save();
                 self.reencode_roll();
                 if self.show_chart {
                     sender.input(Msg::Chart(true));

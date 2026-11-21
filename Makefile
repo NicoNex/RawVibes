@@ -133,7 +133,8 @@ dmg: release models
 	# Queried before dylibbundler: afterwards the loaders only load from inside the app.
 	gdk-pixbuf-query-loaders $(APP)/Contents/$(PIXBUF)/loaders/*.so \
 	  | sed 's|$(abspath $(APP))/Contents|@CONTENTS@|g' > $(APP)/Contents/Resources/loaders.cache.in
-	dylibbundler -of -b -d $(APP)/Contents/libs -p @executable_path/../libs/ -x $(APP)/Contents/MacOS/$(BIN)-bin \
+	# dylibbundler asks on stdin for a library it cannot find: "quit" fails the build instead of hanging it.
+	yes quit | dylibbundler -of -b -s $(BREW)/lib -d $(APP)/Contents/libs -p @executable_path/../libs/ -x $(APP)/Contents/MacOS/$(BIN)-bin \
 	  $(foreach f,$(wildcard $(BREW)/$(PIXBUF)/loaders/*.so),-x $(APP)/Contents/$(PIXBUF)/loaders/$(notdir $(f)))
 	install -d target/RawVibes.iconset
 	for s in 16 32 128 256 512; do \

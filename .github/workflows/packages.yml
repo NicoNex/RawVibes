@@ -17,6 +17,7 @@ jobs:
     name: Arch Linux package
     runs-on: ubuntu-latest
     container: archlinux:latest
+    timeout-minutes: 60
     steps:
       - name: Install build dependencies
         run: |
@@ -40,6 +41,7 @@ jobs:
   macos:
     name: macOS disk image
     runs-on: macos-15
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable

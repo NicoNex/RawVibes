@@ -14,7 +14,7 @@ type M3 = [[f32; 3]; 3];
 
 /// A Develop section an eye toggle switches off: left out of preview and
 /// export, while its values stay in the sidecar.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum DevPart {
     WhiteBalance,
     Exposure,

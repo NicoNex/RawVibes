@@ -156,7 +156,7 @@ impl Default for Grade {
 }
 
 /// Groups of grade controls that can be switched off together.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Stage {
     WhiteBalance,
     Tone,

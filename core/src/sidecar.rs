@@ -42,7 +42,7 @@ pub struct Sidecar {
 }
 
 /// A sidebar section switched off with its eye toggle.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Off {
     Grade(Stage),
     Develop(DevPart),

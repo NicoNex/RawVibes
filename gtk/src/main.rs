@@ -790,7 +790,7 @@ impl App {
             });
             match r {
                 Ok(sc) => {
-                    (it.grade, it.looks) = (sc.grade, looks.clone());
+                    (it.grade, it.looks) = (card_grade(&sc), looks.clone());
                     n += 1;
                 }
                 Err(e) => failed.push(format!("{}: {e}", file_label(&it.path))),
@@ -904,7 +904,7 @@ impl App {
         old
     }
 
-    /// Saves the sidecar a second after the last edit.
+    /// Writes the sidecar shortly after the last edit, and makes it an undo step a second after.
     fn schedule_save(&mut self) {
         if self.saved.is_none() {
             return;
@@ -1105,7 +1105,7 @@ impl App {
                     let sc = Sidecar::load(&p).ok().flatten().unwrap_or_default();
                     self.roll.push(RollItem {
                         path: p.clone(),
-                        grade: sc.grade,
+                        grade: card_grade(&sc),
                         rating: sc.rating,
                         label: sc.label,
                         looks: Vec::new(),
@@ -1398,7 +1398,10 @@ impl App {
         let grade = self.bypassed.iter().map(|&s| Off::Grade(s));
         let develop = self.develop_off.iter().map(|&p| Off::Develop(p));
         let rest = [(self.looks_off, Off::Looks), (self.crop_off, Off::Crop)].into_iter().filter(|o| o.0).map(|o| o.1);
-        grade.chain(develop).chain(rest).collect()
+        // Sorted, so a section switched off and on again reads back the same.
+        let mut offs: Vec<Off> = grade.chain(develop).chain(rest).collect();
+        offs.sort();
+        offs
     }
 
     fn set_off_state(&mut self, offs: &[Off]) {
@@ -1753,15 +1756,28 @@ fn edit_name(stem: &str, ext: &str) -> String {
 
 /// `clip`'s edits onto `target`, which keeps its crop, stars and label.
 fn pasted(clip: &Sidecar, target: &Sidecar) -> Sidecar {
-    // The input profile, like the crop, belongs to the photo pasted onto.
+    // The input profile, like the crop (and its eye), belongs to the photo pasted onto.
+    let crop_eye = target.off.iter().filter(|&&o| o == Off::Crop);
     Sidecar {
         crop: target.crop,
         ratio: target.ratio,
         rating: target.rating,
         label: target.label,
         profile: target.profile,
+        off: clip.off.iter().filter(|&&o| o != Off::Crop).chain(crop_eye).copied().collect(),
         ..clip.clone()
     }
+}
+
+/// A filmstrip card's grade: the sidecar's, with its switched-off sections neutral.
+fn card_grade(sc: &Sidecar) -> Grade {
+    let mut g = sc.grade.clone();
+    sc.off.iter().for_each(|o| {
+        if let Off::Grade(s) = o {
+            g.bypass(*s)
+        }
+    });
+    g
 }
 
 /// Header button sending `msg`.
@@ -3842,6 +3858,10 @@ impl SimpleComponent for App {
             Msg::WriteSidecar(_) => {}
             Msg::Close => {
                 self.save_now();
+                // A running export would hold the join (and the frozen window) until it is written.
+                if let Some(cancel) = &self.exporting {
+                    cancel.store(true, Ordering::Relaxed);
+                }
                 // The GPU worker ends with its channel; NVIDIA's exit handlers segfault if it is still tearing down.
                 self.jobs = mpsc::channel().0;
                 if let Some(t) = self.gpu_thread.take() {
@@ -4001,9 +4021,10 @@ impl SimpleComponent for App {
                 self.save_now(); // the previous photo's last edits
                 // Each photo has its own grade and looks: the previous one keeps its frame's.
                 let left = self.replace_looks(Vec::new(), &sender);
+                let graded = self.graded();
                 let previous = self.path.as_ref().and_then(|p| self.roll.iter_mut().find(|it| it.path == *p));
                 if let Some(it) = previous {
-                    it.grade = self.grade.clone();
+                    it.grade = graded;
                     it.looks = left;
                 }
                 self.apply_grade(Grade::default());
@@ -4016,18 +4037,22 @@ impl SimpleComponent for App {
                 self.path = Some(path);
                 self.develop = Develop::default();
                 (self.rating, self.label) = (0, Label::None);
-                self.set_offs(&[]);
                 self.drafting = false;
                 self.sync_develop();
                 let path = self.path.clone().expect("set above");
+                // The sidecar sets the eyes itself: resetting them first would echo each one twice.
                 match Sidecar::load(&path) {
                     Ok(Some(sc)) => self.restore_sidecar(sc, &sender),
                     Ok(None) => {
+                        self.set_offs(&[]);
                         if self.camera().is_some() && settings::value(settings::AS_IN_CAMERA).as_deref() == Some("1") {
                             sender.input(Msg::AsInCamera(CameraPart::All));
                         }
                     }
-                    Err(e) => self.toast(&gettext!("Cannot read the edits saved for {}: {}", file_label(&path), e)),
+                    Err(e) => {
+                        self.set_offs(&[]);
+                        self.toast(&gettext!("Cannot read the edits saved for {}: {}", file_label(&path), e))
+                    }
                 }
                 // Left earlier this session: that stack is newer than the sidecar's and keeps path-less layers.
                 if let Some(looks) =
@@ -5411,12 +5436,13 @@ mod tests {
     /// A paste brings the edits but leaves the photo's crop, stars and label.
     #[test]
     fn paste_keeps_crop_and_marks() {
-        let mut clip = Sidecar { rating: 5, label: Label::Red, ..Default::default() };
+        let mut clip = Sidecar { rating: 5, label: Label::Red, off: vec![Off::Crop, Off::Looks], ..Default::default() };
         clip.develop.exposure = 1.0;
         clip.crop.angle = 3.0;
         let target = Sidecar { rating: 2, label: Label::Blue, ..Default::default() };
         let p = pasted(&clip, &target);
         assert_eq!((p.develop.exposure, p.crop, p.rating, p.label), (1.0, target.crop, 2, Label::Blue));
+        assert_eq!(p.off, [Off::Looks]);
     }
 
     /// The catalogs `make` builds are found and read (needs the it_IT.UTF-8 locale).

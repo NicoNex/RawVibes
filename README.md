@@ -6,11 +6,11 @@
 
 ### Develop your RAW photos and take the look back to the camera.
 
-A RAW photo editor for Linux with a colorist's grading tools built in.
-Develop a Lumix RW2 (or any RAW that rawler reads) on the GPU, grade it with wheels,
-curves and your LUT library, export the photo at full resolution, and export the
-same grade as a `.cube` or `.vlt` LUT that your camera can load.
-Free and open source under the GPL-3.0.
+RawVibes is a free, open-source RAW photo editor for Linux with a colorist's
+color grading tools built in. Develop a Lumix S9 RW2 (or any RAW that rawler reads)
+on the GPU, grade it with wheels, curves and your LUT library, and export the photo
+at full resolution. Then export the same grade as a 3D LUT, `.cube` or `.vlt`,
+that your camera loads as a Real Time LUT.
 
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 ![Rust](https://img.shields.io/badge/Rust-2024-orange?logo=rust)
@@ -30,6 +30,9 @@ RawVibes started as VibingLUT, a workbench for building and converting 3D LUTs.
 Its author shoots a Lumix S9 and wanted one app that goes from the RW2 to the
 finished photo, and from the look built on that photo to a LUT loaded into the
 camera. RawVibes adds a full RAW development stage in front of the grade.
+
+If you develop with darktable or RawTherapee, RawVibes is an alternative built
+around one idea: the look you grade on a photo is also a LUT you can take with you.
 
 - **One photo, two outputs.** The Photo tab holds what only a still can have:
   noise reduction, sharpening, crop, vignetting. The Grade tab holds what a LUT can
@@ -126,7 +129,7 @@ and after.
 The file is written to a temporary copy first, so stopping an export leaves the
 old file untouched.
 
-### LUT Lab: combine and convert LUTs
+### LUT Lab: combine LUTs and convert them between log profiles
 
 <img src="docs/screenshots/lab.jpg" alt="LUT Lab converting a Rec.709 LUT so it can be loaded on a camera shooting Panasonic V-Log" width="100%">
 
@@ -135,15 +138,16 @@ old file untouched.
 - **Retarget a LUT to another camera profile.** Tell the Lab which profile a LUT
   was made for and which signal you will load it on. The conversion uses the
   manufacturers' log curves and gamut matrices. Use Fujifilm's F-Log2 C film
-  simulation LUTs on a Panasonic in V-Log, or turn a Rec.709 look into an S-Log3
-  or C-Log3 LUT and back.
+  simulation LUTs on a Panasonic in V-Log, turn a V-Log to Rec.709 LUT into one
+  for S-Log3 or C-Log3, and back.
 - The source profile is detected from vendor file names such as
   `FLog2C_to_ETERNA…`, and a plain-language line says what the exported LUT will do.
 
 ### Export LUTs
 
-`Ctrl+Shift+E` exports the Grade tab, LUTs included, as a 33³ `.cube`. The export
-menu has the other sizes and formats:
+This is how you create a LUT from a photo: grade it, then press `Ctrl+Shift+E` to
+export the Grade tab, LUTs included, as a 33³ `.cube`. The export menu has the
+other sizes and formats:
 
 | Target | Format | Size |
 |---|---|---|
@@ -318,8 +322,3 @@ GPL-3.0 / CC-BY-4.0 (see [models/README.md](models/README.md)).
 ## License
 
 [GPL-3.0-or-later](LICENSE).
-
-<sub>Keywords: RAW photo editor for Linux, Lumix S9 RW2 editor, RAW developer, AI
-denoise, darktable alternative, RawTherapee alternative, color grading, 3D LUT
-creator, create LUT from photo, Lumix Real Time LUT, V-Log to Rec.709, convert LUT
-between log profiles, cube, VLT, HALD CLUT, GTK4, libadwaita, Rust, Vulkan.</sub>

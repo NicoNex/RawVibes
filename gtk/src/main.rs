@@ -214,9 +214,8 @@ enum Msg {
     Refine(bool),
     /// Filmstrip: add photos, a photo decoded small (already encoded for
     /// `Profile`), re-encoded for a new profile, pick or drop one, grid view.
-    RollAddPaths(Vec<PathBuf>),
-    /// The filmstrip and the photo open when RawVibes last closed.
-    Resume(Vec<PathBuf>, Option<PathBuf>),
+    /// Photos for the filmstrip, and the one of them to open (else the first new one).
+    RollAddPaths(Vec<PathBuf>, Option<PathBuf>),
     RollLoaded(PathBuf, Result<(Decoded, Profile, Arc<Photo>), String>),
     RollEncoded(Profile, Vec<(PathBuf, Arc<Photo>)>),
     /// The grade settled (debounced): render the filmstrip if this is the latest tick.
@@ -472,10 +471,8 @@ struct App {
     /// LUTs applied after the grade on the Grade page, baked into its export.
     looks: Vec<LabLayer>,
     /// Sections switched off with their eye toggle; they are left out of preview and export.
-    bypassed: Vec<Stage>,
-    looks_off: bool,
-    develop_off: Vec<DevPart>,
-    crop_off: bool,
+    /// Sorted, so a section switched off and on again reads back the same.
+    off: Vec<Off>,
     /// The LUT browser is open (its thumbnails follow the grade).
     browsing: bool,
     /// Library LUT previewed after the looks (not part of them until
@@ -651,7 +648,7 @@ impl App {
     /// The grade as previewed and exported: switched-off sections are neutral.
     fn graded(&self) -> Grade {
         let mut g = self.grade.clone();
-        self.bypassed.iter().for_each(|&s| g.bypass(s));
+        bypass_off(&mut g, &self.off);
         g
     }
 
@@ -688,7 +685,7 @@ impl App {
         let neutral = Grade::default().params;
         (grade.params.input, grade.params.gamut) = (neutral.input, neutral.gamut);
         let (rating, label) = (self.rating, self.label);
-        let (profile, off) = (Some(self.profile), self.offs());
+        let (profile, off) = (Some(self.profile), self.off.clone());
         Sidecar {
             develop: self.develop,
             grade,
@@ -1074,7 +1071,9 @@ impl App {
 
     /// Rebuilds the filmstrip cards after photos were added or removed.
     fn roll_changed(&mut self, sender: &ComponentSender<Self>) {
-        self.save_session();
+        // Remembered for the next start; a failed write only loses the resume.
+        let roll: Vec<String> = self.roll.iter().map(|it| it.path.to_string_lossy().into_owned()).collect();
+        let _ = settings::set_value(settings::ROLL, &roll.join("\n"));
         let names: Vec<String> = self.roll.iter().map(|it| file_label(&it.path)).collect();
         self.ui.filmstrip.rebuild(&names, self.active, sender);
         self.show_marks();
@@ -1142,21 +1141,12 @@ impl App {
         }
     }
 
-    /// The filmstrip and the open photo, for the next start.
-    fn save_session(&self) {
-        let roll: Vec<String> = self.roll.iter().map(|it| it.path.to_string_lossy().into_owned()).collect();
-        let last = self.roll.get(self.active.unwrap_or(usize::MAX)).map(|it| it.path.to_string_lossy().into_owned());
-        // ponytail: a failed write only loses the resume.
-        let _ = settings::set_value(settings::ROLL, &roll.join("\n"));
-        let _ = settings::set_value(settings::LAST_PHOTO, &last.unwrap_or_default());
-    }
-
     /// Opens filmstrip photo `i` for editing (full-size decode off the main thread).
     fn load_active(&mut self, i: usize, sender: &ComponentSender<Self>) {
         let Some(path) = self.roll.get(i).map(|it| it.path.clone()) else { return };
         self.active = Some(i);
         self.ui.filmstrip.set_active(self.active);
-        self.save_session();
+        let _ = settings::set_value(settings::LAST_PHOTO, &path.to_string_lossy());
         // ponytail: a failed save only loses the dialog's start folder.
         if let Some(dir) = path.parent() {
             let _ = settings::set_folder(settings::PHOTO_FOLDER, dir);
@@ -1393,33 +1383,21 @@ impl App {
         self.decoded.as_ref()?.camera()
     }
 
-    /// The sections switched off, as the sidecar keeps them.
-    fn offs(&self) -> Vec<Off> {
-        let grade = self.bypassed.iter().map(|&s| Off::Grade(s));
-        let develop = self.develop_off.iter().map(|&p| Off::Develop(p));
-        let rest = [(self.looks_off, Off::Looks), (self.crop_off, Off::Crop)].into_iter().filter(|o| o.0).map(|o| o.1);
-        // Sorted, so a section switched off and on again reads back the same.
-        let mut offs: Vec<Off> = grade.chain(develop).chain(rest).collect();
-        offs.sort();
-        offs
-    }
-
-    fn set_off_state(&mut self, offs: &[Off]) {
-        self.bypassed = offs.iter().filter_map(|o| if let Off::Grade(s) = o { Some(*s) } else { None }).collect();
-        self.develop_off = offs.iter().filter_map(|o| if let Off::Develop(p) = o { Some(*p) } else { None }).collect();
-        (self.looks_off, self.crop_off) = (offs.contains(&Off::Looks), offs.contains(&Off::Crop));
-    }
-
     /// Switches the sections in `offs` off and the others on; the eyes' echoes re-render what changed.
     fn set_offs(&mut self, offs: &[Off]) {
-        self.set_off_state(offs);
+        self.off = offs.to_vec();
+        self.off.sort();
         EYES.with(|e| e.borrow().iter().for_each(|(p, eye)| eye.set_active(offs.contains(p))));
     }
 
     /// The development the preview and export use: `develop` without the sections switched off.
     fn applied_develop(&self) -> Develop {
         let mut d = self.develop;
-        self.develop_off.iter().for_each(|p| p.neutral(&mut d));
+        self.off.iter().for_each(|o| {
+            if let Off::Develop(p) = o {
+                p.neutral(&mut d)
+            }
+        });
         d
     }
 
@@ -1648,7 +1626,7 @@ impl App {
     /// Sends the looks, plus the previewed candidate, to the photo and the filmstrip.
     fn show_looks(&mut self) {
         let mut layers = self.look_layers();
-        if let Some((_, lut)) = self.candidate.as_ref().filter(|_| !self.looks_off) {
+        if let Some((_, lut)) = self.candidate.as_ref().filter(|_| !self.off.contains(&Off::Looks)) {
             let input = Profile::guess_from_name(&lut.title);
             layers.push(Layer { source: Source::Lut(lut.clone()), intensity: 1.0, input });
         }
@@ -1666,7 +1644,7 @@ impl App {
     }
 
     fn look_layers(&self) -> Vec<Layer> {
-        if self.looks_off {
+        if self.off.contains(&Off::Looks) {
             return Vec::new();
         }
         self.looks.iter().filter(|l| l.on).map(|l| self.job_layer(l)).collect()
@@ -1757,14 +1735,18 @@ fn edit_name(stem: &str, ext: &str) -> String {
 /// `clip`'s edits onto `target`, which keeps its crop, stars and label.
 fn pasted(clip: &Sidecar, target: &Sidecar) -> Sidecar {
     // The input profile, like the crop (and its eye), belongs to the photo pasted onto.
-    let crop_eye = target.off.iter().filter(|&&o| o == Off::Crop);
+    let mut off: Vec<Off> = clip.off.iter().copied().filter(|&o| o != Off::Crop).collect();
+    if target.off.contains(&Off::Crop) {
+        off.push(Off::Crop);
+        off.sort();
+    }
     Sidecar {
         crop: target.crop,
         ratio: target.ratio,
         rating: target.rating,
         label: target.label,
         profile: target.profile,
-        off: clip.off.iter().filter(|&&o| o != Off::Crop).chain(crop_eye).copied().collect(),
+        off,
         ..clip.clone()
     }
 }
@@ -1772,12 +1754,17 @@ fn pasted(clip: &Sidecar, target: &Sidecar) -> Sidecar {
 /// A filmstrip card's grade: the sidecar's, with its switched-off sections neutral.
 fn card_grade(sc: &Sidecar) -> Grade {
     let mut g = sc.grade.clone();
-    sc.off.iter().for_each(|o| {
+    bypass_off(&mut g, &sc.off);
+    g
+}
+
+/// Neutralises the grade stages in `off`.
+fn bypass_off(g: &mut Grade, off: &[Off]) {
+    off.iter().for_each(|o| {
         if let Off::Grade(s) = o {
             g.bypass(*s)
         }
     });
-    g
 }
 
 /// Header button sending `msg`.
@@ -1838,18 +1825,6 @@ fn section_tabs(stack: &adw::ViewStack, panes: &[&gtk::Box]) {
 /// Card with a collapsible header, like the sections of a grading panel.
 fn section(title: &str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
     section_with(title, child, &[], true)
-}
-
-/// Section with an eye toggle that switches it off (`which` = None: the LUTs
-/// after the grade). Advanced sections start `open: false`, collapsed.
-fn bypassable(
-    title: &str,
-    child: &impl IsA<gtk::Widget>,
-    which: Option<Stage>,
-    open: bool,
-    sender: &ComponentSender<App>,
-) -> gtk::Box {
-    eye_section(title, child, open, &[], sender, which.map_or(Off::Looks, Off::Grade))
 }
 
 /// Section with an eye toggle that switches `part` off, after the `extra` header buttons (e.g. "As in camera").
@@ -2653,7 +2628,14 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
 
     // Reference match comes first: the rest refines it.
     let matching = build_match(sender);
-    grade.append(&bypassable(&gettext("Reference match"), &matching.stack, Some(Stage::Match), false, sender));
+    grade.append(&eye_section(
+        &gettext("Reference match"),
+        &matching.stack,
+        false,
+        &[],
+        sender,
+        Off::Grade(Stage::Match),
+    ));
 
     let mut sliders = Vec::new();
     let mut add = |bx: &gtk::Box, label: &str, min: f64, max: f64, digits: u32, track: Option<&str>, field: Field| {
@@ -2667,7 +2649,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     let wb = vbox(4);
     add(&wb, &gettext("Temperature"), -100.0, 100.0, 0, Some("track-temp"), |p| &mut p.temperature);
     add(&wb, &gettext("Tint"), -100.0, 100.0, 0, Some("track-tint"), |p| &mut p.tint);
-    grade.append(&bypassable(&gettext("Warmth"), &wb, Some(Stage::WhiteBalance), true, sender));
+    grade.append(&eye_section(&gettext("Warmth"), &wb, true, &[], sender, Off::Grade(Stage::WhiteBalance)));
 
     let tone = vbox(4);
     add(&tone, &gettext("Exposure"), -3.0, 3.0, 2, None, |p| &mut p.exposure);
@@ -2676,17 +2658,17 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     add(&tone, &gettext("Shadows"), -100.0, 100.0, 0, None, |p| &mut p.shadows);
     add(&tone, &gettext("Whites"), -100.0, 100.0, 0, None, |p| &mut p.whites);
     add(&tone, &gettext("Blacks"), -100.0, 100.0, 0, None, |p| &mut p.blacks);
-    grade.append(&bypassable(&gettext("Tone"), &tone, Some(Stage::Tone), true, sender));
+    grade.append(&eye_section(&gettext("Tone"), &tone, true, &[], sender, Off::Grade(Stage::Tone)));
 
     let (mixer_box, mixer) = build_mixer(sender);
-    grade.append(&bypassable(&gettext("Channel mixer"), &mixer_box, Some(Stage::Mixer), false, sender));
+    grade.append(&eye_section(&gettext("Channel mixer"), &mixer_box, false, &[], sender, Off::Grade(Stage::Mixer)));
 
     let color = vbox(4);
     add(&color, &gettext("Saturation"), -100.0, 100.0, 0, None, |p| &mut p.saturation);
     add(&color, &gettext("Vibrance"), -100.0, 100.0, 0, None, |p| &mut p.vibrance);
     add(&color, &gettext("Shadow saturation"), -100.0, 100.0, 0, None, |p| &mut p.sat_shadows);
     add(&color, &gettext("Highlight saturation"), -100.0, 100.0, 0, None, |p| &mut p.sat_highlights);
-    grade.append(&bypassable(&gettext("Color"), &color, Some(Stage::Color), true, sender));
+    grade.append(&eye_section(&gettext("Color"), &color, true, &[], sender, Off::Grade(Stage::Color)));
 
     let film = vbox(4);
     add(&film, &gettext("Subtractive saturation"), -100.0, 100.0, 0, Some("track-film-sat"), |p| &mut p.film_sat);
@@ -2698,7 +2680,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     film.append(&caption(&gettext(
         "Soft light deepens shadows and lifts highlights, as RawTherapee's; 30 is its default.",
     )));
-    grade.append(&bypassable(&gettext("Film color"), &film, Some(Stage::Film), true, sender));
+    grade.append(&eye_section(&gettext("Film color"), &film, true, &[], sender, Off::Grade(Stage::Film)));
 
     // HSL mixer (OKLCh bands)
     let hsl = vbox(6);
@@ -2738,7 +2720,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         hsl.append(&s.root);
         s
     });
-    grade.append(&bypassable(&gettext("Selective color"), &hsl, Some(Stage::Selective), true, sender));
+    grade.append(&eye_section(&gettext("Selective color"), &hsl, true, &[], sender, Off::Grade(Stage::Selective)));
 
     let snd = sender.clone();
     let hue_curves = CurveEditor::new(HUE_HUE..LUM_SAT + 1, move |ch, c| snd.input(Msg::Curve(ch, c)));
@@ -2754,7 +2736,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         ),
         sender,
     );
-    grade.append(&bypassable(&gettext("Hue curves"), &hue_box, Some(Stage::HueCurves), false, sender));
+    grade.append(&eye_section(&gettext("Hue curves"), &hue_box, false, &[], sender, Off::Grade(Stage::HueCurves)));
 
     // Primaries: lift / gamma / gain / offset wheels with a master slider each.
     let wheels_row = gtk::Grid::builder().column_spacing(10).row_spacing(10).column_homogeneous(true).build();
@@ -2772,7 +2754,14 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         wheels_row.attach(&col, (i % 2) as i32, (i / 2) as i32, 1, 1);
         wheels.push((wheel, luma));
     }
-    grade.append(&bypassable(&gettext("Primary color wheels"), &wheels_row, Some(Stage::Wheels), true, sender));
+    grade.append(&eye_section(
+        &gettext("Primary color wheels"),
+        &wheels_row,
+        true,
+        &[],
+        sender,
+        Off::Grade(Stage::Wheels),
+    ));
 
     // Curves
     let snd = sender.clone();
@@ -2788,7 +2777,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         &gettext("Click to add a point, double-click or right-click to remove it"),
         sender,
     );
-    grade.append(&bypassable(&gettext("Curves"), &curve_box, Some(Stage::Curves), true, sender));
+    grade.append(&eye_section(&gettext("Curves"), &curve_box, true, &[], sender, Off::Grade(Stage::Curves)));
 
     // LUTs after the grade
     let look_box = vbox(8);
@@ -2830,7 +2819,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     let browse = gtk::Revealer::builder().transition_type(gtk::RevealerTransitionType::SlideDown).build();
     look_box.append(&browse);
     look_box.append(&caption(&gettext("Applied after the grade, top to bottom, and included in the exported LUT.")));
-    grade.append(&bypassable(&gettext("LUTs"), &look_box, None, true, sender));
+    grade.append(&eye_section(&gettext("LUTs"), &look_box, true, &[], sender, Off::Looks));
     photo.append(crop);
 
     let vig = vbox(4);
@@ -2838,7 +2827,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     add(&vig, &gettext("Midpoint"), -100.0, 100.0, 0, None, |p| &mut p.vignette_mid);
     add(&vig, &gettext("Roundness"), -100.0, 100.0, 0, None, |p| &mut p.vignette_round);
     add(&vig, &gettext("Feather"), -100.0, 100.0, 0, None, |p| &mut p.vignette_feather);
-    photo.append(&bypassable(&gettext("Vignette"), &vig, Some(Stage::Vignette), false, sender));
+    photo.append(&eye_section(&gettext("Vignette"), &vig, false, &[], sender, Off::Grade(Stage::Vignette)));
     panel.append(&photo);
     panel.append(&grade);
 
@@ -3624,7 +3613,7 @@ impl SimpleComponent for App {
             if paths.is_empty() {
                 return false;
             }
-            snd.input(Msg::RollAddPaths(paths));
+            snd.input(Msg::RollAddPaths(paths, None));
             true
         });
         window.add_controller(drop);
@@ -3643,10 +3632,7 @@ impl SimpleComponent for App {
             page: Page::Grade,
             lab_layers: Vec::new(),
             looks: Vec::new(),
-            bypassed: Vec::new(),
-            looks_off: false,
-            develop_off: Vec::new(),
-            crop_off: false,
+            off: Vec::new(),
             browsing: false,
             candidate: None,
             preview_req: None,
@@ -3759,7 +3745,7 @@ impl SimpleComponent for App {
             .collect();
         if !roll.is_empty() {
             let last = settings::value(settings::LAST_PHOTO).map(PathBuf::from);
-            sender.input(Msg::Resume(roll, last));
+            sender.input(Msg::RollAddPaths(roll, last));
         }
         if let Some(dir) = settings::folder(settings::LUT_FOLDER) {
             sender.input(Msg::Folder(dir));
@@ -3778,12 +3764,11 @@ impl SimpleComponent for App {
                     let paths: Vec<PathBuf> =
                         files.iter::<gio::File>().filter_map(|f| f.ok().and_then(|f| f.path())).collect();
                     if !paths.is_empty() {
-                        s.input(Msg::RollAddPaths(paths));
+                        s.input(Msg::RollAddPaths(paths, None));
                     }
                 });
             }
-            Msg::RollAddPaths(paths) => self.add_to_roll(paths, None, &sender),
-            Msg::Resume(paths, last) => self.add_to_roll(paths, last, &sender),
+            Msg::RollAddPaths(paths, open_at) => self.add_to_roll(paths, open_at, &sender),
             Msg::RollLoaded(path, Ok((small, profile, photo))) => {
                 if let Some(it) = self.roll.iter_mut().find(|it| it.path == path) {
                     (it.small, it.encoded) = (Some(small), Some((profile, photo)));
@@ -3864,6 +3849,7 @@ impl SimpleComponent for App {
                 }
                 // The GPU worker ends with its channel; NVIDIA's exit handlers segfault if it is still tearing down.
                 self.jobs = mpsc::channel().0;
+                self.ui.window.set_visible(false);
                 if let Some(t) = self.gpu_thread.take() {
                     let _ = t.join();
                 }
@@ -4631,12 +4617,11 @@ impl SimpleComponent for App {
                 self.hide_filtered_selection();
             }
             Msg::Off(part, off) => {
-                let mut offs = self.offs();
-                offs.retain(|&p| p != part);
+                self.off.retain(|&p| p != part);
                 if off {
-                    offs.push(part);
+                    self.off.push(part);
+                    self.off.sort();
                 }
-                self.set_off_state(&offs);
                 match part {
                     Off::Grade(_) => self.render(),
                     Off::Looks => self.layers_changed(Layers::Look, false, &sender),
@@ -4953,7 +4938,7 @@ impl App {
     /// The crop in full-resolution pixels of the open photo.
     fn crop_region(&self) -> Option<Region> {
         let (w, h) = self.size()?;
-        Some(crop::region(&if self.crop_off { Crop::default() } else { self.crop }, w, h))
+        Some(crop::region(&if self.off.contains(&Off::Crop) { Crop::default() } else { self.crop }, w, h))
     }
 
     /// What the preview shows: the whole straightened frame while editing
@@ -5380,7 +5365,7 @@ fn main() {
     app.connect_open(|app, files, _| {
         let paths: Vec<PathBuf> = files.iter().filter_map(|f| f.path()).collect();
         if !paths.is_empty() {
-            OPEN.with(|o| o.get().map(|s| s.emit(Msg::RollAddPaths(paths))));
+            OPEN.with(|o| o.get().map(|s| s.emit(Msg::RollAddPaths(paths, None))));
         }
         app.activate();
     });

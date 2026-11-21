@@ -239,10 +239,8 @@ po/      translations (gettext)
 
 ## Install
 
-Every push to `master` builds an Arch Linux package and a macOS disk image:
-download them from the latest
-[Packages run](https://github.com/NicoNex/RawVibes/actions/workflows/packages.yml)
-(Artifacts, at the bottom of the run page; needs a GitHub login). Once installed,
+Every push to `master` builds an Arch Linux package and a macOS disk image and
+publishes them in the [latest release](https://github.com/NicoNex/RawVibes/releases/latest). Once installed,
 RawVibes shows up under *Open With* when you right-click a photo or a RAW.
 
 ### Arch Linux

@@ -23,8 +23,8 @@ MODELS_URL := https://github.com/darktable-org/darktable-ai/releases/download/re
 MODELS_SHA := d71b5f1e727c85a359e6f74dca9e2016c9d8fc3e2f7ac3e9b347d80ceca969af
 MODELS     := $(foreach v,bayer linear,models/rawnind/$(v).bin models/rawnind/$(v).json)
 DTMODEL    := target/models/rawdenoise-nind.dtmodel
-# macOS has shasum but no sha256sum.
-SHA256     := $(shell command -v sha256sum >/dev/null && echo sha256sum || echo shasum -a 256)
+# macOS: shasum (its sha256sum -c reads no stdin); Linux: sha256sum.
+SHA256     := $(shell command -v shasum >/dev/null && echo shasum -a 256 || echo sha256sum)
 
 .PHONY: all build run release run-release test check fmt clean install uninstall arch dmg pot locale models
 
@@ -77,7 +77,7 @@ $(DTMODEL):
 
 # One run writes every file; a failed one leaves none behind to look done.
 $(MODELS) &: $(DTMODEL)
-	echo "$(MODELS_SHA)  $(DTMODEL)" | $(SHA256) -c
+	test "$$($(SHA256) $(DTMODEL) | cut -d' ' -f1)" = $(MODELS_SHA) || { echo "$(DTMODEL): wrong checksum"; exit 1; }
 	unzip -o -q $(DTMODEL) -d target/models
 	python3 tools/convert_rawnind.py target/models/rawdenoise-nind models/rawnind || { rm -rf models/rawnind; exit 1; }
 

@@ -96,8 +96,7 @@ install: target/release/$(BIN) locale lensfun
 	  $(DESTDIR)$(PREFIX)/share/locale/$$l/LC_MESSAGES/$(BIN).mo; done
 	install -Dm644 data/$(APP_ID).desktop $(DESTDIR)$(PREFIX)/share/applications/$(APP_ID).desktop
 	install -Dm644 data/$(APP_ID).svg $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/$(APP_ID).svg
-	install -Dm644 data/icons/hicolor/scalable/actions/$(BIN)-lut-symbolic.svg \
-	  $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/actions/$(BIN)-lut-symbolic.svg
+	install -Dm644 -t $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/actions data/icons/hicolor/scalable/actions/*.svg
 	install -Dm644 LICENSE $(DESTDIR)$(PREFIX)/share/licenses/$(BIN)/LICENSE
 	if [ -f target/lensfun.json ]; then install -Dm644 target/lensfun.json $(DESTDIR)$(PREFIX)/share/$(BIN)/lensfun.json; \
 	  install -Dm644 LENSFUN.md $(DESTDIR)$(PREFIX)/share/licenses/$(BIN)/LENSFUN.md; fi
@@ -111,7 +110,7 @@ uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN) \
 	      $(DESTDIR)$(PREFIX)/share/applications/$(APP_ID).desktop \
 	      $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/$(APP_ID).svg \
-	      $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/actions/$(BIN)-lut-symbolic.svg \
+	      $(foreach f,$(notdir $(wildcard data/icons/hicolor/scalable/actions/*.svg)),$(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/actions/$(f)) \
 	      $(foreach l,$(LINGUAS),$(DESTDIR)$(PREFIX)/share/locale/$(l)/LC_MESSAGES/$(BIN).mo)
 	rm -rf $(DESTDIR)$(PREFIX)/share/licenses/$(BIN) $(DESTDIR)$(PREFIX)/share/$(BIN)
 
@@ -142,8 +141,8 @@ dmg: release models
 	install -m644 $(BREW)/share/glib-2.0/schemas/gschemas.compiled $(APP)/Contents/share/glib-2.0/schemas/
 	cp -RL $(BREW)/share/icons $(APP)/Contents/share/
 	if [ -f target/lensfun.json ]; then install -d $(APP)/Contents/share/$(BIN) && install -m644 target/lensfun.json $(APP)/Contents/share/$(BIN)/; fi
-	install -Dm644 data/icons/hicolor/scalable/actions/$(BIN)-lut-symbolic.svg \
-	  $(APP)/Contents/share/icons/hicolor/scalable/actions/$(BIN)-lut-symbolic.svg
+	install -d $(APP)/Contents/share/icons/hicolor/scalable/actions
+	install -m644 data/icons/hicolor/scalable/actions/*.svg $(APP)/Contents/share/icons/hicolor/scalable/actions/
 	install -d $(APP)/Contents/$(PIXBUF)/loaders
 	cp $(BREW)/$(PIXBUF)/loaders/*.so $(APP)/Contents/$(PIXBUF)/loaders/
 	# Queried before dylibbundler: afterwards the loaders only load from inside the app.

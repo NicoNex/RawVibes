@@ -58,7 +58,7 @@ pub fn build(sender: &ComponentSender<App>) -> PresetsUi {
     let popover = gtk::Popover::builder().child(&body).build();
 
     let button = gtk::MenuButton::builder()
-        .icon_name("starred-symbolic")
+        .icon_name("rawvibes-preset-symbolic")
         .tooltip_text(gettext("Presets"))
         .popover(&popover)
         .build();

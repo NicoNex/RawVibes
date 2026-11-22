@@ -14,6 +14,7 @@ mod crop_ui;
 mod export_ui;
 mod filmstrip;
 mod lab_page;
+mod lens_ui;
 mod meta_ui;
 mod presets_ui;
 mod settings;
@@ -219,6 +220,11 @@ enum Msg {
     SourceMeta(u64, PathBuf, Option<Arc<RawMetadata>>),
     /// The author defaults changed in Preferences.
     MetaDefaults,
+    /// Lens profile row (lens_ui.rs): search text, a pick (None automatic, empty names no
+    /// profile), and typed focal length / aperture. Wired in the next step of the lens plan.
+    LensSearch(String),
+    LensPick(Option<(String, String)>),
+    LensManual(f32, f32),
     /// Preferences: render the full-quality frame once development controls rest.
     Refine(bool),
     /// Filmstrip: add photos, a photo decoded small (already encoded for
@@ -4380,6 +4386,8 @@ impl SimpleComponent for App {
                 }
             }
             Msg::MetaDefaults => self.sync_meta(),
+            // shortcut: the Lens section's profile row is not wired yet (lens plan, task 5).
+            Msg::LensSearch(_) | Msg::LensPick(_) | Msg::LensManual(..) => {}
             Msg::SourceMeta(generation, ..) if generation != self.load_gen => {}
             Msg::SourceMeta(_, path, m) => {
                 self.source_meta = m.map(|m| (path, m));

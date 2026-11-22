@@ -881,6 +881,14 @@ impl App {
         }
     }
 
+    /// The Metadata tab shows the open photo's metadata; with no photo, empty and not editable.
+    fn sync_meta(&self) {
+        let ui = &self.ui.sidebar.meta;
+        ui.set(&self.meta, &author_defaults());
+        ui.show_camera(self.camera_meta());
+        ui.root.set_sensitive(self.path.is_some());
+    }
+
     /// What the open photo's camera recorded; never another photo's, whose load is still on its way.
     fn camera_meta(&self) -> Option<&RawMetadata> {
         self.source_meta.as_ref().filter(|(p, _)| Some(p) == self.path.as_ref()).map(|(_, m)| &**m)
@@ -2960,6 +2968,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     let meta = MetaUi::new(sender);
     panel.append(&meta.root);
     meta.root.set_visible(false);
+    meta.root.set_sensitive(false);
 
     let reset = gtk::Button::builder()
         .label(gettext("Reset all"))
@@ -3976,6 +3985,8 @@ impl SimpleComponent for App {
                     self.ui.title.set_title("RawVibes");
                     (self.history, self.undo_at) = (Vec::new(), 0);
                     self.sync_undo();
+                    (self.meta, self.source_meta) = (Meta::default(), None);
+                    self.sync_meta();
                     self.show_source();
                 } else if was_active {
                     self.load_active(i.min(self.roll.len() - 1), &sender);
@@ -4194,8 +4205,7 @@ impl SimpleComponent for App {
                         self.toast(&gettext!("Cannot read the edits saved for {}: {}", file_label(&path), e))
                     }
                 }
-                self.ui.sidebar.meta.set(&self.meta, &author_defaults());
-                self.ui.sidebar.meta.show_camera(self.camera_meta());
+                self.sync_meta();
                 // Left earlier this session: that stack is newer than the sidecar's and keeps path-less layers.
                 if let Some(looks) =
                     self.roll.iter().find(|it| it.path == path).map(|it| it.looks.clone()).filter(|l| !l.is_empty())
@@ -4285,7 +4295,7 @@ impl SimpleComponent for App {
                     self.schedule_save();
                 }
             }
-            Msg::MetaDefaults => self.ui.sidebar.meta.set(&self.meta, &author_defaults()),
+            Msg::MetaDefaults => self.sync_meta(),
             Msg::SourceMeta(generation, ..) if generation != self.load_gen => {}
             Msg::SourceMeta(_, path, m) => {
                 self.source_meta = m.map(|m| (path, m));

@@ -21,6 +21,13 @@ mod settings;
 mod widgets;
 mod zoom_ui;
 
+/// Icons bundled from relm4-icons by build.rs. Use them by their "-symbolic" name: the bare
+/// name can hit a coloured icon of the same name in another theme (e.g. "color").
+#[allow(dead_code)]
+mod icon_names {
+    include!(concat!(env!("OUT_DIR"), "/icon_names.rs"));
+}
+
 use std::cell::Cell;
 use std::ffi::{CStr, CString};
 use std::path::{Path, PathBuf};
@@ -1979,7 +1986,7 @@ fn metadata_prefs(sender: &ComponentSender<App>) -> adw::PreferencesPage {
         author.add(&row);
     }
     let page =
-        adw::PreferencesPage::builder().title(gettext("Metadata")).icon_name("document-properties-symbolic").build();
+        adw::PreferencesPage::builder().title(gettext("Metadata")).icon_name("tag-outline-symbolic").build();
     page.add(&export);
     page.add(&author);
     page
@@ -2087,9 +2094,9 @@ fn section_tabs(stack: &adw::ViewStack, panes: &[&gtk::Box]) {
     for pane in panes {
         let tabs = adw::ToggleGroup::builder().halign(gtk::Align::Center).margin_top(8).margin_bottom(2).build();
         for (name, icon, tip) in [
-            ("photo", "camera-photo-symbolic", gettext("Photo: develop the RAW (Alt+1)")),
-            ("grade", "color-select-symbolic", gettext("Grade: colour and looks (Alt+2)")),
-            ("meta", "document-properties-symbolic", gettext("Metadata: title, keywords, rights (Alt+3)")),
+            ("photo", "camera-shutter-symbolic", gettext("Photo: develop the RAW (Alt+1)")),
+            ("grade", "color-symbolic", gettext("Grade: colour and looks (Alt+2)")),
+            ("meta", "tag-outline-symbolic", gettext("Metadata: title, keywords, rights (Alt+3)")),
             ("lab", "rawvibes-lut-symbolic", gettext("LUT Lab: combine and convert LUTs (Alt+4)")),
         ] {
             tabs.add(adw::Toggle::builder().name(name).icon_name(icon).tooltip(&tip).build());
@@ -3527,7 +3534,7 @@ impl SimpleComponent for App {
         let folder_row =
             gtk::Box::builder().spacing(6).margin_start(12).margin_end(8).margin_top(8).margin_bottom(4).build();
         let to_lab = gtk::Button::builder()
-            .icon_name("view-list-symbolic")
+            .icon_name("rawvibes-lut-symbolic")
             .tooltip_text(gettext("Open the selected LUT in LUT Lab (to convert or combine it)"))
             .css_classes(["flat"])
             .build();
@@ -3601,10 +3608,10 @@ impl SimpleComponent for App {
         let tab = || gtk::Box::builder().orientation(gtk::Orientation::Vertical).vexpand(true).hexpand(true).build();
         let (photo_tab, grade_tab) = (tab(), tab());
         photo_tab.append(&grade_split);
-        stack.add_titled_with_icon(&photo_tab, Some("photo"), &gettext("Photo"), "camera-photo-symbolic");
-        stack.add_titled_with_icon(&grade_tab, Some("grade"), &gettext("Grade"), "color-select-symbolic");
+        stack.add_titled_with_icon(&photo_tab, Some("photo"), &gettext("Photo"), "camera-shutter-symbolic");
+        stack.add_titled_with_icon(&grade_tab, Some("grade"), &gettext("Grade"), "color-symbolic");
         let meta_tab = tab();
-        stack.add_titled_with_icon(&meta_tab, Some("meta"), &gettext("Metadata"), "document-properties-symbolic");
+        stack.add_titled_with_icon(&meta_tab, Some("meta"), &gettext("Metadata"), "tag-outline-symbolic");
         let lab = lab_page::build(&sender, &export_menu("lab-export", false));
         stack.add_titled_with_icon(&lab.root, Some("lab"), &gettext("LUT Lab"), "rawvibes-lut-symbolic");
         let snd = sender.clone();
@@ -5897,7 +5904,8 @@ fn main() {
         STARTED.store(true, Ordering::Relaxed);
         let css = CSS.replace("CANVAS_MARGIN", &CANVAS_MARGIN.to_string());
         relm4::set_global_css(&format!("{css}{}", band_css()));
-        // Installed, the icons are in the hicolor theme; a dev run finds them in the source tree.
+        relm4_icons::initialize_icons(icon_names::GRESOURCE_BYTES, icon_names::RESOURCE_PREFIX);
+        // Installed, our own icons are in the hicolor theme; a dev run finds them in the source tree.
         if let Some(display) = gdk::Display::default() {
             gtk::IconTheme::for_display(&display)
                 .add_search_path(concat!(env!("CARGO_MANIFEST_DIR"), "/../data/icons"));

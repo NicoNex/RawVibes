@@ -274,7 +274,7 @@ pub fn build(sender: &ComponentSender<App>, export_menu: &gio::Menu) -> LabUi {
     let stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).build();
     stack.add_named(
         &adw::StatusPage::builder()
-            .icon_name("view-list-symbolic")
+            .icon_name("rawvibes-lut-symbolic")
             .title("LUT Lab")
             .description(gettext(
                 "Combine LUTs, grades and profile conversions: chained or mixed, each with its own intensity.\n\

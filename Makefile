@@ -88,6 +88,8 @@ install: target/release/$(BIN) locale
 	  $(DESTDIR)$(PREFIX)/share/locale/$$l/LC_MESSAGES/$(BIN).mo; done
 	install -Dm644 data/$(APP_ID).desktop $(DESTDIR)$(PREFIX)/share/applications/$(APP_ID).desktop
 	install -Dm644 data/$(APP_ID).svg $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/$(APP_ID).svg
+	install -Dm644 data/icons/hicolor/scalable/actions/$(BIN)-lut-symbolic.svg \
+	  $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/actions/$(BIN)-lut-symbolic.svg
 	install -Dm644 LICENSE $(DESTDIR)$(PREFIX)/share/licenses/$(BIN)/LICENSE
 	# A package manager refreshes these caches itself; a plain install must, or Open With misses the app.
 	if [ -z "$(DESTDIR)" ]; then update-desktop-database -q $(PREFIX)/share/applications || true; \
@@ -99,6 +101,7 @@ uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN) \
 	      $(DESTDIR)$(PREFIX)/share/applications/$(APP_ID).desktop \
 	      $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/$(APP_ID).svg \
+	      $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/actions/$(BIN)-lut-symbolic.svg \
 	      $(foreach l,$(LINGUAS),$(DESTDIR)$(PREFIX)/share/locale/$(l)/LC_MESSAGES/$(BIN).mo)
 	rm -rf $(DESTDIR)$(PREFIX)/share/licenses/$(BIN) $(DESTDIR)$(PREFIX)/share/$(BIN)
 
@@ -128,6 +131,8 @@ dmg: release models
 	  install -m644 target/locale/$$l/LC_MESSAGES/$(BIN).mo $(APP)/Contents/share/locale/$$l/LC_MESSAGES/; done
 	install -m644 $(BREW)/share/glib-2.0/schemas/gschemas.compiled $(APP)/Contents/share/glib-2.0/schemas/
 	cp -RL $(BREW)/share/icons $(APP)/Contents/share/
+	install -Dm644 data/icons/hicolor/scalable/actions/$(BIN)-lut-symbolic.svg \
+	  $(APP)/Contents/share/icons/hicolor/scalable/actions/$(BIN)-lut-symbolic.svg
 	install -d $(APP)/Contents/$(PIXBUF)/loaders
 	cp $(BREW)/$(PIXBUF)/loaders/*.so $(APP)/Contents/$(PIXBUF)/loaders/
 	# Queried before dylibbundler: afterwards the loaders only load from inside the app.

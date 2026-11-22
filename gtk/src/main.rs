@@ -1928,7 +1928,7 @@ fn section_tabs(stack: &adw::ViewStack, panes: &[&gtk::Box]) {
             ("photo", "camera-photo-symbolic", gettext("Photo: develop the RAW (Alt+1)")),
             ("grade", "color-select-symbolic", gettext("Grade: colour and looks (Alt+2)")),
             ("meta", "document-properties-symbolic", gettext("Metadata: title, keywords, rights (Alt+3)")),
-            ("lab", "view-list-symbolic", gettext("LUT Lab: combine and convert LUTs (Alt+4)")),
+            ("lab", "rawvibes-lut-symbolic", gettext("LUT Lab: combine and convert LUTs (Alt+4)")),
         ] {
             tabs.add(adw::Toggle::builder().name(name).icon_name(icon).tooltip(&tip).build());
         }
@@ -3307,7 +3307,7 @@ impl SimpleComponent for App {
         let meta_tab = tab();
         stack.add_titled_with_icon(&meta_tab, Some("meta"), &gettext("Metadata"), "document-properties-symbolic");
         let lab = lab_page::build(&sender, &export_menu("lab-export", false));
-        stack.add_titled_with_icon(&lab.root, Some("lab"), &gettext("LUT Lab"), "view-list-symbolic");
+        stack.add_titled_with_icon(&lab.root, Some("lab"), &gettext("LUT Lab"), "rawvibes-lut-symbolic");
         let snd = sender.clone();
         let (split, photo, grade, meta) =
             (grade_split.clone(), sidebar.photo.clone(), sidebar.grade.clone(), sidebar.meta.root.clone());
@@ -5537,6 +5537,10 @@ fn main() {
         STARTED.store(true, Ordering::Relaxed);
         let css = CSS.replace("CANVAS_MARGIN", &CANVAS_MARGIN.to_string());
         relm4::set_global_css(&format!("{css}{}", band_css()));
+        // Installed, the icons are in the hicolor theme; a dev run finds them in the source tree.
+        if let Some(display) = gdk::Display::default() {
+            gtk::IconTheme::for_display(&display).add_search_path(concat!(env!("CARGO_MANIFEST_DIR"), "/../data/icons"));
+        }
     });
     std::thread::spawn(|| {
         while !STARTED.load(Ordering::Relaxed) {

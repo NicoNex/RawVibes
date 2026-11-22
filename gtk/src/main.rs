@@ -1495,8 +1495,10 @@ impl App {
         self.ui.sidebar.matching.camera.set_visible(raw);
         let ui = &self.ui.sidebar.develop;
         // Always there, so the editor looks the same before a photo opens; only RAWs develop.
-        ui.root.set_sensitive(raw);
-        ui.root.set_tooltip_text((!raw).then(|| gettext("RAW development: open a RAW file to use it")).as_deref());
+        for w in [&ui.root, &ui.lens] {
+            w.set_sensitive(raw);
+            w.set_tooltip_text((!raw).then(|| gettext("RAW development: open a RAW file to use it")).as_deref());
+        }
         let Some(cam) = self.camera() else { return };
         let [k, t] = self.develop.wb.unwrap_or_else(|| cam.as_shot_kelvin_tint());
         let preset = match self.develop.wb {
@@ -2325,6 +2327,8 @@ struct DevelopUi {
     /// Set while `sync_develop` moves the controls: their signals are not edits.
     syncing: Rc<Cell<bool>>,
     root: gtk::Box,
+    /// The Lens section, apart from `root`: it goes above the crop.
+    lens: gtk::Box,
     preset: gtk::DropDown,
     kelvin: Slider,
     tint: Slider,
@@ -2465,11 +2469,13 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     let nr_detail = detail_slider(&nr, &gettext("Detail"), (0.0, 100.0), |d| &mut d.nr_detail);
     // AI leaves some colour noise: chrominance stays in both methods.
     detail_slider(&nr, &gettext("Chrominance"), (0.0, 100.0), |d| &mut d.nr_chroma);
-    root.append(&dev_section(&gettext("Noise reduction"), &nr, &[], DevPart::Noise));
+    let nr_sec = dev_section(&gettext("Noise reduction"), &nr, &[], DevPart::Noise);
     let haze = vbox(4);
     detail_slider(&haze, &gettext("Dehaze"), (-100.0, 100.0), |d| &mut d.dehaze);
     detail_slider(&haze, &gettext("Local contrast"), (0.0, 100.0), |d| &mut d.local_contrast);
     root.append(&dev_section(&gettext("Presence"), &haze, &[], DevPart::Presence));
+    // Noise first, then sharpening dosed on the cleaned photo; both judged at 100% at the end.
+    root.append(&nr_sec);
     let sharp = vbox(4);
     // Capture restores the lens's softness; output sharpening is the visible, creative kind.
     detail_slider(&sharp, &gettext("Capture sharpening"), (0.0, 100.0), |d| &mut d.sharpen);
@@ -2495,13 +2501,17 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
     list.append(&ca);
     lens.append(&list);
-    root.append(&dev_section(&gettext("Lens"), &lens, &[], DevPart::Lens));
+    // Placed above the crop by `build_sidebar`: lens and framing come first.
+    let lens = dev_section(&gettext("Lens"), &lens, &[], DevPart::Lens);
     // Greyed out until a RAW opens (`sync_develop`).
-    root.set_sensitive(false);
-    root.set_tooltip_text(Some(&gettext("RAW development: open a RAW file to use it")));
+    for w in [&root, &lens] {
+        w.set_sensitive(false);
+        w.set_tooltip_text(Some(&gettext("RAW development: open a RAW file to use it")));
+    }
     DevelopUi {
         syncing,
         root,
+        lens,
         preset,
         kelvin,
         tint,
@@ -2765,6 +2775,9 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     let photo = vbox(12);
     photo.append(&group_heading(&gettext("Not in the exported LUT")));
     let develop = build_develop(sender);
+    // Geometry (lens, crop), light and colour, detail, then the vignette effect.
+    photo.append(&develop.lens);
+    photo.append(crop);
     photo.append(&develop.root);
     let grade = vbox(12);
     grade.set_visible(false);
@@ -2985,7 +2998,6 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     ] {
         grade.append(s);
     }
-    photo.append(crop);
 
     let vig = vbox(4);
     add(&vig, &gettext("Amount"), -100.0, 100.0, 0, None, |p| &mut p.vignette);

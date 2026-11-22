@@ -8,7 +8,7 @@ use rawler::decoders::RawMetadata;
 use rawler::exif::Exif;
 use rawler::formats::jfif::Jfif;
 use rawler::formats::tiff::reader::TiffReader;
-use rawler::formats::tiff::{GenericTiffReader, IFD};
+use rawler::formats::tiff::{DirectoryWriter, GenericTiffReader, IFD, TiffWriter};
 use rawler::tags::{ExifTag, TiffCommonTag};
 
 use crate::sidecar::Meta;
@@ -136,12 +136,138 @@ pub fn capture_year(src: &RawMetadata) -> Option<i32> {
     src.exif.date_time_original.as_deref()?.get(..4)?.parse().ok()
 }
 
+/// How much metadata an exported photo carries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Policy {
+    /// Everything, location and serial numbers included.
+    All,
+    /// Camera, exposure, date, rights and description; no location, no serial numbers.
+    #[default]
+    Essential,
+    /// Creator, copyright and contact only.
+    Copyright,
+    None,
+}
+
+impl Policy {
+    pub const ALL: [Policy; 4] = [Policy::All, Policy::Essential, Policy::Copyright, Policy::None];
+
+    pub fn tag(self) -> &'static str {
+        match self {
+            Policy::All => "all",
+            Policy::Essential => "essential",
+            Policy::Copyright => "copyright",
+            Policy::None => "none",
+        }
+    }
+
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.tag() == tag)
+    }
+}
+
+/// What an export embeds: an EXIF block (a TIFF stream, without the `Exif\0\0` header) and an XMP packet.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Tags {
+    pub exif: Vec<u8>,
+    pub xmp: Option<String>,
+}
+
+/// The tags of an export `size` pixels big: `src`'s camera metadata and `m` (already
+/// completed with the defaults), filtered by `policy`.
+pub fn tags(src: Option<&RawMetadata>, m: &Meta, policy: Policy, size: (u32, u32)) -> Tags {
+    if policy == Policy::None {
+        return Tags::default();
+    }
+    let mut md = src.cloned().unwrap_or_else(|| RawMetadata {
+        exif: Exif::default(),
+        make: String::new(),
+        model: String::new(),
+        lens: None,
+        unique_image_id: None,
+        rating: None,
+    });
+    let e = &mut md.exif;
+    match policy {
+        Policy::Essential => {
+            (e.gps, e.serial_number, e.lens_serial_number) = (None, None, None);
+            (e.owner_name, e.user_comment) = (None, None);
+        }
+        Policy::Copyright => {
+            let (artist, copyright) = (e.artist.take(), e.copyright.take());
+            *e = Exif { artist, copyright, ..Default::default() };
+            (md.make, md.model) = (String::new(), String::new());
+        }
+        Policy::All | Policy::None => {}
+    }
+    // The exported pixels are already upright.
+    e.orientation = Some(1);
+    // EXIF ASCII fields carry the text as UTF-8 bytes; XMP is the authoritative copy.
+    for (field, v) in [(&mut e.artist, &m.creator), (&mut e.copyright, &m.copyright)] {
+        if !v.trim().is_empty() {
+            *field = Some(v.clone());
+        }
+    }
+    let xmp = if policy == Policy::Copyright {
+        let (creator, copyright, email, website) = (m.creator.clone(), m.copyright.clone(), m.email.clone(), m.website.clone());
+        self::xmp(&Meta { creator, copyright, email, website, ..Default::default() })
+    } else {
+        self::xmp(m)
+    };
+    let title = if policy == Policy::Copyright { "" } else { m.title.trim() };
+    // A write failure only loses the EXIF block, never the export.
+    let exif = write_exif(&md, title, (policy != Policy::Copyright).then_some(size)).unwrap_or_default();
+    Tags { exif, xmp }
+}
+
+/// `md` as a TIFF stream: IFD0, the Exif IFD (with `size` and sRGB when given) and the GPS IFD.
+fn write_exif(md: &RawMetadata, title: &str, size: Option<(u32, u32)>) -> rawler::formats::tiff::Result<Vec<u8>> {
+    let mut buf = Cursor::new(Vec::new());
+    let mut tiff = TiffWriter::new(&mut buf)?;
+    let (mut root, mut ex) = (DirectoryWriter::new(), DirectoryWriter::new());
+    md.write_exif_tags(&mut tiff, &mut root, &mut ex)?;
+    for (tag, v) in [(TiffCommonTag::Make, &md.make), (TiffCommonTag::Model, &md.model)] {
+        if !v.is_empty() {
+            root.add_tag(tag, v.as_str());
+        }
+    }
+    root.add_tag(TiffCommonTag::Software, concat!("RawVibes ", env!("CARGO_PKG_VERSION")));
+    if !title.is_empty() {
+        root.add_tag(ExifTag::ImageDescription, title);
+    }
+    if let Some((w, h)) = size {
+        ex.add_tag_undefined(ExifTag::ExifVersion, b"0232".to_vec());
+        ex.add_tag(ExifTag::ExifImageWidth, w);
+        ex.add_tag(ExifTag::ExifImageHeight, h);
+        ex.add_tag(ExifTag::ColorSpace, 1u16);
+    }
+    if !ex.is_empty() {
+        let offset = ex.build(&mut tiff)?;
+        root.add_tag(TiffCommonTag::ExifIFDPointer, offset);
+    }
+    tiff.build(root)?;
+    Ok(buf.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rawler::formats::tiff::Rational;
 
     pub(super) fn fixture() -> RawMetadata {
-        let exif = Exif { date_time_original: Some("2023:07:14 18:02:11".into()), ..Default::default() };
+        let gps = rawler::exif::ExifGPS {
+            gps_latitude_ref: Some("N".into()),
+            gps_latitude: Some([Rational::new(45, 1), Rational::new(27, 1), Rational::new(0, 1)]),
+            ..Default::default()
+        };
+        let exif = Exif {
+            date_time_original: Some("2023:07:14 18:02:11".into()),
+            iso_speed_ratings: Some(400),
+            serial_number: Some("1234".into()),
+            orientation: Some(6),
+            gps: Some(gps),
+            ..Default::default()
+        };
         RawMetadata {
             exif,
             make: "Fujifilm".into(),
@@ -191,5 +317,63 @@ mod tests {
     fn unreadable_file_has_no_metadata() {
         assert!(read(Path::new("/nonexistent/P1.RW2")).is_none());
         assert!(read_tiff_exif(b"not a tiff").is_none());
+    }
+
+    fn written(policy: Policy) -> (Tags, Option<(Exif, String, String)>) {
+        let m = Meta { creator: "Ada".into(), copyright: "© Ada".into(), title: "Alba".into(), ..Default::default() };
+        let t = tags(Some(&fixture()), &m, policy, (6000, 4000));
+        let back = read_tiff_exif(&t.exif);
+        (t, back)
+    }
+
+    #[test]
+    fn all_round_trips() {
+        let (_, back) = written(Policy::All);
+        let (exif, make, model) = back.expect("readable EXIF");
+        assert_eq!((make.as_str(), model.as_str()), ("Fujifilm", "X-T5"));
+        assert_eq!((exif.iso_speed_ratings, exif.orientation), (Some(400), Some(1)));
+        assert_eq!(exif.artist.as_deref(), Some("Ada"));
+        assert!(exif.gps.is_some_and(|g| g.gps_latitude.is_some()));
+        assert_eq!(exif.serial_number.as_deref(), Some("1234"));
+    }
+
+    #[test]
+    fn essential_drops_gps() {
+        let (t, back) = written(Policy::Essential);
+        let (exif, make, _) = back.expect("readable EXIF");
+        assert!(exif.gps.is_none() && exif.serial_number.is_none());
+        assert_eq!((make.as_str(), exif.iso_speed_ratings), ("Fujifilm", Some(400)));
+        assert!(t.xmp.unwrap().contains("Alba"));
+    }
+
+    #[test]
+    fn copyright_keeps_only_rights() {
+        let (t, back) = written(Policy::Copyright);
+        let (exif, make, _) = back.expect("readable EXIF");
+        assert_eq!((exif.artist.as_deref(), exif.copyright.as_deref()), (Some("Ada"), Some("© Ada")));
+        assert!(make.is_empty() && exif.iso_speed_ratings.is_none() && exif.gps.is_none());
+        let x = t.xmp.unwrap();
+        assert!(x.contains("Ada") && !x.contains("Alba"));
+    }
+
+    #[test]
+    fn none_policy_writes_no_exif() {
+        let (t, _) = written(Policy::None);
+        assert_eq!(t, Tags::default());
+    }
+
+    #[test]
+    fn tags_without_source() {
+        let t = tags(None, &Meta { creator: "Ada".into(), ..Default::default() }, Policy::Essential, (10, 10));
+        let (exif, make, _) = read_tiff_exif(&t.exif).expect("readable EXIF");
+        assert_eq!((exif.artist.as_deref(), make.as_str()), (Some("Ada"), ""));
+    }
+
+    #[test]
+    fn policy_tags_round_trip() {
+        for p in Policy::ALL {
+            assert_eq!(Policy::from_tag(p.tag()), Some(p));
+        }
+        assert_eq!(Policy::from_tag("bogus"), None);
     }
 }

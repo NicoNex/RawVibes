@@ -1,6 +1,5 @@
 //! The Lens section's profile row: which lensfun profile corrects the photo, a search to
 //! pick another, and the focal length and aperture a manual lens does not record.
-#![allow(dead_code)] // shortcut: built but not yet placed in the Lens section (lens plan, task 5).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

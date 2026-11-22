@@ -54,6 +54,7 @@ use rawvibes_core::raw::{RawData, read_raw};
 use rawvibes_core::scopes::{HIST_H, HIST_W, Scopes, VEC_SIZE};
 use rawvibes_core::sidecar::{Label, LensChoice, LookRef, Meta, Off, Sidecar};
 use rawvibes_core::view::{Region, Zoom};
+use rawvibes_core::{lens, lensdb};
 use relm4::adw::prelude::*;
 use relm4::gtk::{gdk, gio, glib};
 use relm4::{ComponentParts, ComponentSender, RelmApp, SimpleComponent, adw, gtk};
@@ -225,6 +226,8 @@ enum Msg {
     LensSearch(String),
     LensPick(Option<(String, String)>),
     LensManual(f32, f32),
+    /// The lensfun database, read at start (`None`: not installed).
+    LensDb(Option<Arc<lensdb::Db>>),
     /// Preferences: render the full-quality frame once development controls rest.
     Refine(bool),
     /// Filmstrip: add photos, a photo decoded small (already encoded for
@@ -329,6 +332,8 @@ enum DevelopEdit {
     Detail(DetailField, f32),
     /// The chromatic-aberration switch.
     CaCorrect(bool),
+    /// The lens profile's lateral CA correction.
+    LensTca(bool),
     /// Noise reduction method: AI (true) or classic.
     NrAi(bool),
     Pick(bool),
@@ -492,6 +497,8 @@ struct App {
     meta: Meta,
     /// The lens profile picked by hand for the open photo (`None`: from its EXIF).
     lens_profile: Option<LensChoice>,
+    /// The lensfun database (`None` until read, or not installed).
+    lens_db: Option<Arc<lensdb::Db>>,
     /// What a photo's camera recorded, and which photo: it arrives before that photo is open.
     source_meta: Option<(PathBuf, Arc<RawMetadata>)>,
     /// The LUT browser is open (its thumbnails follow the grade).
@@ -907,6 +914,66 @@ impl App {
     }
 
     /// What the open photo's camera recorded; never another photo's, whose load is still on its way.
+    /// The open RAW's lens profile from the database: the one picked, or the one its EXIF names;
+    /// with what the row shows, the focal length and aperture used, and whether to ask for them.
+    fn find_lens(&self) -> (Option<lens::Profile>, lens_ui::Status, f32, f32, bool) {
+        use lens_ui::Status;
+        let src = self.camera_meta();
+        let exif = src.map(|m| &m.exif);
+        let value = |r: Option<meta::Rational>| r.filter(|r| r.d != 0).map_or(0.0, |r| r.as_f32());
+        let (focal, aperture) = (value(exif.and_then(|e| e.focal_length)), value(exif.and_then(|e| e.fnumber)));
+        let distance = value(exif.and_then(|e| e.subject_distance));
+        let Some(db) = self.lens_db.as_deref() else { return (None, Status::NoDatabase, focal, aperture, false) };
+        let camera = src.and_then(|m| db.find_camera(&m.make, &m.model));
+        let (lens, focal, aperture, chosen) = match &self.lens_profile {
+            Some(c) if c.model.is_empty() => return (None, Status::Off, focal, aperture, false),
+            Some(c) => {
+                let lens = db.lenses.iter().find(|l| l.maker == c.maker && l.model == c.model);
+                let pick = |typed: f32, exif: f32| if typed > 0.0 { typed } else { exif };
+                (lens, pick(c.focal, focal), pick(c.aperture, aperture), true)
+            }
+            None => {
+                let name = exif.and_then(|e| e.lens_model.clone());
+                let name = name.or_else(|| src.and_then(|m| m.lens.as_ref()).map(|l| l.lens_model.clone()));
+                (db.find_lens(camera, "", &name.unwrap_or_default()), focal, aperture, false)
+            }
+        };
+        let Some(found) = lens else { return (None, Status::NotFound, focal, aperture, chosen) };
+        let name = found.model.clone();
+        match lens::calib_at(found, focal, aperture, distance) {
+            Some(c) => {
+                let profile = lens::Profile::new(found, c, camera.map(|c| c.crop));
+                let status = if chosen { Status::Chosen(name) } else { Status::Auto(name) };
+                // A manual lens records no focal length: its row stays open to change it.
+                (Some(profile), status, focal, aperture, chosen || value(exif.and_then(|e| e.focal_length)) <= 0.0)
+            }
+            None => (None, Status::NeedsFocal(name), focal, aperture, true),
+        }
+    }
+
+    /// The (maker, model) of the lens the EXIF names, when the database has it.
+    fn found_lens_name(&self) -> Option<(String, String)> {
+        let db = self.lens_db.as_deref()?;
+        let src = self.camera_meta()?;
+        let camera = db.find_camera(&src.make, &src.model);
+        let name = src.exif.lens_model.clone().or_else(|| src.lens.as_ref().map(|l| l.lens_model.clone()))?;
+        db.find_lens(camera, "", &name).map(|l| (l.maker.clone(), l.model.clone()))
+    }
+
+    /// Puts the open RAW's lens profile into the development and the Lens section;
+    /// re-develops when it changed and `redevelop` says so.
+    fn update_lens(&mut self, sender: &ComponentSender<Self>, redevelop: bool) {
+        let (profile, status, focal, aperture, asked) = self.find_lens();
+        let changed = self.develop.detail.lens != profile;
+        self.develop.detail.lens = profile;
+        let ui = &self.ui.sidebar.develop;
+        ui.lens_profile.show(&status, focal, aperture, asked);
+        ui.lens_amounts.set_sensitive(profile.is_some());
+        if changed && redevelop && self.camera().is_some() {
+            self.develop_changed(sender);
+        }
+    }
+
     fn camera_meta(&self) -> Option<&RawMetadata> {
         self.source_meta.as_ref().filter(|(p, _)| Some(p) == self.path.as_ref()).map(|(_, m)| &**m)
     }
@@ -1000,6 +1067,8 @@ impl App {
             self.ui.sidebar.profile_sel.set_selected(Profile::ALL.iter().position(|&q| q == p).unwrap_or(0) as u32);
         }
         self.develop = sc.develop;
+        // The profile is the photo's, never the snapshot's (undo, paste): found again.
+        self.update_lens(sender, false);
         self.sync_develop();
         let row = crop::PRESETS
             .iter()
@@ -1481,6 +1550,7 @@ impl App {
             DevelopEdit::CameraExposure => dev.exposure = cam.baseline_ev,
             DevelopEdit::Detail(field, v) => *field(&mut dev.detail) = v,
             DevelopEdit::CaCorrect(on) => dev.detail.ca_correct = on,
+            DevelopEdit::LensTca(on) => dev.detail.lens_tca = on,
             DevelopEdit::NrAi(on) => dev.detail.nr_ai = on,
             DevelopEdit::Picked(kt) => {
                 dev.wb = Some(kt);
@@ -1533,6 +1603,7 @@ impl App {
             ui.ai_msg.set_visible(false);
         }
         ui.ca.set_active(d.ca_correct);
+        ui.lens_tca.set_active(d.lens_tca);
         ui.preset.set_selected(preset);
         ui.syncing.set(false);
     }
@@ -2341,6 +2412,10 @@ struct DevelopUi {
     root: gtk::Box,
     /// The Lens section, apart from `root`: it goes above the crop.
     lens: gtk::Box,
+    /// Its profile row, the profile amounts (greyed without a profile) and the profile's CA switch.
+    lens_profile: lens_ui::ProfileUi,
+    lens_amounts: gtk::Box,
+    lens_tca: adw::SwitchRow,
     preset: gtk::DropDown,
     kelvin: Slider,
     tint: Slider,
@@ -2495,21 +2570,43 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     detail_slider(&sharp, &gettext("Sharpening"), (0.0, 100.0), |d| &mut d.usm);
     detail_slider(&sharp, &gettext("Sharpening radius"), (0.5, 3.0), |d| &mut d.usm_radius);
     detail_slider(&sharp, &gettext("Sharpening threshold"), (0.0, 100.0), |d| &mut d.usm_threshold);
-    detail_slider(&sharp, &gettext("Purple fringe"), (0.0, 100.0), |d| &mut d.defringe);
-    detail_slider(&sharp, &gettext("Green fringe"), (0.0, 100.0), |d| &mut d.defringe_green);
     root.append(&dev_section(&gettext("Detail"), &sharp, &[], DevPart::Detail));
+    // The lensfun profile, how much of it applies, then the manual corrections on top.
     let lens = vbox(4);
-    detail_slider(&lens, &gettext("Lens vignetting"), (-100.0, 100.0), |d| &mut d.lens_vignette);
-    let ca = adw::SwitchRow::builder()
-        .title(gettext("Chromatic aberration"))
-        .subtitle(gettext("Removes red/cyan fringes"))
-        .build();
-    let (snd, sync) = (sender.clone(), syncing.clone());
-    ca.connect_active_notify(move |r| {
-        if !sync.get() {
-            snd.input(Msg::Develop(DevelopEdit::CaCorrect(r.is_active())));
-        }
-    });
+    let lens_profile = lens_ui::ProfileUi::new(sender);
+    lens.append(&lens_profile.list);
+    let lens_amounts = vbox(4);
+    lens_amounts.set_margin_top(6);
+    detail_slider(&lens_amounts, &gettext("Distortion"), (0.0, 100.0), |d| &mut d.lens_dist_amount);
+    detail_slider(&lens_amounts, &gettext("Vignetting"), (0.0, 100.0), |d| &mut d.lens_vig_amount);
+    let switch = |title: String, subtitle: String, edit: fn(bool) -> DevelopEdit| {
+        let row = adw::SwitchRow::builder().title(title).subtitle(subtitle).build();
+        let (snd, sync) = (sender.clone(), syncing.clone());
+        row.connect_active_notify(move |r| {
+            if !sync.get() {
+                snd.input(Msg::Develop(edit(r.is_active())));
+            }
+        });
+        row
+    };
+    let lens_tca =
+        switch(gettext("Chromatic aberration"), gettext("The profile's lateral CA correction"), DevelopEdit::LensTca);
+    let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
+    list.append(&lens_tca);
+    lens_amounts.append(&list);
+    lens.append(&lens_amounts);
+    let manual = group_heading(&gettext("Manual corrections"));
+    manual.set_margin_top(10);
+    lens.append(&manual);
+    detail_slider(&lens, &gettext("Distortion"), (-100.0, 100.0), |d| &mut d.lens_distortion);
+    detail_slider(&lens, &gettext("Vignetting"), (-100.0, 100.0), |d| &mut d.lens_vignette);
+    detail_slider(&lens, &gettext("Midpoint"), (-100.0, 100.0), |d| &mut d.lens_vignette_mid);
+    detail_slider(&lens, &gettext("Red/cyan fringe"), (-100.0, 100.0), |d| &mut d.lens_ca_red);
+    detail_slider(&lens, &gettext("Blue/yellow fringe"), (-100.0, 100.0), |d| &mut d.lens_ca_blue);
+    detail_slider(&lens, &gettext("Purple fringe"), (0.0, 100.0), |d| &mut d.defringe);
+    detail_slider(&lens, &gettext("Green fringe"), (0.0, 100.0), |d| &mut d.defringe_green);
+    let ca =
+        switch(gettext("Automatic chromatic aberration"), gettext("Removes red/cyan fringes"), DevelopEdit::CaCorrect);
     let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
     list.append(&ca);
     lens.append(&list);
@@ -2524,6 +2621,9 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
         syncing,
         root,
         lens,
+        lens_profile,
+        lens_amounts,
+        lens_tca,
         preset,
         kelvin,
         tint,
@@ -3884,6 +3984,7 @@ impl SimpleComponent for App {
             off: Vec::new(),
             meta: Meta::default(),
             lens_profile: None,
+            lens_db: None,
             source_meta: None,
             browsing: false,
             candidate: None,
@@ -4002,6 +4103,9 @@ impl SimpleComponent for App {
         if let Some(dir) = settings::folder(settings::LUT_FOLDER) {
             sender.input(Msg::Folder(dir));
         }
+        // 3 MB of JSON: read off the main thread.
+        let s = sender.input_sender().clone();
+        std::thread::spawn(move || s.emit(Msg::LensDb(lensdb::Db::load(&lens_db_path()).ok().map(Arc::new))));
         ComponentParts { model, widgets: () }
     }
 
@@ -4296,6 +4400,7 @@ impl SimpleComponent for App {
                     }
                 }
                 self.sync_meta();
+                self.update_lens(&sender, false);
                 // Left earlier this session: that stack is newer than the sidecar's and keeps path-less layers.
                 if let Some(looks) =
                     self.roll.iter().find(|it| it.path == path).map(|it| it.looks.clone()).filter(|l| !l.is_empty())
@@ -4386,12 +4491,39 @@ impl SimpleComponent for App {
                 }
             }
             Msg::MetaDefaults => self.sync_meta(),
-            // shortcut: the Lens section's profile row is not wired yet (lens plan, task 5).
-            Msg::LensSearch(_) | Msg::LensPick(_) | Msg::LensManual(..) => {}
+            Msg::LensDb(db) => {
+                self.lens_db = db;
+                self.update_lens(&sender, true);
+            }
+            Msg::LensSearch(text) => {
+                let found = self.lens_db.as_deref().map_or_else(Vec::new, |db| {
+                    db.search(&text).into_iter().map(|l| (l.maker.clone(), l.model.clone())).collect()
+                });
+                self.ui.sidebar.develop.lens_profile.results(found);
+            }
+            Msg::LensPick(pick) => {
+                let (_, _, focal, aperture, _) = self.find_lens();
+                self.lens_profile = pick.map(|(maker, model)| LensChoice { maker, model, focal, aperture });
+                self.update_lens(&sender, true);
+                self.schedule_save();
+            }
+            Msg::LensManual(focal, aperture) => {
+                // Typed for the automatic lens: it becomes the chosen one, with these values.
+                if self.lens_profile.is_none() {
+                    self.lens_profile =
+                        self.found_lens_name().map(|(maker, model)| LensChoice { maker, model, ..Default::default() });
+                }
+                if let Some(c) = self.lens_profile.as_mut() {
+                    (c.focal, c.aperture) = (focal, aperture);
+                }
+                self.update_lens(&sender, true);
+                self.schedule_save();
+            }
             Msg::SourceMeta(generation, ..) if generation != self.load_gen => {}
             Msg::SourceMeta(_, path, m) => {
                 self.source_meta = m.map(|m| (path, m));
                 self.ui.sidebar.meta.show_camera(self.camera_meta());
+                self.update_lens(&sender, true);
             }
             Msg::Undo => self.step_history(true, &sender),
             Msg::Redo => self.step_history(false, &sender),
@@ -5576,6 +5708,15 @@ fn fill(template: &str, args: &[String]) -> String {
         out += part;
     }
     out
+}
+
+/// Installed: `<prefix>/share/rawvibes/lensfun.json`; dev: `make lensfun` puts it in `target/`.
+fn lens_db_path() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.parent()?.join("share/rawvibes/lensfun.json")))
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/lensfun.json")))
 }
 
 /// Installed: `<prefix>/bin/rawvibes` → `<prefix>/share/locale`; dev: `make` puts catalogs in `target/locale`.

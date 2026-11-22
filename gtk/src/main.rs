@@ -721,7 +721,8 @@ impl App {
             return;
         }
         let now = self.sidecar_state();
-        let same = |s: &Sidecar| Sidecar { rating: now.rating, label: now.label, meta: now.meta.clone(), ..s.clone() } == now;
+        let same =
+            |s: &Sidecar| Sidecar { rating: now.rating, label: now.label, meta: now.meta.clone(), ..s.clone() } == now;
         if self.history.get(self.undo_at).is_some_and(|(s, _)| same(s)) {
             return;
         }
@@ -870,11 +871,18 @@ impl App {
         let stem = stem_label(&path).unwrap_or_default();
         let suffix = export_suffix();
         // Never over an existing file: a RAW+JPEG pair, or a photo of the strip itself.
-        let out = (1..)
-            .map(|n| if n == 1 { edit_name(&stem, ext, &suffix) } else { edit_name(&format!("{stem}-{n}"), ext, &suffix) })
-            .map(|name| b.dir.join(name))
-            .find(|p| !p.exists())
-            .expect("unbounded");
+        let out =
+            (1..)
+                .map(|n| {
+                    if n == 1 {
+                        edit_name(&stem, ext, &suffix)
+                    } else {
+                        edit_name(&format!("{stem}-{n}"), ext, &suffix)
+                    }
+                })
+                .map(|name| b.dir.join(name))
+                .find(|p| !p.exists())
+                .expect("unbounded");
         if !self.export_to(out) {
             self.batch.as_mut().expect("checked above").failed.push(gettext!("{}: cannot export", file_label(&path)));
             self.batch_next(sender);
@@ -1794,7 +1802,9 @@ fn export_suffix() -> String {
 fn policy_hint(p: meta::Policy) -> String {
     match p {
         meta::Policy::All => gettext("Everything the camera recorded, location and serial numbers included"),
-        meta::Policy::Essential => gettext("Camera, exposure, date, rights and description; no location, no serial numbers"),
+        meta::Policy::Essential => {
+            gettext("Camera, exposure, date, rights and description; no location, no serial numbers")
+        }
         meta::Policy::Copyright => gettext("Only the creator, copyright and contact"),
         meta::Policy::None => gettext("No metadata at all"),
     }
@@ -1847,7 +1857,8 @@ fn metadata_prefs(sender: &ComponentSender<App>) -> adw::PreferencesPage {
         });
         author.add(&row);
     }
-    let page = adw::PreferencesPage::builder().title(gettext("Metadata")).icon_name("document-properties-symbolic").build();
+    let page =
+        adw::PreferencesPage::builder().title(gettext("Metadata")).icon_name("document-properties-symbolic").build();
     page.add(&export);
     page.add(&author);
     page
@@ -2772,18 +2783,12 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     });
     profile_box.append(&profile_sel);
     profile_box.append(&hint);
-    grade.append(&section(&gettext("Input profile"), &profile_box));
+    let profile_sec = section(&gettext("Input profile"), &profile_box);
 
     // Reference match comes first: the rest refines it.
     let matching = build_match(sender);
-    grade.append(&eye_section(
-        &gettext("Reference match"),
-        &matching.stack,
-        false,
-        &[],
-        sender,
-        Off::Grade(Stage::Match),
-    ));
+    let match_sec =
+        eye_section(&gettext("Reference match"), &matching.stack, false, &[], sender, Off::Grade(Stage::Match));
 
     let mut sliders = Vec::new();
     let mut add = |bx: &gtk::Box, label: &str, min: f64, max: f64, digits: u32, track: Option<&str>, field: Field| {
@@ -2797,7 +2802,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     let wb = vbox(4);
     add(&wb, &gettext("Temperature"), -100.0, 100.0, 0, Some("track-temp"), |p| &mut p.temperature);
     add(&wb, &gettext("Tint"), -100.0, 100.0, 0, Some("track-tint"), |p| &mut p.tint);
-    grade.append(&eye_section(&gettext("Warmth"), &wb, true, &[], sender, Off::Grade(Stage::WhiteBalance)));
+    let warmth_sec = eye_section(&gettext("Warmth"), &wb, true, &[], sender, Off::Grade(Stage::WhiteBalance));
 
     let tone = vbox(4);
     add(&tone, &gettext("Exposure"), -3.0, 3.0, 2, None, |p| &mut p.exposure);
@@ -2806,17 +2811,17 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     add(&tone, &gettext("Shadows"), -100.0, 100.0, 0, None, |p| &mut p.shadows);
     add(&tone, &gettext("Whites"), -100.0, 100.0, 0, None, |p| &mut p.whites);
     add(&tone, &gettext("Blacks"), -100.0, 100.0, 0, None, |p| &mut p.blacks);
-    grade.append(&eye_section(&gettext("Tone"), &tone, true, &[], sender, Off::Grade(Stage::Tone)));
+    let tone_sec = eye_section(&gettext("Tone"), &tone, true, &[], sender, Off::Grade(Stage::Tone));
 
     let (mixer_box, mixer) = build_mixer(sender);
-    grade.append(&eye_section(&gettext("Channel mixer"), &mixer_box, false, &[], sender, Off::Grade(Stage::Mixer)));
+    let mixer_sec = eye_section(&gettext("Channel mixer"), &mixer_box, false, &[], sender, Off::Grade(Stage::Mixer));
 
     let color = vbox(4);
     add(&color, &gettext("Saturation"), -100.0, 100.0, 0, None, |p| &mut p.saturation);
     add(&color, &gettext("Vibrance"), -100.0, 100.0, 0, None, |p| &mut p.vibrance);
     add(&color, &gettext("Shadow saturation"), -100.0, 100.0, 0, None, |p| &mut p.sat_shadows);
     add(&color, &gettext("Highlight saturation"), -100.0, 100.0, 0, None, |p| &mut p.sat_highlights);
-    grade.append(&eye_section(&gettext("Color"), &color, true, &[], sender, Off::Grade(Stage::Color)));
+    let color_sec = eye_section(&gettext("Color"), &color, true, &[], sender, Off::Grade(Stage::Color));
 
     let film = vbox(4);
     add(&film, &gettext("Subtractive saturation"), -100.0, 100.0, 0, Some("track-film-sat"), |p| &mut p.film_sat);
@@ -2828,7 +2833,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     film.append(&caption(&gettext(
         "Soft light deepens shadows and lifts highlights, as RawTherapee's; 30 is its default.",
     )));
-    grade.append(&eye_section(&gettext("Film color"), &film, true, &[], sender, Off::Grade(Stage::Film)));
+    let film_sec = eye_section(&gettext("Film color"), &film, true, &[], sender, Off::Grade(Stage::Film));
 
     // HSL mixer (OKLCh bands)
     let hsl = vbox(6);
@@ -2868,7 +2873,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         hsl.append(&s.root);
         s
     });
-    grade.append(&eye_section(&gettext("Selective color"), &hsl, true, &[], sender, Off::Grade(Stage::Selective)));
+    let selective_sec = eye_section(&gettext("Selective color"), &hsl, true, &[], sender, Off::Grade(Stage::Selective));
 
     let snd = sender.clone();
     let hue_curves = CurveEditor::new(HUE_HUE..LUM_SAT + 1, move |ch, c| snd.input(Msg::Curve(ch, c)));
@@ -2884,7 +2889,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         ),
         sender,
     );
-    grade.append(&eye_section(&gettext("Hue curves"), &hue_box, false, &[], sender, Off::Grade(Stage::HueCurves)));
+    let hue_sec = eye_section(&gettext("Hue curves"), &hue_box, false, &[], sender, Off::Grade(Stage::HueCurves));
 
     // Primaries: lift / gamma / gain / offset wheels with a master slider each.
     let wheels_row = gtk::Grid::builder().column_spacing(10).row_spacing(10).column_homogeneous(true).build();
@@ -2902,14 +2907,8 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         wheels_row.attach(&col, (i % 2) as i32, (i / 2) as i32, 1, 1);
         wheels.push((wheel, luma));
     }
-    grade.append(&eye_section(
-        &gettext("Primary color wheels"),
-        &wheels_row,
-        true,
-        &[],
-        sender,
-        Off::Grade(Stage::Wheels),
-    ));
+    let wheels_sec =
+        eye_section(&gettext("Primary color wheels"), &wheels_row, true, &[], sender, Off::Grade(Stage::Wheels));
 
     // Curves
     let snd = sender.clone();
@@ -2925,7 +2924,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         &gettext("Click to add a point, double-click or right-click to remove it"),
         sender,
     );
-    grade.append(&eye_section(&gettext("Curves"), &curve_box, true, &[], sender, Off::Grade(Stage::Curves)));
+    let curves_sec = eye_section(&gettext("Curves"), &curve_box, true, &[], sender, Off::Grade(Stage::Curves));
 
     // LUTs after the grade
     let look_box = vbox(8);
@@ -2967,7 +2966,25 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     let browse = gtk::Revealer::builder().transition_type(gtk::RevealerTransitionType::SlideDown).build();
     look_box.append(&browse);
     look_box.append(&caption(&gettext("Applied after the grade, top to bottom, and included in the exported LUT.")));
-    grade.append(&eye_section(&gettext("LUTs"), &look_box, true, &[], sender, Off::Looks));
+    let luts_sec = eye_section(&gettext("LUTs"), &look_box, true, &[], sender, Off::Looks);
+    // A grading workflow, top to bottom: the look to grade under, balance, primaries, secondaries,
+    // the look's finishing touches. The GPU's order is its own (the LUT comes last there).
+    for s in [
+        &profile_sec,
+        &luts_sec,
+        &match_sec,
+        &warmth_sec,
+        &tone_sec,
+        &curves_sec,
+        &wheels_sec,
+        &color_sec,
+        &selective_sec,
+        &hue_sec,
+        &film_sec,
+        &mixer_sec,
+    ] {
+        grade.append(s);
+    }
     photo.append(crop);
 
     let vig = vbox(4);
@@ -3205,7 +3222,8 @@ impl SimpleComponent for App {
         crop_ui.section.connect_unmap(move |_| edit.set_active(false));
         // The sidebar's left edge drags to resize it; the width is remembered.
         // A visible pill in a wider grab area, as in RapidRAW.
-        let handle = gtk::Box::builder().css_classes(["sidebar-handle"]).tooltip_text(gettext("Drag to resize")).build();
+        let handle =
+            gtk::Box::builder().css_classes(["sidebar-handle"]).tooltip_text(gettext("Drag to resize")).build();
         handle.append(&gtk::Box::builder().valign(gtk::Align::Center).build());
         handle.set_cursor_from_name(Some("col-resize"));
         handle.update_property(&[gtk::accessible::Property::Label(&gettext("Resize the sidebar"))]);
@@ -3229,7 +3247,8 @@ impl SimpleComponent for App {
         drag.connect_drag_update(move |g, _, _| {
             // From the pointer's place in the split view, not the offset from the handle:
             // the handle moves with the width, and an offset from it would feed back (flicker).
-            let Some(at) = g.point(None).and_then(|(x, y)| h.compute_point(&sp, &gtk::graphene::Point::new(x as f32, y as f32)))
+            let Some(at) =
+                g.point(None).and_then(|(x, y)| h.compute_point(&sp, &gtk::graphene::Point::new(x as f32, y as f32)))
             else {
                 return;
             };
@@ -4912,7 +4931,9 @@ impl SimpleComponent for App {
             Msg::Commit(i) => {
                 let path = self.luts.get(i).map(|l| &l.path);
                 // A double-click activates twice: the second adds nothing, whether the first is loading or in.
-                if self.flash_new_look || path.is_some_and(|p| self.looks.last().and_then(|l| l.path.as_ref()) == Some(p)) {
+                if self.flash_new_look
+                    || path.is_some_and(|p| self.looks.last().and_then(|l| l.path.as_ref()) == Some(p))
+                {
                     return;
                 }
                 self.flash_new_look = true;
@@ -5606,7 +5627,8 @@ fn main() {
         relm4::set_global_css(&format!("{css}{}", band_css()));
         // Installed, the icons are in the hicolor theme; a dev run finds them in the source tree.
         if let Some(display) = gdk::Display::default() {
-            gtk::IconTheme::for_display(&display).add_search_path(concat!(env!("CARGO_MANIFEST_DIR"), "/../data/icons"));
+            gtk::IconTheme::for_display(&display)
+                .add_search_path(concat!(env!("CARGO_MANIFEST_DIR"), "/../data/icons"));
         }
     });
     std::thread::spawn(|| {
@@ -5655,7 +5677,12 @@ mod tests {
         let mut clip = Sidecar { rating: 5, label: Label::Red, off: vec![Off::Crop, Off::Looks], ..Default::default() };
         clip.develop.exposure = 1.0;
         clip.crop.angle = 3.0;
-        let target = Sidecar { rating: 2, label: Label::Blue, meta: Meta { title: "B".into(), ..Default::default() }, ..Default::default() };
+        let target = Sidecar {
+            rating: 2,
+            label: Label::Blue,
+            meta: Meta { title: "B".into(), ..Default::default() },
+            ..Default::default()
+        };
         clip.meta.title = "A".into();
         let p = pasted(&clip, &target);
         assert_eq!((p.develop.exposure, p.crop, p.rating, p.label), (1.0, target.crop, 2, Label::Blue));

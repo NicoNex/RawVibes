@@ -52,8 +52,18 @@ impl MetaUi {
         root.append(&section(&gettext("Camera"), &cam_list));
         let mut fields = Vec::new();
         for (heading, group) in [
-            (gettext("Description"), &[(MetaField::Title, gettext("Title")), (MetaField::Caption, gettext("Caption")), (MetaField::Keywords, gettext("Keywords, comma separated"))][..]),
-            (gettext("Rights"), &[(MetaField::Creator, gettext("Creator")), (MetaField::Copyright, gettext("Copyright"))]),
+            (
+                gettext("Description"),
+                &[
+                    (MetaField::Title, gettext("Title")),
+                    (MetaField::Caption, gettext("Caption")),
+                    (MetaField::Keywords, gettext("Keywords, comma separated")),
+                ][..],
+            ),
+            (
+                gettext("Rights"),
+                &[(MetaField::Creator, gettext("Creator")), (MetaField::Copyright, gettext("Copyright"))],
+            ),
             (gettext("Location"), &[(MetaField::City, gettext("City")), (MetaField::Country, gettext("Country"))]),
         ] {
             let l = list();
@@ -73,12 +83,20 @@ impl MetaUi {
     pub fn show_camera(&self, src: Option<&RawMetadata>) {
         let e = src.map(|s| &s.exif);
         let camera = src.map(|s| {
-            if s.model.starts_with(&s.make) { s.model.clone() } else { format!("{} {}", s.make, s.model).trim().to_string() }
+            if s.model.starts_with(&s.make) {
+                s.model.clone()
+            } else {
+                format!("{} {}", s.make, s.model).trim().to_string()
+            }
         });
-        let lens = e.and_then(|e| e.lens_model.clone()).or_else(|| src.and_then(|s| s.lens.as_ref()).map(|l| format!("{} {}", l.lens_make, l.lens_model)));
+        let lens = e
+            .and_then(|e| e.lens_model.clone())
+            .or_else(|| src.and_then(|s| s.lens.as_ref()).map(|l| format!("{} {}", l.lens_make, l.lens_model)));
         let focal = e.and_then(|e| e.focal_length).filter(|r| r.d != 0).map(|r| format!("{} mm", trim(r.as_f32())));
         let taken = e.and_then(|e| e.date_time_original.as_deref()).map(taken_line);
-        let location = e.map(|e| if e.gps.as_ref().is_some_and(|g| g.gps_latitude.is_some()) { gettext("Recorded") } else { gettext("None") });
+        let location = e.map(|e| {
+            if e.gps.as_ref().is_some_and(|g| g.gps_latitude.is_some()) { gettext("Recorded") } else { gettext("None") }
+        });
         for (row, v) in self.camera.iter().zip([camera, lens, e.map(exposure_line), focal, taken, location]) {
             row.set_subtitle(v.filter(|v| !v.is_empty()).as_deref().unwrap_or("—"));
         }
@@ -96,7 +114,11 @@ impl MetaUi {
                 MetaField::Copyright => &defaults.copyright,
                 _ => "",
             };
-            row.set_title(&if fallback.is_empty() { title.clone() } else { gettext!("{} (empty: {})", title, fallback) });
+            row.set_title(&if fallback.is_empty() {
+                title.clone()
+            } else {
+                gettext!("{} (empty: {})", title, fallback)
+            });
         }
     }
 }
@@ -187,7 +209,8 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(exposure_line(&e), "1/250 s · f/2.8 · ISO 400 · +0.3 EV");
-        let long = Exif { exposure_time: Some(Rational::new(2, 1)), fnumber: Some(Rational::new(8, 1)), ..Default::default() };
+        let long =
+            Exif { exposure_time: Some(Rational::new(2, 1)), fnumber: Some(Rational::new(8, 1)), ..Default::default() };
         assert_eq!(exposure_line(&long), "2 s · f/8");
         assert_eq!(exposure_line(&Exif::default()), "");
     }

@@ -1248,7 +1248,11 @@ mod tests {
                 cancel: Arc::default(),
                 tags: crate::meta::tags(
                     crate::meta::read(&path).as_ref(),
-                    &crate::sidecar::Meta { creator: "RawVibes test".into(), title: "Sample".into(), ..Default::default() },
+                    &crate::sidecar::Meta {
+                        creator: "RawVibes test".into(),
+                        title: "Sample".into(),
+                        ..Default::default()
+                    },
                     crate::meta::Policy::Essential,
                     Decoded::fit_size(&crop, u32::MAX),
                 ),

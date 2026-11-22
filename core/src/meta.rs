@@ -6,10 +6,10 @@ use std::path::Path;
 
 pub use rawler::decoders::RawMetadata;
 pub use rawler::exif::Exif;
-pub use rawler::formats::tiff::{Rational, SRational};
 use rawler::formats::jfif::Jfif;
 use rawler::formats::tiff::reader::TiffReader;
 use rawler::formats::tiff::{DirectoryWriter, GenericTiffReader, IFD, TiffWriter};
+pub use rawler::formats::tiff::{Rational, SRational};
 use rawler::tags::{ExifTag, TiffCommonTag};
 
 use crate::sidecar::Meta;
@@ -199,7 +199,8 @@ pub fn tags(src: Option<&RawMetadata>, m: &Meta, policy: Policy, size: (u32, u32
     // Copyright only: the author's own fields, nothing about the photo.
     let narrowed;
     let m = if policy == Policy::Copyright {
-        let (creator, copyright, email, website) = (m.creator.clone(), m.copyright.clone(), m.email.clone(), m.website.clone());
+        let (creator, copyright, email, website) =
+            (m.creator.clone(), m.copyright.clone(), m.email.clone(), m.website.clone());
         narrowed = Meta { creator, copyright, email, website, ..Default::default() };
         &narrowed
     } else {
@@ -287,7 +288,12 @@ mod tests {
     #[test]
     fn defaults_fill_only_empty_fields() {
         let m = Meta { creator: "Ada".into(), ..Default::default() };
-        let d = Meta { creator: "Bob".into(), copyright: "© {year} {creator}".into(), email: "b@x.it".into(), ..Default::default() };
+        let d = Meta {
+            creator: "Bob".into(),
+            copyright: "© {year} {creator}".into(),
+            email: "b@x.it".into(),
+            ..Default::default()
+        };
         let out = with_defaults(&m, &d, Some(2024));
         assert_eq!((out.creator.as_str(), out.copyright.as_str(), out.email.as_str()), ("Ada", "© 2024 Ada", "b@x.it"));
     }
@@ -317,8 +323,12 @@ mod tests {
 
     #[test]
     fn utf8_survives_in_xmp() {
-        let x = xmp(&Meta { creator: "Nicolò ©".into(), keywords: vec!["mare".into(), "luce".into()], ..Default::default() })
-            .unwrap();
+        let x = xmp(&Meta {
+            creator: "Nicolò ©".into(),
+            keywords: vec!["mare".into(), "luce".into()],
+            ..Default::default()
+        })
+        .unwrap();
         assert!(x.contains("Nicolò ©") && x.contains("<rdf:li>mare</rdf:li>") && x.contains("RawVibes"), "{x}");
     }
 
@@ -388,7 +398,9 @@ mod tests {
     #[test]
     fn exif_has_the_required_tags() {
         let t = tags(None, &Meta::default(), Policy::Essential, (10, 10));
-        let reader = GenericTiffReader::new(&mut Cursor::new(&t.exif), 0, 0, Some(0), &[TiffCommonTag::ExifIFDPointer.into()]).unwrap();
+        let reader =
+            GenericTiffReader::new(&mut Cursor::new(&t.exif), 0, 0, Some(0), &[TiffCommonTag::ExifIFDPointer.into()])
+                .unwrap();
         let root = &reader.file().chain[0];
         assert!(root.get_entry(ExifTag::YCbCrPositioning).is_some());
         let ex = root.get_sub_ifd(TiffCommonTag::ExifIFDPointer).unwrap();

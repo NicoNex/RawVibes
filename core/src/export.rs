@@ -253,7 +253,13 @@ mod tests {
             let px: Vec<u8> = (0..n).map(|i| to_u8_dithered(v, i)).collect();
             let mean = px.iter().map(|&p| p as f64).sum::<f64>() / n as f64;
             assert!((mean - v as f64 * 255.0 / 65535.0).abs() < 0.02, "{v}: {mean}");
-            assert!(px.iter().all(|&p| if v == 0 { p <= 1 } else if v == 65535 { p >= 254 } else { true }));
+            assert!(px.iter().all(|&p| if v == 0 {
+                p <= 1
+            } else if v == 65535 {
+                p >= 254
+            } else {
+                true
+            }));
         }
         // Not a constant rounding: mid-grey between two levels takes both.
         assert!((0..100).map(|i| to_u8_dithered(32896, i)).collect::<std::collections::HashSet<_>>().len() > 1);

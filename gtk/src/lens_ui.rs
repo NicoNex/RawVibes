@@ -147,14 +147,22 @@ impl ProfileUi {
 mod tests {
     use super::*;
 
+    /// Every status reads differently and names the lens when there is one (in any language:
+    /// another test switches the process to Italian).
     #[test]
     fn labels_say_where_the_profile_comes_from() {
         let name = "Canon EF 16-35mm f/2.8L USM".to_string();
-        assert_eq!(profile_label(&Status::Auto(name.clone())), "Canon EF 16-35mm f/2.8L USM · automatic");
-        assert_eq!(profile_label(&Status::Chosen(name.clone())), "Canon EF 16-35mm f/2.8L USM · chosen");
-        assert!(profile_label(&Status::NeedsFocal(name)).contains("focal length"));
-        assert_eq!(profile_label(&Status::NotFound), "None found");
-        assert_eq!(profile_label(&Status::Off), "No profile");
-        assert!(profile_label(&Status::NoDatabase).contains("lensfun"));
+        let all = [
+            Status::Auto(name.clone()),
+            Status::Chosen(name.clone()),
+            Status::NeedsFocal(name.clone()),
+            Status::NotFound,
+            Status::Off,
+            Status::NoDatabase,
+        ];
+        let labels: Vec<String> = all.iter().map(profile_label).collect();
+        assert!(labels[..3].iter().all(|l| l.contains(&name)), "{labels:?}");
+        assert!(labels.iter().enumerate().all(|(i, a)| labels[i + 1..].iter().all(|b| a != b)), "{labels:?}");
+        assert!(labels[5].contains("lensfun"));
     }
 }

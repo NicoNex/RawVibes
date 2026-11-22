@@ -913,6 +913,11 @@ impl App {
         // Remembered as used, not per spin tick.
         let _ = settings::set_value(settings::EXPORT_FORMAT, ui.format().tag());
         let _ = settings::set_value(settings::JPEG_QUALITY, &ui.quality().to_string());
+        let (format, quality) = (ui.format(), ui.quality());
+        let tags = self.export_tags(&crop);
+        if format == PhotoFormat::Jpeg && tags.xmp.as_deref().is_some_and(|x| !export::xmp_fits_jpeg(x)) {
+            self.toast(&gettext("Title, keywords and rights are too long for a JPEG: exported without them"));
+        }
         self.send(Job::ExportPhoto(PhotoExport {
             decoded,
             crop,
@@ -920,11 +925,11 @@ impl App {
             profile: self.profile,
             grade: self.graded(),
             look: self.look_stack(self.look_layers()),
-            format: ui.format(),
-            quality: ui.quality(),
+            format,
+            quality,
             path,
             cancel,
-            tags: self.export_tags(&crop),
+            tags,
         }));
         true
     }

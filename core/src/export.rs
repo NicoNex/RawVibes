@@ -182,6 +182,11 @@ fn after_app_segments(jpeg: &[u8]) -> usize {
     at.min(jpeg.len())
 }
 
+/// Whether `xmp` fits a JPEG's one XMP segment; a JPEG export leaves out a packet that does not.
+pub fn xmp_fits_jpeg(xmp: &str) -> bool {
+    2 + XMP_NS.len() + xmp.len() <= u16::MAX as usize
+}
+
 /// An APP1 segment of `payload`; empty when too big for one (the export goes without it).
 fn app1(payload: &[u8]) -> Vec<u8> {
     let Ok(len) = u16::try_from(payload.len() + 2) else { return Vec::new() };
@@ -303,6 +308,15 @@ mod tests {
         assert!(save(&p, 4, 4, vec![1000; 48], PhotoFormat::Tiff16, 90, &Tags::default(), || false).unwrap());
         assert!(contains(&std::fs::read(&p).unwrap(), &SRGB_ICC[..40]));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// One APP1 segment holds 65535 bytes, length and namespace included.
+    #[test]
+    fn xmp_fits_one_segment() {
+        let limit = 65535 - 2 - XMP_NS.len();
+        assert!(xmp_fits_jpeg(&"x".repeat(limit)));
+        assert!(!xmp_fits_jpeg(&"x".repeat(limit + 1)));
+        assert!(app1(&[XMP_NS, "x".repeat(limit + 1).as_bytes()].concat()).is_empty());
     }
 
     #[test]

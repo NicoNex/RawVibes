@@ -544,6 +544,11 @@ fn hazy() -> Vec<[f32; 3]> {
         .collect()
 }
 
+/// Deep shadow (−7 EV of the mask) left of x = RW/2, a highlight (−1.3 EV) right: a hard step.
+fn zones() -> Vec<[f32; 3]> {
+    (0..RW * RH).map(|i| if i % RW < RW / 2 { [0.012; 3] } else { [0.7; 3] }).collect()
+}
+
 /// Fine texture on mid grey.
 fn texture() -> Vec<[f32; 3]> {
     (0..RW * RH)
@@ -572,6 +577,7 @@ fn audit_develop_sliders() {
     let texture_raw = rgb_raw(&gpu, texture(), NOISE);
     let grey_raw = rgb_raw(&gpu, vec![[0.2; 3]; (RW * RH) as usize], NOISE);
     let noisy_tex = rgb_raw(&gpu, noisy_texture(), NOISE);
+    let zones_raw = rgb_raw(&gpu, zones(), NOISE);
     let noisy_plain = develop(&gpu, &noisy_tex, &Develop::default());
     let (np1, np2) = (noisy_plain.clone(), noisy_plain.clone());
     // Mean absolute change from the undeveloped input: how much a tool does.
@@ -605,6 +611,8 @@ fn audit_develop_sliders() {
         c(0, 0) / c(RW / 2 - 4, RH / 2 - 4)
     };
     let mean_luma = |px: &[[f32; 4]]| stats(px, all, luma).0;
+    let dark_ev = |px: &[[f32; 4]]| stats(px, |x, _| x < RW / 2 - 20, luma).0.log2();
+    let bright_ev = |px: &[[f32; 4]]| stats(px, |x, _| x > RW / 2 + 20, luma).0.log2();
     let warm = |px: &[[f32; 4]]| stats(px, all, |p| p[0] / p[2]).0;
     let magenta = |px: &[[f32; 4]]| stats(px, all, |p| (p[0] + p[2]) / (2.0 * p[1])).0;
     let detail = |f: fn(&mut Detail, f32)| -> DetailSet { Box::new(move |d, v| f(&mut d.detail, v)) };
@@ -714,6 +722,16 @@ fn audit_develop_sliders() {
             Box::new(fringe_chroma),
             Dir::Down,
         ),
+        ("shadows (log2)", &zones_raw, detail(|d, v| d.shadows = v), (-100.0, 100.0), 0.0, Box::new(dark_ev), Dir::Up),
+        (
+            "highlights (log2)",
+            &zones_raw,
+            detail(|d, v| d.highlights = v),
+            (-100.0, 100.0),
+            0.0,
+            Box::new(bright_ev),
+            Dir::Up,
+        ),
         ("dehaze", &hazy_raw, detail(|d, v| d.dehaze = v), (-100.0, 100.0), 0.0, Box::new(contrast), Dir::Up),
         (
             "local contrast",
@@ -765,6 +783,23 @@ fn audit_develop_sliders() {
         let ratio = at(ev) / at(0.0);
         if (ratio / 2f32.powf(ev) - 1.0).abs() > 0.01 {
             fails.push(format!("exposure {ev} EV: ×{ratio:.4}, expected ×{:.4}", 2f32.powf(ev)));
+        }
+    }
+    // Shadows and highlights act by area and stop at its edge: no halo on the other side.
+    let z0 = develop(&gpu, &zones_raw, &plain);
+    for (name, d, far, near) in [
+        ("shadows +100", Detail { shadows: 100.0, ..Detail::default() }, 0..RW / 2 - 20, RW / 2 + 1..RW / 2 + 8),
+        ("highlights −100", Detail { highlights: -100.0, ..Detail::default() }, RW / 2 + 20..RW, RW / 2 - 8..RW / 2),
+    ] {
+        let z = develop(&gpu, &zones_raw, &Develop { detail: d, ..plain });
+        let ev = |r: std::ops::Range<u32>| {
+            let m = |px: &[[f32; 4]]| stats(px, |x, _| r.contains(&x), luma).0;
+            (m(&z) / m(&z0)).log2()
+        };
+        let (far, near) = (ev(far), ev(near));
+        eprintln!("{name}: target area {far:+.3} EV, other side by the edge {near:+.3} EV");
+        if far.abs() < 1.0 || near.abs() > 0.1 * far.abs() {
+            fails.push(format!("{name}: target {far:+.3} EV, halo {near:+.3} EV across the edge"));
         }
     }
     fails.retain(|f| !EXPECTED.iter().any(|(start, _)| f.starts_with(start)));

@@ -18,6 +18,7 @@ type M3 = [[f32; 3]; 3];
 pub enum DevPart {
     WhiteBalance,
     Exposure,
+    Tones,
     Noise,
     Presence,
     Detail,
@@ -25,8 +26,8 @@ pub enum DevPart {
 }
 
 impl DevPart {
-    pub const ALL: [DevPart; 6] =
-        [Self::WhiteBalance, Self::Exposure, Self::Noise, Self::Presence, Self::Detail, Self::Lens];
+    pub const ALL: [DevPart; 7] =
+        [Self::WhiteBalance, Self::Exposure, Self::Tones, Self::Noise, Self::Presence, Self::Detail, Self::Lens];
 
     /// Puts this section of `d` back to neutral.
     pub fn neutral(self, d: &mut Develop) {
@@ -34,6 +35,7 @@ impl DevPart {
         match self {
             Self::WhiteBalance => d.wb = Develop::default().wb,
             Self::Exposure => d.exposure = Develop::default().exposure,
+            Self::Tones => (x.shadows, x.highlights) = (n.shadows, n.highlights),
             Self::Noise => (x.nr_luma, x.nr_chroma, x.nr_ai) = (n.nr_luma, n.nr_chroma, n.nr_ai),
             Self::Presence => (x.dehaze, x.local_contrast) = (n.dehaze, n.local_contrast),
             Self::Detail => (x.sharpen, x.usm) = (n.sharpen, n.usm),
@@ -82,6 +84,9 @@ pub struct Detail {
     pub usm_threshold: f32,
     pub dehaze: f32,
     pub local_contrast: f32,
+    /// Edge-aware shadows and highlights, −100…100: darktable's tone equalizer (`tones.wgsl`).
+    pub shadows: f32,
+    pub highlights: f32,
     /// Lens vignetting compensation, −100…100.
     pub lens_vignette: f32,
     /// Automatic lateral chromatic-aberration correction on the Bayer
@@ -121,6 +126,8 @@ impl Detail {
             + on(d.defringe_green, 32.0)
             + on(d.dehaze, 67.0)
             + on(d.local_contrast, 256.0)
+            // The tone equalizer's mask: 3σ of its guided filter, √3 for its three iterations.
+            + if d.shadows != 0.0 || d.highlights != 0.0 { TONES_SUPPORT } else { 0.0 }
             // The most iterations at the largest radius, so neither amount nor radius moves the margin (or the caches).
             + on(d.sharpen, 11.0 * 2.0 * 6.0)
             // Two separable blurs at the largest radius (3σ of 3 px).
@@ -135,7 +142,7 @@ impl Detail {
         let all = [all.as_slice(), &[d.dehaze, d.local_contrast, d.lens_vignette, d.nr_ai_strength]].concat();
         let all =
             [all.as_slice(), &[d.lens_dist_amount, d.lens_vig_amount, d.lens_distortion, d.lens_vignette_mid]].concat();
-        let all = [all.as_slice(), &[d.lens_ca_red, d.lens_ca_blue]].concat();
+        let all = [all.as_slice(), &[d.lens_ca_red, d.lens_ca_blue, d.shadows, d.highlights]].concat();
         if all.iter().any(|v| !v.is_finite()) {
             return None;
         }
@@ -154,6 +161,8 @@ impl Detail {
             usm_threshold: amount(d.usm_threshold),
             dehaze: signed(d.dehaze),
             local_contrast: amount(d.local_contrast),
+            shadows: signed(d.shadows),
+            highlights: signed(d.highlights),
             lens_vignette: signed(d.lens_vignette),
             ca_correct: d.ca_correct,
             nr_ai: d.nr_ai,
@@ -185,6 +194,8 @@ impl Default for Detail {
             usm_threshold: 0.0,
             dehaze: 0.0,
             local_contrast: 0.0,
+            shadows: 0.0,
+            highlights: 0.0,
             lens_vignette: 0.0,
             ca_correct: false,
             nr_ai: false,
@@ -202,6 +213,9 @@ impl Default for Detail {
 }
 
 /// White-balance presets: name, Kelvin, tint.
+/// `Detail::support` of the tone equalizer: 3σ of its mask's guided filter, √3 for three iterations.
+const TONES_SUPPORT: f32 = 3.0 * 1.732_050_8 * crate::tones::RADIUS;
+
 pub const WB_PRESETS: [(&str, f32, f32); 6] = [
     ("Daylight", 5500.0, 0.0),
     ("Cloudy", 6500.0, 10.0),

@@ -27,4 +27,5 @@ pub mod profiles;
 pub mod raw;
 pub mod scopes;
 pub mod sidecar;
+mod tones;
 pub mod view;

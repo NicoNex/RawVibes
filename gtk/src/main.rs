@@ -2625,6 +2625,14 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     // AI leaves some colour noise: chrominance stays in both methods.
     detail_slider(&nr, &gettext("Chrominance"), (0.0, 100.0), |d| &mut d.nr_chroma);
     let nr_sec = dev_section(&gettext("Noise reduction"), &nr, &[], DevPart::Noise);
+    // Edge-aware, by area: the Grade tab's Highlights and Shadows are global curves.
+    let tones = vbox(4);
+    detail_slider(&tones, &gettext("Highlights"), (-100.0, 100.0), |d| &mut d.highlights);
+    detail_slider(&tones, &gettext("Shadows"), (-100.0, 100.0), |d| &mut d.shadows);
+    tones.append(&caption(&gettext(
+        "Brightens or darkens whole areas and stops at their edges: no halos, detail kept.",
+    )));
+    root.append(&dev_section(&gettext("Shadows and highlights"), &tones, &[], DevPart::Tones));
     let haze = vbox(4);
     detail_slider(&haze, &gettext("Dehaze"), (-100.0, 100.0), |d| &mut d.dehaze);
     detail_slider(&haze, &gettext("Local contrast"), (0.0, 100.0), |d| &mut d.local_contrast);

@@ -300,6 +300,12 @@ pub struct Pipelines {
     ll_top: wgpu::ComputePipeline,
     ll_collapse: wgpu::ComputePipeline,
     ll_apply: wgpu::ComputePipeline,
+    te_mask: wgpu::ComputePipeline,
+    te_down: wgpu::ComputePipeline,
+    te_blur_h: wgpu::ComputePipeline,
+    te_blur_v: wgpu::ComputePipeline,
+    te_blend: wgpu::ComputePipeline,
+    te_apply: wgpu::ComputePipeline,
     /// Dehaze airlight (one f32 as bits, atomic max), zeroed per run.
     air: wgpu::Buffer,
     /// Noise reductions and dehazes run (tests check the caches).
@@ -339,6 +345,8 @@ impl Pipelines {
         let tone =
             crate::gpu::shader(device, "tone.wgsl", concat!(include_str!("common.wgsl"), include_str!("tone.wgsl")));
         let ll = crate::gpu::shader(device, "ll.wgsl", concat!(include_str!("common.wgsl"), include_str!("ll.wgsl")));
+        let tones =
+            crate::gpu::shader(device, "tones.wgsl", concat!(include_str!("common.wgsl"), include_str!("tones.wgsl")));
         Self {
             box_h: tone("box_h"),
             box_v: tone("box_v"),
@@ -353,6 +361,12 @@ impl Pipelines {
             ll_top: ll("ll_top"),
             ll_collapse: ll("ll_collapse"),
             ll_apply: ll("ll_apply"),
+            te_mask: tones("te_mask"),
+            te_down: tones("te_down"),
+            te_blur_h: tones("te_blur_h"),
+            te_blur_v: tones("te_blur_v"),
+            te_blend: tones("te_blend"),
+            te_apply: tones("te_apply"),
             #[cfg(test)]
             nr_runs: Default::default(),
             #[cfg(test)]
@@ -538,6 +552,21 @@ struct ToneParams {
     omega: f32,
     seed: u32,
     _pad: f32,
+}
+
+/// `TonesParams` of `tones.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct TonesParams {
+    size: [u32; 2],
+    ds: [u32; 2],
+    f: u32,
+    radius: i32,
+    sigma: f32,
+    feather: f32,
+    boost: f32,
+    _pad: [f32; 3],
+    factors: [f32; 8],
 }
 
 /// `LlParams` of `ll.wgsl`.
@@ -835,12 +864,13 @@ impl Gpu {
         );
         key.extend([d.nr_luma, d.nr_chroma, d.nr_detail]);
         let nr_key = (raw.id, key.clone());
-        key.extend([d.defringe, d.defringe_green, d.dehaze]);
+        key.extend([d.defringe, d.defringe_green, d.shadows, d.highlights, d.dehaze]);
         let haze_key = (raw.id, key.clone());
         key.push(d.local_contrast);
         let contrast_key = (raw.id, key);
         let nr_on = d.nr_luma > 0.0 || d.nr_chroma > 0.0;
-        let haze_on = d.defringe > 0.0 || d.defringe_green > 0.0 || d.dehaze != 0.0;
+        let tones_on = d.shadows != 0.0 || d.highlights != 0.0;
+        let haze_on = d.defringe > 0.0 || d.defringe_green > 0.0 || tones_on || d.dehaze != 0.0;
         let contrast_on = d.local_contrast > 0.0;
         // A tool turned off frees its cache (a 100% view's is ~100 MB).
         if !nr_on {
@@ -878,6 +908,9 @@ impl Gpu {
                 if amount > 0.0 {
                     self.defringe(&lin, work.scratch(self), &fringe, lw, lh, s, amount, brighten);
                 }
+            }
+            if tones_on {
+                self.tones(&lin, work.scratch(self), lw, lh, s, d);
             }
             if d.dehaze != 0.0 {
                 self.airlight(raw, dev, profile);
@@ -941,6 +974,37 @@ impl Gpu {
             (&p.box_v, &boxes, g),
             (&p.dh_apply, &air, g),
         ]);
+    }
+
+    /// Shadows and highlights (`tones.wgsl`): the EIGF mask, then the gain of its exposure.
+    #[allow(clippy::too_many_arguments)]
+    fn tones(&self, lin: &wgpu::Buffer, [sa, sb]: [&wgpu::Buffer; 2], w: u32, h: u32, s: f32, d: &Detail) {
+        // darktable's fast EIGF: statistics at 1/f (here at least 1/2, so they fit in `sb` twice).
+        let sigma = crate::tones::RADIUS * s;
+        let f = sigma.clamp(2.0, 4.0) as u32;
+        let (dw, dh) = (w.div_ceil(f), h.div_ceil(f));
+        let ds_sigma = (sigma / f as f32).max(1.0);
+        let q = self.storage(bytemuck::bytes_of(&TonesParams {
+            size: [w, h],
+            ds: [dw, dh],
+            f,
+            radius: (3.0 * ds_sigma).ceil() as i32,
+            sigma: ds_sigma,
+            feather: crate::tones::FEATHER,
+            boost: crate::tones::MASK_BOOST.exp2(),
+            _pad: [0.0; 3],
+            factors: crate::tones::factors(d.shadows, d.highlights),
+        }));
+        let (p, full, small) = (&self.raw, grid(w * h), grid(dw * dh));
+        // Each entry point binds only what it reads or writes.
+        let (image, stats, blur) = ([(0, &q), (1, lin), (2, sa)], [(0, &q), (2, sa), (3, sb)], [(0, &q), (3, sb)]);
+        let mut passes = vec![(&p.te_mask, &image[..], full)];
+        for _ in 0..crate::tones::ITERATIONS {
+            passes.extend([(&p.te_down, &stats[..], small), (&p.te_blur_h, &blur[..], small)]);
+            passes.extend([(&p.te_blur_v, &blur[..], small), (&p.te_blend, &stats[..], full)]);
+        }
+        passes.push((&p.te_apply, &image[..], full));
+        self.passes(&passes);
     }
 
     /// `ToneParams` for a `w` × `h` buffer at `s` output pixels per full-resolution pixel (≤ 1).

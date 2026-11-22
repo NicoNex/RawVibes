@@ -923,6 +923,8 @@ impl App {
         self.ui.photo_info.set_label(&info.unwrap_or_default());
         let ui = &self.ui.sidebar.meta;
         ui.set(&self.meta, &author_defaults());
+        let policy = export_policy();
+        ui.show_policy(&policy_name(policy), &policy_hint(policy));
         ui.show_camera(self.camera_meta());
         ui.root.set_sensitive(self.path.is_some());
     }
@@ -1895,6 +1897,16 @@ fn export_suffix() -> String {
     settings::value(settings::EXPORT_SUFFIX).unwrap_or_default()
 }
 
+/// The policy's name as the Preferences row lists it.
+fn policy_name(p: meta::Policy) -> String {
+    match p {
+        meta::Policy::All => gettext("All"),
+        meta::Policy::Essential => gettext("Essential"),
+        meta::Policy::Copyright => gettext("Copyright only"),
+        meta::Policy::None => gettext("None"),
+    }
+}
+
 /// What each export policy leaves in a photo, for the Preferences row.
 fn policy_hint(p: meta::Policy) -> String {
     match p {
@@ -1909,7 +1921,7 @@ fn policy_hint(p: meta::Policy) -> String {
 
 /// Preferences → Metadata: what exports carry, their file name, the author stamped on them.
 fn metadata_prefs(sender: &ComponentSender<App>) -> adw::PreferencesPage {
-    let labels = [gettext("All"), gettext("Essential"), gettext("Copyright only"), gettext("None")];
+    let labels = meta::Policy::ALL.map(policy_name);
     let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
     let stored = export_policy();
     let policy = adw::ComboRow::builder()
@@ -1918,10 +1930,13 @@ fn metadata_prefs(sender: &ComponentSender<App>) -> adw::PreferencesPage {
         .model(&gtk::StringList::new(&labels))
         .selected(meta::Policy::ALL.iter().position(|&p| p == stored).unwrap_or(1) as u32)
         .build();
-    policy.connect_selected_notify(|r| {
+    let snd = sender.clone();
+    policy.connect_selected_notify(move |r| {
         let p = meta::Policy::ALL.get(r.selected() as usize).copied().unwrap_or_default();
         let _ = settings::set_value(settings::METADATA_POLICY, p.tag());
         r.set_subtitle(&policy_hint(p));
+        // The Metadata tab's note says what exports carry.
+        snd.input(Msg::MetaDefaults);
     });
     let suffix = adw::EntryRow::builder().title(gettext("File name suffix")).text(export_suffix()).build();
     suffix.connect_changed(|r| {
@@ -2315,6 +2330,8 @@ scale.track-film-sat trough highlight, scale.track-film-density trough highlight
 .roll-remove { min-width: 22px; min-height: 22px; padding: 0; opacity: 0; transition: opacity 150ms ease; }
 .roll-item:hover .roll-remove, .roll-remove:focus-visible { opacity: 1; }
 .star { padding: 4px 3px; min-width: 22px; }
+.shot-card { padding: 12px; border-radius: 12px; background-image: linear-gradient(160deg, alpha(@accent_bg_color, 0.22), alpha(currentColor, 0.04)); }
+.keyword { padding: 2px 10px; min-height: 0; font-size: 12px; background-color: alpha(@accent_bg_color, 0.18); }
 .phase-label { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; opacity: 0.62; margin: 8px 4px 0; }
 .info-bar { min-height: 38px; padding: 0 10px; background-color: mix(@window_bg_color, black, 0.18); border-top: 1px solid alpha(black, 0.35); }
 .info-bar .star image { color: @yellow_2; }
@@ -3154,6 +3171,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     panel.append(&photo);
     panel.append(&grade);
     let meta = MetaUi::new(sender);
+    meta.show_policy(&policy_name(export_policy()), &policy_hint(export_policy()));
     panel.append(&meta.root);
     meta.root.set_visible(false);
     meta.root.set_sensitive(false);

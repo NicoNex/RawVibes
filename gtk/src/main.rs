@@ -11,6 +11,7 @@ macro_rules! gettext {
 }
 
 mod crop_ui;
+mod display_color;
 mod export_ui;
 mod filmstrip;
 mod lab_page;
@@ -1894,8 +1895,9 @@ impl App {
     }
 }
 
+/// An sRGB RGBA8 frame as a texture, in the monitor's colour space (`display_color`).
 fn texture(width: u32, height: u32, rgba: Vec<u8>) -> gdk::MemoryTexture {
-    let bytes = glib::Bytes::from_owned(rgba);
+    let bytes = glib::Bytes::from_owned(display_color::to_monitor(rgba));
     gdk::MemoryTexture::new(width as i32, height as i32, gdk::MemoryFormat::R8g8b8a8, &bytes, width as usize * 4)
 }
 

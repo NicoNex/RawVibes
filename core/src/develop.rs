@@ -36,11 +36,14 @@ impl DevPart {
             Self::Exposure => d.exposure = Develop::default().exposure,
             Self::Noise => (x.nr_luma, x.nr_chroma, x.nr_ai) = (n.nr_luma, n.nr_chroma, n.nr_ai),
             Self::Presence => (x.dehaze, x.local_contrast) = (n.dehaze, n.local_contrast),
-            Self::Detail => {
-                (x.sharpen, x.usm) = (n.sharpen, n.usm);
+            Self::Detail => (x.sharpen, x.usm) = (n.sharpen, n.usm),
+            // The profile's correction too: `lens` is what the shader applies.
+            Self::Lens => {
+                (x.lens_vignette, x.ca_correct, x.lens) = (n.lens_vignette, n.ca_correct, n.lens);
                 (x.defringe, x.defringe_green) = (n.defringe, n.defringe_green);
+                (x.lens_distortion, x.lens_vignette_mid) = (n.lens_distortion, n.lens_vignette_mid);
+                (x.lens_ca_red, x.lens_ca_blue) = (n.lens_ca_red, n.lens_ca_blue);
             }
-            Self::Lens => (x.lens_vignette, x.ca_correct) = (n.lens_vignette, n.ca_correct),
         }
     }
 }
@@ -88,6 +91,20 @@ pub struct Detail {
     /// NR, blended over the classic demosaic by `nr_ai_strength` (0–100).
     pub nr_ai: bool,
     pub nr_ai_strength: f32,
+    /// How much of the lens profile's distortion and vignetting correction applies (0–100), and
+    /// whether its lateral CA correction does.
+    pub lens_dist_amount: f32,
+    pub lens_vig_amount: f32,
+    pub lens_tca: bool,
+    /// Manual lens corrections: distortion (+ corrects barrel), vignetting midpoint and
+    /// red/cyan, blue/yellow fringing, −100…100.
+    pub lens_distortion: f32,
+    pub lens_vignette_mid: f32,
+    pub lens_ca_red: f32,
+    pub lens_ca_blue: f32,
+    /// The correction these make with the photo's lens profile: worked out by the app, never saved.
+    #[serde(skip)]
+    pub lens: crate::lens::Correction,
 }
 
 impl Detail {
@@ -116,6 +133,9 @@ impl Detail {
         let all = [d.nr_luma, d.nr_chroma, d.nr_detail, d.sharpen, d.sharpen_radius];
         let all = [all.as_slice(), &[d.defringe, d.defringe_green, d.usm, d.usm_radius, d.usm_threshold]].concat();
         let all = [all.as_slice(), &[d.dehaze, d.local_contrast, d.lens_vignette, d.nr_ai_strength]].concat();
+        let all =
+            [all.as_slice(), &[d.lens_dist_amount, d.lens_vig_amount, d.lens_distortion, d.lens_vignette_mid]].concat();
+        let all = [all.as_slice(), &[d.lens_ca_red, d.lens_ca_blue]].concat();
         if all.iter().any(|v| !v.is_finite()) {
             return None;
         }
@@ -138,6 +158,14 @@ impl Detail {
             ca_correct: d.ca_correct,
             nr_ai: d.nr_ai,
             nr_ai_strength: amount(d.nr_ai_strength),
+            lens_dist_amount: amount(d.lens_dist_amount),
+            lens_vig_amount: amount(d.lens_vig_amount),
+            lens_tca: d.lens_tca,
+            lens_distortion: signed(d.lens_distortion),
+            lens_vignette_mid: signed(d.lens_vignette_mid),
+            lens_ca_red: signed(d.lens_ca_red),
+            lens_ca_blue: signed(d.lens_ca_blue),
+            lens: d.lens,
         })
     }
 }
@@ -161,6 +189,14 @@ impl Default for Detail {
             ca_correct: false,
             nr_ai: false,
             nr_ai_strength: 100.0,
+            lens_dist_amount: 100.0,
+            lens_vig_amount: 100.0,
+            lens_tca: true,
+            lens_distortion: 0.0,
+            lens_vignette_mid: 0.0,
+            lens_ca_red: 0.0,
+            lens_ca_blue: 0.0,
+            lens: crate::lens::Correction::default(),
         }
     }
 }

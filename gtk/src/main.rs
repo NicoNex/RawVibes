@@ -926,7 +926,7 @@ impl App {
         if format == PhotoFormat::Jpeg && tags.xmp.as_deref().is_some_and(|x| !export::xmp_fits_jpeg(x)) {
             self.toast(&gettext("Title, keywords and rights are too long for a JPEG: exported without them"));
         }
-        self.send(Job::ExportPhoto(PhotoExport {
+        self.send(Job::ExportPhoto(Box::new(PhotoExport {
             decoded,
             crop,
             develop: self.applied_develop(),
@@ -938,7 +938,7 @@ impl App {
             path,
             cancel,
             tags,
-        }));
+        })));
         true
     }
 

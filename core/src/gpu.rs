@@ -386,7 +386,7 @@ pub enum Job {
         path: PathBuf,
     },
     /// The open photo, developed and graded at full resolution, to a file.
-    ExportPhoto(PhotoExport),
+    ExportPhoto(Box<PhotoExport>),
     /// The whole photo graded as exported (no zoom, overlay or split), at
     /// preview size: what the export dialog estimates the JPEG size from.
     ExportFrame(Grade),

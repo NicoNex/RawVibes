@@ -110,7 +110,7 @@ uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN) \
 	      $(DESTDIR)$(PREFIX)/share/applications/$(APP_ID).desktop \
 	      $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/$(APP_ID).svg \
-	      $(foreach f,$(notdir $(wildcard data/icons/hicolor/scalable/actions/*.svg)),$(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/actions/$(f)) \
+	      $(addprefix $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/actions/,$(notdir $(wildcard data/icons/hicolor/scalable/actions/*.svg))) \
 	      $(foreach l,$(LINGUAS),$(DESTDIR)$(PREFIX)/share/locale/$(l)/LC_MESSAGES/$(BIN).mo)
 	rm -rf $(DESTDIR)$(PREFIX)/share/licenses/$(BIN) $(DESTDIR)$(PREFIX)/share/$(BIN)
 

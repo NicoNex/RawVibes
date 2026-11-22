@@ -1777,7 +1777,7 @@ impl App {
                     );
                     // Shown with two looks, and while Mix is on so it can be switched back.
                     self.ui.sidebar.look_blend.set_visible(self.looks.len() > 1 || self.look_blend == Blend::Mix);
-                    self.ui.sidebar.applied_panel.set_visible(!self.looks.is_empty());
+                    self.ui.sidebar.applied_dock.set_visible(!self.looks.is_empty());
                     // Show where a LUT added from the browser went.
                     let last = self.ui.sidebar.looks.row_at_index(self.looks.len() as i32 - 1);
                     if let Some(row) = last.filter(|_| std::mem::take(&mut self.flash_new_look)) {
@@ -2098,7 +2098,7 @@ fn section_tabs(stack: &adw::ViewStack, panes: &[&gtk::Box]) {
         let tabs = adw::ToggleGroup::builder().halign(gtk::Align::Center).margin_top(8).margin_bottom(2).build();
         for (name, icon, tip) in [
             ("photo", "camera-shutter-symbolic", gettext("Photo: develop the RAW (Alt+1)")),
-            ("grade", "color-symbolic", gettext("Grade: colour and looks (Alt+2)")),
+            ("grade", "rawvibes-grade-symbolic", gettext("Grade: colour and looks (Alt+2)")),
             ("meta", "tag-outline-symbolic", gettext("Metadata: title, keywords, rights (Alt+3)")),
             ("lab", "rawvibes-lut-symbolic", gettext("LUT Lab: combine and convert LUTs (Alt+4)")),
         ] {
@@ -2292,7 +2292,7 @@ const CSS: &str = r#"
 .sidebar-pane { background-color: var(--sidebar-bg-color); }
 .section { padding: 4px 8px 10px 8px; }
 .section.collapsed { padding-bottom: 4px; }
-.sidebar-handle { padding: 0 3px; }
+.sidebar-handle { padding: 0 6px 0 10px; }
 .sidebar-handle > box { min-width: 4px; min-height: 36px; border-radius: 2px; background-color: alpha(@borders, 0.7); transition: background-color 150ms ease; }
 .sidebar-handle:hover > box, .sidebar-handle.dragging > box { background-color: @accent_bg_color; }
 .section-header { padding: 6px 6px; margin-bottom: 2px; border-radius: 8px; }
@@ -2456,7 +2456,6 @@ struct Sidebar {
     applied: gtk::Box,
     look_box: gtk::Box,
     applied_dock: gtk::ScrolledWindow,
-    applied_panel: gtk::Box,
     look_blend_toggle: adw::ToggleGroup,
     profile_sel: gtk::DropDown,
     /// The LUT browser, revealed under the look stack.
@@ -3182,10 +3181,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         .margin_bottom(8)
         .build();
     // Hidden while the photo has no LUTs, so the grid keeps the whole page.
-    let applied_panel = vbox(0);
-    applied_panel.set_visible(false);
-    applied_panel.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    applied_panel.append(&applied_dock);
+    applied_dock.set_visible(false);
     look_box.append(&caption(&gettext("Applied after the grade, top to bottom, and included in the exported LUT.")));
     let luts_sec = eye_section(&gettext("LUTs"), &look_box, true, &[], sender, Off::Looks);
     // A grading workflow, top to bottom: the look to grade under, balance, primaries, secondaries,
@@ -3280,7 +3276,6 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         applied,
         look_box,
         applied_dock,
-        applied_panel,
         browse,
         side_stack,
         browse_btn,
@@ -3483,10 +3478,11 @@ impl SimpleComponent for App {
         handle.append(&gtk::Box::builder().valign(gtk::Align::Center).build());
         handle.set_cursor_from_name(Some("col-resize"));
         handle.update_property(&[gtk::accessible::Property::Label(&gettext("Resize the sidebar"))]);
-        let side = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        side.append(&handle);
-        side.append(&sidebar.pane);
-        sidebar.pane.set_hexpand(true);
+        // Over the panel's left margin, so the pill sits in the middle of the gap before the cards.
+        handle.set_halign(gtk::Align::Start);
+        sidebar.pane.set_margin_start(10);
+        let side = gtk::Overlay::builder().child(&sidebar.pane).build();
+        side.add_overlay(&handle);
         let width = settings::value(settings::SIDEBAR_WIDTH).and_then(|w| w.parse().ok()).map(clamp_sidebar);
         let grade_split = adw::OverlaySplitView::builder()
             .sidebar_position(gtk::PackType::End)
@@ -3619,7 +3615,7 @@ impl SimpleComponent for App {
         gallery.set_vexpand(true);
         gallery_stack.set_vexpand(true);
         sidebar.browse.append(&gallery);
-        sidebar.browse.append(&sidebar.applied_panel);
+        sidebar.browse.append(&sidebar.applied_dock);
         // Once shown, the grid takes the keyboard, so arrows browse at once (Ctrl+F's search keeps it).
         let (f, browse) = (flow.clone(), sidebar.browse.clone());
         sidebar.side_stack.connect_visible_child_name_notify(move |st| {
@@ -3639,7 +3635,7 @@ impl SimpleComponent for App {
         let (photo_tab, grade_tab) = (tab(), tab());
         photo_tab.append(&grade_split);
         stack.add_titled_with_icon(&photo_tab, Some("photo"), &gettext("Photo"), "camera-shutter-symbolic");
-        stack.add_titled_with_icon(&grade_tab, Some("grade"), &gettext("Grade"), "color-symbolic");
+        stack.add_titled_with_icon(&grade_tab, Some("grade"), &gettext("Grade"), "rawvibes-grade-symbolic");
         let meta_tab = tab();
         stack.add_titled_with_icon(&meta_tab, Some("meta"), &gettext("Metadata"), "tag-outline-symbolic");
         let lab = lab_page::build(&sender, &export_menu("lab-export", false));
@@ -5179,8 +5175,13 @@ impl SimpleComponent for App {
                 if on && s.applied_dock.child().is_none() {
                     s.look_box.remove(&s.applied);
                     s.applied_dock.set_child(Some(&s.applied));
+                    // Out of the section, the cards carry its switched-off dimming themselves.
+                    if s.look_box.has_css_class("bypassed") {
+                        s.applied.add_css_class("bypassed");
+                    }
                 } else if !on && s.applied_dock.child().is_some() {
                     s.applied_dock.set_child(None::<&gtk::Widget>);
+                    s.applied.remove_css_class("bypassed");
                     s.look_box.prepend(&s.applied);
                 }
                 self.ui.sidebar.side_stack.set_visible_child_name(if on { "browser" } else { "sections" });
@@ -5947,11 +5948,14 @@ fn main() {
         STARTED.store(true, Ordering::Relaxed);
         let css = CSS.replace("CANVAS_MARGIN", &CANVAS_MARGIN.to_string());
         relm4::set_global_css(&format!("{css}{}", band_css()));
-        relm4_icons::initialize_icons(icon_names::GRESOURCE_BYTES, icon_names::RESOURCE_PREFIX);
+        // The relm4-icons that build.rs bundled, as a resource the icon theme searches.
+        let icons = gio::Resource::from_data(&glib::Bytes::from_static(icon_names::GRESOURCE_BYTES));
+        icons.iter().for_each(gio::resources_register);
         // Installed, our own icons are in the hicolor theme; a dev run finds them in the source tree.
         if let Some(display) = gdk::Display::default() {
-            gtk::IconTheme::for_display(&display)
-                .add_search_path(concat!(env!("CARGO_MANIFEST_DIR"), "/../data/icons"));
+            let theme = gtk::IconTheme::for_display(&display);
+            theme.add_resource_path(icon_names::RESOURCE_PREFIX);
+            theme.add_search_path(concat!(env!("CARGO_MANIFEST_DIR"), "/../data/icons"));
         }
     });
     std::thread::spawn(|| {

@@ -9,7 +9,6 @@ license.workspace = true
 rawvibes-core = { path = "../core" }
 relm4 = { version = "0.11", features = ["libadwaita", "gnome_50"] }
 gettext-sys = { version = "0.27", features = ["gettext-system"] }
-relm4-icons = "0.11"
 
 [build-dependencies]
 relm4-icons-build = "0.11"

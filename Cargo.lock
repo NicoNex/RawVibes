@@ -1798,7 +1798,6 @@ dependencies = [
  "gettext-sys",
  "rawvibes-core",
  "relm4",
- "relm4-icons",
  "relm4-icons-build",
 ]
 
@@ -1868,15 +1867,6 @@ name = "relm4-css"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f3b81d263f784b103c815afa29124486b59741eca069ce7a5999efb14f13c368"
-
-[[package]]
-name = "relm4-icons"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "567b4d8b9618ed6db75fc83997d73d343cc21fbf63153f29030f13951f903c6a"
-dependencies = [
- "gtk4",
-]
 
 [[package]]
 name = "relm4-icons-build"

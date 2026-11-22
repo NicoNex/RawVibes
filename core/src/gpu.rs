@@ -544,6 +544,8 @@ struct Worker {
     /// Scratch slot of the small CPU copy of the developed RAW.
     small_slot: Option<GpuPhoto>,
     thumb: Option<GpuPhoto>,
+    /// The photo `thumb` was downscaled from: the RAW's small copy, a raster or the test chart.
+    thumb_src: Option<Arc<Photo>>,
     /// Composite of the Grade page's look LUTs.
     look: Option<GpuLut>,
     /// What thumbnails are rendered on (grade + looks), composed at 33³.
@@ -590,6 +592,14 @@ const EXPORT_ROWS_BYTES: u64 = 192 << 20;
 const EXPORT_LOOK: usize = 65;
 
 impl Worker {
+    /// The thumbnails' source: downscaled and uploaded only when it is another photo.
+    fn set_thumb(&mut self, gpu: &Gpu, p: &Arc<Photo>) {
+        if !self.thumb_src.as_ref().is_some_and(|t| Arc::ptr_eq(t, p)) {
+            gpu.upload_into(&mut self.thumb, &p.downscaled(THUMB_MAX));
+            self.thumb_src = Some(p.clone());
+        }
+    }
+
     /// What renders: the zoomed view, else the whole photo (RAW or uploaded).
     fn shown(&self) -> Option<&GpuPhoto> {
         self.view.as_ref().or(self.whole())
@@ -774,16 +784,12 @@ impl Worker {
                 // profile changed, or a zoom-out): keep the upload.
                 self.view = None;
                 let same = |s: &Option<Arc<Photo>>| s.as_ref().is_some_and(|s| Arc::ptr_eq(s, &p));
+                // The thumbnails follow what is shown, the test chart included.
+                self.set_thumb(gpu, &p);
                 self.show_raw = same(&self.raw_small);
-                if self.show_raw {
-                    // The test chart may have taken the thumbnails' source: give it back to the RAW.
-                    gpu.upload_into(&mut self.thumb, &p.downscaled(THUMB_MAX));
+                if self.show_raw || same(&self.source) {
                     return;
                 }
-                if same(&self.source) {
-                    return;
-                }
-                gpu.upload_into(&mut self.thumb, &p.downscaled(THUMB_MAX));
                 gpu.upload_into(&mut self.fit, &p);
                 self.source = Some(p);
             }
@@ -844,7 +850,7 @@ impl Worker {
                     return;
                 }
                 let photo = Arc::new(gpu.read_photo(self.small_slot.as_ref().expect("developed")));
-                gpu.upload_into(&mut self.thumb, &photo.downscaled(THUMB_MAX));
+                self.set_thumb(gpu, &photo);
                 self.raw_small = Some(photo.clone());
                 // The readback above waited for the GPU: this is the whole frame's time.
                 let cost = start.elapsed().as_secs_f32() / (width * height) as f32;
@@ -1322,12 +1328,16 @@ mod tests {
         worker.handle(&gpu, Job::SetPhoto(small.clone()), &notify);
         assert_eq!(rendered(&mut worker), (1000, 667));
         let chart = Arc::new(Photo { width: 8, height: 4, pixels: vec![[0.5, 0.5, 0.5, 1.0]; 32] });
-        worker.handle(&gpu, Job::SetPhoto(chart), &notify);
-        assert_eq!(rendered(&mut worker), (8, 4));
-        worker.handle(&gpu, Job::SetPhoto(small), &notify);
-        assert_eq!(rendered(&mut worker), (1000, 667));
-        // The LUT browser's thumbnails follow the RAW again, not the chart.
-        assert_ne!(worker.thumb.as_ref().map(|t| t.width), Some(8));
+        // The LUT browser's thumbnails follow it: the chart, the RAW again, the same chart again.
+        let thumb_w = |w: &Worker| w.thumb.as_ref().map(|t| t.width);
+        for _ in 0..2 {
+            worker.handle(&gpu, Job::SetPhoto(chart.clone()), &notify);
+            assert_eq!(rendered(&mut worker), (8, 4));
+            assert_eq!(thumb_w(&worker), Some(8));
+            worker.handle(&gpu, Job::SetPhoto(small.clone()), &notify);
+            assert_eq!(rendered(&mut worker), (1000, 667));
+            assert_ne!(thumb_w(&worker), Some(8));
+        }
     }
 
     /// The neutral grade must bake to an identity LUT, and the baked LUT

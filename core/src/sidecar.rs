@@ -1,5 +1,5 @@
 //! Non-destructive edits saved next to the photo, `<file>.rawvibes.json`:
-//! development, grade, crop, looks, star rating and colour label.
+//! development, grade, crop, looks, star rating, colour label and metadata.
 //!
 //! ```json
 //! { "format": "rawvibes-sidecar", "version": 2,
@@ -7,7 +7,8 @@
 //!   "params": { … }, "curves": { … },
 //!   "crop": { "rect": [0, 0, 1, 1], "angle": 0 }, "ratio": "Free",
 //!   "looks": [{ "path": "/luts/Kodak.cube", "intensity": 0.8, "input": "Standard", "on": true }],
-//!   "look_blend": "Chain", "rating": 4, "label": "Green" }
+//!   "look_blend": "Chain", "rating": 4, "label": "Green",
+//!   "meta": { "title": "Alba", "keywords": ["mare"], "creator": "", … } }
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -39,6 +40,22 @@ pub struct Sidecar {
     pub profile: Option<Profile>,
     /// Sections switched off with their eye toggle.
     pub off: Vec<Off>,
+    pub meta: Meta,
+}
+
+/// The photo's own metadata, written into its exports; empty fields take the Preferences' defaults.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Meta {
+    pub title: String,
+    pub caption: String,
+    pub keywords: Vec<String>,
+    pub creator: String,
+    pub copyright: String,
+    pub email: String,
+    pub website: String,
+    pub city: String,
+    pub country: String,
 }
 
 /// A sidebar section switched off with its eye toggle.
@@ -102,6 +119,8 @@ struct File {
     profile: Option<Profile>,
     #[serde(default)]
     off: Vec<Off>,
+    #[serde(default)]
+    meta: Meta,
 }
 
 /// Where the sidecar of `photo` lives.
@@ -145,6 +164,7 @@ impl Sidecar {
             label: self.label,
             profile: self.profile,
             off: self.off.clone(),
+            meta: self.meta.clone(),
         };
         serde_json::to_string_pretty(&file).expect("sidecars always serialise")
     }
@@ -197,6 +217,7 @@ impl Sidecar {
             look_blend: f.look_blend,
             profile: f.profile,
             off: f.off,
+            meta: f.meta,
             rating: f.rating.min(5),
             label: f.label,
         })
@@ -225,6 +246,7 @@ mod tests {
             label: Label::Green,
             profile: Some(Profile::VLog),
             off: vec![Off::Grade(Stage::Tone), Off::Develop(DevPart::Noise), Off::Looks, Off::Crop],
+            meta: Meta { title: "Alba".into(), keywords: vec!["mare".into(), "luce".into()], ..Default::default() },
         }
     }
 
@@ -289,6 +311,7 @@ mod tests {
         let s = Sidecar::from_json(v1).unwrap();
         assert_eq!(s.develop.detail, crate::develop::Detail::default());
         assert_eq!(s.develop.exposure, 0.3);
+        assert_eq!(s.meta, Meta::default());
     }
 
     #[test]

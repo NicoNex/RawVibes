@@ -48,7 +48,7 @@ use rawvibes_core::preset::{self, Preset};
 use rawvibes_core::profiles::Profile;
 use rawvibes_core::raw::{RawData, read_raw};
 use rawvibes_core::scopes::{HIST_H, HIST_W, Scopes, VEC_SIZE};
-use rawvibes_core::sidecar::{Label, LookRef, Off, Sidecar};
+use rawvibes_core::sidecar::{Label, LookRef, Meta, Off, Sidecar};
 use rawvibes_core::view::{Region, Zoom};
 use relm4::adw::prelude::*;
 use relm4::gtk::{gdk, gio, glib};
@@ -473,6 +473,8 @@ struct App {
     /// Sections switched off with their eye toggle; they are left out of preview and export.
     /// Sorted, so a section switched off and on again reads back the same.
     off: Vec<Off>,
+    /// The open photo's own metadata (title, keywords, rights…).
+    meta: Meta,
     /// The LUT browser is open (its thumbnails follow the grade).
     browsing: bool,
     /// Library LUT previewed after the looks (not part of them until
@@ -685,7 +687,7 @@ impl App {
         let neutral = Grade::default().params;
         (grade.params.input, grade.params.gamut) = (neutral.input, neutral.gamut);
         let (rating, label) = (self.rating, self.label);
-        let (profile, off) = (Some(self.profile), self.off.clone());
+        let (profile, off, meta) = (Some(self.profile), self.off.clone(), self.meta.clone());
         Sidecar {
             develop: self.develop,
             grade,
@@ -697,17 +699,18 @@ impl App {
             label,
             profile,
             off,
+            meta,
         }
     }
 
     /// Adds the open photo's edits to its undo history when they changed since the step shown.
-    /// Stars and labels are not edits: they never make a step.
+    /// Stars, labels and metadata are not edits: they never make a step.
     fn record_edits(&mut self) {
         if self.path.is_none() || self.saved.is_none() || self.looks_loading {
             return;
         }
         let now = self.sidecar_state();
-        let same = |s: &Sidecar| Sidecar { rating: now.rating, label: now.label, ..s.clone() } == now;
+        let same = |s: &Sidecar| Sidecar { rating: now.rating, label: now.label, meta: now.meta.clone(), ..s.clone() } == now;
         if self.history.get(self.undo_at).is_some_and(|(s, _)| same(s)) {
             return;
         }
@@ -732,13 +735,13 @@ impl App {
         self.ui.redo.set_sensitive(self.undo_at + 1 < self.history.len());
     }
 
-    /// Shows undo step `back` (true) or forward, keeping the photo's stars and label.
+    /// Shows undo step `back` (true) or forward, keeping the photo's stars, label and metadata.
     fn step_history(&mut self, back: bool, sender: &ComponentSender<Self>) {
         self.record_edits(); // an edit made under a second ago is a step too
         let to = if back { self.undo_at.checked_sub(1) } else { Some(self.undo_at + 1) };
         let Some((i, (mut sc, looks))) = to.and_then(|i| Some((i, self.history.get(i)?.clone()))) else { return };
         self.undo_at = i;
-        (sc.rating, sc.label) = (self.rating, self.label);
+        (sc.rating, sc.label, sc.meta) = (self.rating, self.label, self.meta.clone());
         self.restore_edits((sc, looks), sender);
         self.sync_undo();
     }
@@ -931,7 +934,7 @@ impl App {
 
     /// The photo's sidecar into the editor, onto a neutral grade without looks.
     fn restore_sidecar(&mut self, sc: Sidecar, sender: &ComponentSender<Self>) {
-        (self.rating, self.label) = (sc.rating, sc.label);
+        (self.rating, self.label, self.meta) = (sc.rating, sc.label, sc.meta);
         self.set_offs(&sc.off);
         if let Some(p) = sc.profile {
             // Set now, so the state read back matches; the dropdown's Msg::Profile echo re-encodes.
@@ -1732,7 +1735,7 @@ fn edit_name(stem: &str, ext: &str) -> String {
     format!("{stem}_edit.{ext}")
 }
 
-/// `clip`'s edits onto `target`, which keeps its crop, stars and label.
+/// `clip`'s edits onto `target`, which keeps its crop, stars, label and metadata.
 fn pasted(clip: &Sidecar, target: &Sidecar) -> Sidecar {
     // The input profile, like the crop (and its eye), belongs to the photo pasted onto.
     let mut off: Vec<Off> = clip.off.iter().copied().filter(|&o| o != Off::Crop).collect();
@@ -1747,6 +1750,7 @@ fn pasted(clip: &Sidecar, target: &Sidecar) -> Sidecar {
         label: target.label,
         profile: target.profile,
         off,
+        meta: target.meta.clone(),
         ..clip.clone()
     }
 }
@@ -3633,6 +3637,7 @@ impl SimpleComponent for App {
             lab_layers: Vec::new(),
             looks: Vec::new(),
             off: Vec::new(),
+            meta: Meta::default(),
             browsing: false,
             candidate: None,
             preview_req: None,
@@ -4022,7 +4027,7 @@ impl SimpleComponent for App {
                 self.decoded = Some(decoded);
                 self.path = Some(path);
                 self.develop = Develop::default();
-                (self.rating, self.label) = (0, Label::None);
+                (self.rating, self.label, self.meta) = (0, Label::None, Meta::default());
                 self.drafting = false;
                 self.sync_develop();
                 let path = self.path.clone().expect("set above");
@@ -5428,10 +5433,12 @@ mod tests {
         let mut clip = Sidecar { rating: 5, label: Label::Red, off: vec![Off::Crop, Off::Looks], ..Default::default() };
         clip.develop.exposure = 1.0;
         clip.crop.angle = 3.0;
-        let target = Sidecar { rating: 2, label: Label::Blue, ..Default::default() };
+        let target = Sidecar { rating: 2, label: Label::Blue, meta: Meta { title: "B".into(), ..Default::default() }, ..Default::default() };
+        clip.meta.title = "A".into();
         let p = pasted(&clip, &target);
         assert_eq!((p.develop.exposure, p.crop, p.rating, p.label), (1.0, target.crop, 2, Label::Blue));
         assert_eq!(p.off, [Off::Looks]);
+        assert_eq!(p.meta, target.meta);
     }
 
     /// The catalogs `make` builds are found and read (needs the it_IT.UTF-8 locale).

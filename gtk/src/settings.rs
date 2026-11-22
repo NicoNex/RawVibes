@@ -82,3 +82,6 @@ pub const AUTHOR_WEBSITE: &str = "author-website";
 
 /// Width of the editor's sidebar, in pixels, as last dragged.
 pub const SIDEBAR_WIDTH: &str = "sidebar-width";
+
+/// The filmstrip under the photo is collapsed ("1").
+pub const FILMSTRIP_HIDDEN: &str = "filmstrip-hidden";

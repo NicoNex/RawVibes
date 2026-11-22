@@ -454,12 +454,14 @@ struct Ui {
     chart_btn: gtk::ToggleButton,
     /// Header "As in camera" (RAWs only).
     camera_btn: gtk::Button,
-    /// Header: the open photo's name, undo and redo, its stars and colour label, paste.
+    /// Header: the open photo's name, undo and redo, paste; under the photo, its stars and colour
+    /// label and what took it.
     title: adw::WindowTitle,
     undo: gtk::Button,
     redo: gtk::Button,
     stars: Vec<gtk::Button>,
     label_btn: gtk::MenuButton,
+    photo_info: gtk::Label,
     paste: gtk::Button,
     paste_all: gtk::Button,
     presets: PresetsUi,
@@ -907,6 +909,18 @@ impl App {
 
     /// The Metadata tab shows the open photo's metadata; with no photo, empty and not editable.
     fn sync_meta(&self) {
+        // Under the photo: camera · lens · focal length.
+        let info = self.camera_meta().map(|m| {
+            let lens = m.exif.lens_model.clone().or_else(|| m.lens.as_ref().map(|l| l.lens_model.clone()));
+            let focal = m.exif.focal_length.filter(|r| r.d != 0).map(|r| format!("{} mm", r.as_f32().round()));
+            [Some(format!("{} {}", m.make, m.model).trim().to_string()), lens, focal]
+                .into_iter()
+                .flatten()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ")
+        });
+        self.ui.photo_info.set_label(&info.unwrap_or_default());
         let ui = &self.ui.sidebar.meta;
         ui.set(&self.meta, &author_defaults());
         ui.show_camera(self.camera_meta());
@@ -2296,6 +2310,8 @@ scale.track-film-sat trough highlight, scale.track-film-density trough highlight
 .roll-remove { min-width: 22px; min-height: 22px; padding: 0; opacity: 0; transition: opacity 150ms ease; }
 .roll-item:hover .roll-remove, .roll-remove:focus-visible { opacity: 1; }
 .star { padding: 4px 3px; min-width: 22px; }
+.info-bar { min-height: 38px; padding: 0 10px; background-color: mix(@window_bg_color, black, 0.18); border-top: 1px solid alpha(black, 0.35); }
+.info-bar .star image { color: @yellow_2; }
 .label-red { color: #e5534b; }
 .label-yellow { color: #e5c04b; }
 .label-green { color: #57c46a; }
@@ -3305,8 +3321,39 @@ impl SimpleComponent for App {
         canvas_stack.add_named(&filmstrip.grid_root, Some("grid"));
         let stage = gtk::Overlay::builder().child(&canvas_stack).build();
         stage.add_overlay(&tools);
+        // Under the photo: its stars and label, what took it, and the filmstrip's collapse toggle.
+        let photo_info = gtk::Label::builder()
+            .xalign(0.0)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .css_classes(["dim-label"])
+            .build();
+        let strip_btn = gtk::ToggleButton::builder()
+            .icon_name("go-down-symbolic")
+            .css_classes(["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        let fs = filmstrip.root.clone();
+        strip_btn.connect_toggled(move |b| {
+            let hidden = b.is_active();
+            fs.set_visible(!hidden);
+            b.set_icon_name(if hidden { "go-up-symbolic" } else { "go-down-symbolic" });
+            let tip = if hidden { gettext("Show the filmstrip") } else { gettext("Hide the filmstrip") };
+            b.set_tooltip_text(Some(&tip));
+            b.update_property(&[gtk::accessible::Property::Label(&tip)]);
+            let _ = settings::set_value(settings::FILMSTRIP_HIDDEN, if hidden { "1" } else { "0" });
+        });
+        strip_btn.set_tooltip_text(Some(&gettext("Hide the filmstrip")));
+        strip_btn.update_property(&[gtk::accessible::Property::Label(&gettext("Hide the filmstrip"))]);
+        strip_btn.set_active(settings::value(settings::FILMSTRIP_HIDDEN).as_deref() == Some("1"));
+        let info_bar = gtk::Box::builder().spacing(12).css_classes(["info-bar"]).build();
+        info_bar.append(&photo_info);
+        info_bar.append(&strip_btn);
+        // Shown with the filmstrip's photos, whether the strip itself is collapsed or not.
+        filmstrip.root.bind_property("reveal-child", &info_bar, "visible").sync_create().build();
         let image_page = vbox(0);
         image_page.append(&stage);
+        image_page.append(&info_bar);
         image_page.append(&filmstrip.root);
         let loading = adw::Spinner::builder()
             .width_request(48)
@@ -3572,7 +3619,7 @@ impl SimpleComponent for App {
             .collect();
         let label_btn = label_menu(&sender);
         marks.append(&label_btn);
-        header.pack_start(&marks);
+        info_bar.prepend(&marks);
         let chart_btn = gtk::ToggleButton::builder()
             .icon_name("applications-science-symbolic")
             .tooltip_text(gettext("Test chart: shows what the LUT does to neutrals, hues and skin (T)"))
@@ -4077,6 +4124,7 @@ impl SimpleComponent for App {
                 redo,
                 stars,
                 label_btn,
+                photo_info,
                 paste,
                 paste_all,
                 presets,

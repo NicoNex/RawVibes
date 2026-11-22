@@ -257,7 +257,11 @@ pub fn drag(start: Crop, h: Handle, d: [f32; 2], aspect: Option<f32>, img_w: u32
         let (a, b) = (slide(0), slide(1));
         return at(if miss(a) <= miss(b) { a } else { b });
     }
-    if fits(&resized(1.0)) { resized(1.0) } else { resized(search(|t| fits(&resized(t)), true)) }
+    if fits(&resized(1.0)) {
+        return resized(1.0);
+    }
+    // Already against an edge, rounding can push even the smallest step out: then it stays.
+    Some(resized(search(|t| fits(&resized(t)), true))).filter(|c| fits(c)).unwrap_or(start)
 }
 
 /// Whether `c` has room to move: one that fills the image cannot, and a drag on it draws a new crop.
@@ -397,6 +401,31 @@ mod tests {
         let c = draw(Crop::default(), [0.1, 0.8], [0.9, 0.9], Some(1.0), 6000, 4000).unwrap();
         assert!(fits(&c, 6000, 4000) && (c.rect[0] - 0.1).abs() < 1e-5 && (c.rect[1] - 0.8).abs() < 1e-5, "{c:?}");
         assert!((aspect(&c, 6000, 4000) - 1.0).abs() < 1e-3, "{c:?}");
+    }
+
+    /// Every preset keeps its ratio under every handle, drag direction and angle, and stays inside.
+    #[test]
+    fn presets_keep_their_ratio_when_resized() {
+        use Handle::*;
+        let (w, h) = (6000, 4000);
+        let moves =
+            [[0.3, 0.0], [-0.3, 0.0], [0.0, 0.3], [0.0, -0.3], [0.2, 0.15], [-0.25, 0.1], [0.9, -0.9], [-2.0, 2.0]];
+        for (name, ratio) in PRESETS.iter().filter(|(_, r)| *r != Ratio::Free) {
+            let a = ratio.aspect(w, h).unwrap();
+            for angle in [0.0, 7.0] {
+                let start = refit(Crop { rect: [0.3, 0.3, 0.3, 0.3], angle }, *ratio, w, h);
+                let start = drag(start, SE, [-0.2, -0.2], Some(a), w, h);
+                for handle in [N, S, E, W, NE, NW, SE, SW] {
+                    for d in moves {
+                        let c = drag(start, handle, d, Some(a), w, h);
+                        assert!((aspect(&c, w, h) - a).abs() < a * 2e-3, "{name} {angle}° {handle:?} {d:?}: {c:?}");
+                        assert!(fits(&c, w, h), "{name} {angle}° {handle:?} {d:?}: {c:?}");
+                    }
+                }
+                let c = draw(start, [0.5, 0.5], [0.1, 0.9], Some(a), w, h).unwrap();
+                assert!((aspect(&c, w, h) - a).abs() < a * 2e-3 && fits(&c, w, h), "{name} {angle}° draw: {c:?}");
+            }
+        }
     }
 
     #[test]

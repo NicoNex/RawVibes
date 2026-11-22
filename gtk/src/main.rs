@@ -2458,6 +2458,8 @@ struct Sidebar {
     applied_dock: gtk::ScrolledWindow,
     look_blend_toggle: adw::ToggleGroup,
     profile_sel: gtk::DropDown,
+    /// The Grade tab's note of the input profile, linking to the Photo tab.
+    profile_link: gtk::Label,
     /// The LUT browser, revealed under the look stack.
     /// The LUT browser page, shown in place of the sections (`side_stack`).
     browse: gtk::Box,
@@ -2948,8 +2950,27 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     pin.update_property(&[gtk::accessible::Property::Label(&gettext("Pin scopes"))]);
     let scopes = section_with(&gettext("Scopes"), &scopes_box, &[pin.clone().upcast()], true);
     panel.append(&scopes);
+    // Input profile: the photo's signal, so it comes before every edit; the Grade tab links here.
+    let profile_box = vbox(6);
+    let profile_sel = lab_page::profile_dropdown(Profile::Standard);
+    profile_sel.update_property(&[gtk::accessible::Property::Label(&gettext("Input profile"))]);
+    let hint = caption(&profile_hint(Profile::Standard));
+    let profile_link = caption("");
+    profile_link.set_use_markup(true);
+    profile_link.set_markup(&profile_link_markup(Profile::Standard));
+    let (snd, h, l) = (sender.clone(), hint.clone(), profile_link.clone());
+    profile_sel.connect_selected_notify(move |d| {
+        let profile = Profile::ALL[d.selected() as usize];
+        h.set_label(&profile_hint(profile));
+        l.set_markup(&profile_link_markup(profile));
+        snd.input(Msg::Profile(profile));
+    });
+    profile_box.append(&profile_sel);
+    profile_box.append(&hint);
+
     // The Photo and Grade tabs show one of these each (`App::init` swaps them).
     let photo = vbox(12);
+    photo.append(&section(&gettext("Input profile"), &profile_box));
     photo.append(&group_heading(&gettext("Not in the exported LUT")));
     let develop = build_develop(sender);
     // Geometry (lens, crop), light and colour, detail, then the vignette effect.
@@ -2960,21 +2981,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     let grade = vbox(12);
     grade.set_visible(false);
     grade.append(&group_heading(&gettext("In the exported LUT")));
-
-    // Input profile: the signal the LUT will receive in camera.
-    let profile_box = vbox(6);
-    let profile_sel = lab_page::profile_dropdown(Profile::Standard);
-    profile_sel.update_property(&[gtk::accessible::Property::Label(&gettext("Input profile"))]);
-    let hint = caption(&profile_hint(Profile::Standard));
-    let (snd, h) = (sender.clone(), hint.clone());
-    profile_sel.connect_selected_notify(move |d| {
-        let profile = Profile::ALL[d.selected() as usize];
-        h.set_label(&profile_hint(profile));
-        snd.input(Msg::Profile(profile));
-    });
-    profile_box.append(&profile_sel);
-    profile_box.append(&hint);
-    let profile_sec = section(&gettext("Input profile"), &profile_box);
+    grade.append(&profile_link);
 
     // Reference match comes first: the rest refines it.
     let matching = build_match(sender);
@@ -3188,7 +3195,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     // A grading workflow, top to bottom: the look to grade under, balance, primaries, secondaries,
     // the look's finishing touches. The GPU's order is its own (the LUT comes last there).
     let phases = [
-        (gettext("Look"), vec![&profile_sec, &luts_sec]),
+        (gettext("Look"), vec![&luts_sec]),
         (gettext("Balance"), vec![&match_sec, &warmth_sec]),
         (gettext("Primaries"), vec![&tone_sec, &curves_sec, &wheels_sec, &color_sec]),
         (gettext("Secondaries"), vec![&selective_sec, &hue_sec]),
@@ -3283,6 +3290,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         develop,
         look_blend_toggle,
         profile_sel,
+        profile_link,
         meta,
     }
 }
@@ -3639,6 +3647,11 @@ impl SimpleComponent for App {
         stack.add_titled_with_icon(&grade_tab, Some("grade"), &gettext("Grade"), "rawvibes-grade-symbolic");
         let meta_tab = tab();
         stack.add_titled_with_icon(&meta_tab, Some("meta"), &gettext("Metadata"), "tag-outline-symbolic");
+        let st = stack.clone();
+        sidebar.profile_link.connect_activate_link(move |_, _| {
+            st.set_visible_child_name("photo");
+            glib::Propagation::Stop
+        });
         let lab = lab_page::build(&sender, &export_menu("lab-export", false));
         stack.add_titled_with_icon(&lab.root, Some("lab"), &gettext("LUT Lab"), "rawvibes-lut-symbolic");
         let snd = sender.clone();
@@ -5750,6 +5763,11 @@ impl App {
             }
         }
     }
+}
+
+/// The Grade tab's line naming the exported LUT's input, with a link to the Photo tab.
+fn profile_link_markup(p: Profile) -> String {
+    gettext!("Exported LUT input: <b>{}</b>. <a href=\"photo\">Change in Photo</a>", glib::markup_escape_text(p.name()))
 }
 
 fn profile_hint(p: Profile) -> String {

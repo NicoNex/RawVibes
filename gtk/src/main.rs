@@ -2143,7 +2143,9 @@ const CSS: &str = r#"
 .sidebar-pane { background-color: var(--sidebar-bg-color); }
 .section { padding: 4px 8px 10px 8px; }
 .section.collapsed { padding-bottom: 4px; }
-.sidebar-handle:hover { background: alpha(currentColor, 0.15); }
+.sidebar-handle { padding: 12px 3px; }
+.sidebar-handle > box { min-width: 5px; border-radius: 4px; background-color: alpha(@borders, 0.7); transition: background-color 150ms ease; }
+.sidebar-handle:hover > box, .sidebar-handle.dragging > box { background-color: @accent_bg_color; }
 .section-header { padding: 6px 6px; margin-bottom: 2px; border-radius: 8px; }
 .slider-row { margin: 2px 4px 0 4px; }
 .slider-value { opacity: 0.8; padding: 0 5px; border-radius: 6px; transition: background-color 120ms ease; }
@@ -3202,7 +3204,9 @@ impl SimpleComponent for App {
         let edit = crop_ui.edit.clone();
         crop_ui.section.connect_unmap(move |_| edit.set_active(false));
         // The sidebar's left edge drags to resize it; the width is remembered.
-        let handle = gtk::Box::builder().width_request(6).css_classes(["sidebar-handle"]).build();
+        // A visible pill in a wider grab area, as in RapidRAW.
+        let handle = gtk::Box::builder().css_classes(["sidebar-handle"]).tooltip_text(gettext("Drag to resize")).build();
+        handle.append(&gtk::Box::builder().vexpand(true).build());
         handle.set_cursor_from_name(Some("col-resize"));
         handle.update_property(&[gtk::accessible::Property::Label(&gettext("Resize the sidebar"))]);
         let side = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -3222,7 +3226,11 @@ impl SimpleComponent for App {
         let (split, start) = (grade_split.clone(), Rc::new(Cell::new(0.0)));
         let s = start.clone();
         let sd = side.clone();
-        drag.connect_drag_begin(move |_, _, _| s.set(sd.width() as f64));
+        let h = handle.clone();
+        drag.connect_drag_begin(move |_, _, _| {
+            s.set(sd.width() as f64);
+            h.add_css_class("dragging");
+        });
         let sp = split.clone();
         drag.connect_drag_update(move |_, dx, _| {
             // The sidebar is on the right: dragging its edge left widens it.
@@ -3230,7 +3238,9 @@ impl SimpleComponent for App {
             sp.set_min_sidebar_width(w);
             sp.set_max_sidebar_width(w);
         });
+        let h = handle.clone();
         drag.connect_drag_end(move |_, _, _| {
+            h.remove_css_class("dragging");
             let _ = settings::set_value(settings::SIDEBAR_WIDTH, &format!("{:.0}", split.max_sidebar_width()));
         });
         handle.add_controller(drag);

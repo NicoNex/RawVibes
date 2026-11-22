@@ -189,7 +189,7 @@ impl Words {
                     i += 1;
                 }
             }
-            if i - start == 1 && (punct(c) || c.to_ascii_lowercase() == 'f') && c != '*' && c != '+' {
+            if i - start == 1 && (punct(c) || c.eq_ignore_ascii_case(&'f')) && c != '*' && c != '+' {
                 continue;
             }
             words.push(chars[start..i].iter().collect::<String>().to_lowercase());

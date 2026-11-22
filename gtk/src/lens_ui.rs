@@ -56,8 +56,7 @@ impl ProfileUi {
         let snd = sender.clone();
         search.connect_search_changed(move |e| snd.input(Msg::LensSearch(e.text().into())));
         // Automatic and No profile first, then what the search finds.
-        let fixed =
-            gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
+        let fixed = crate::meta_ui::list();
         for (title, pick) in [
             (gettext("Automatic (from the photo)"), None),
             (gettext("No profile"), Some((String::new(), String::new()))),
@@ -67,8 +66,7 @@ impl ProfileUi {
             r.connect_activated(move |_| snd.input(Msg::LensPick(pick.clone())));
             fixed.append(&r);
         }
-        let results =
-            gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
+        let results = crate::meta_ui::list();
         let found: Rc<RefCell<Vec<(String, String)>>> = Rc::default();
         let (snd, f) = (sender.clone(), found.clone());
         results.connect_row_activated(move |_, r| {
@@ -88,10 +86,10 @@ impl ProfileUi {
         body.append(&scroll);
         let popover = gtk::Popover::builder().child(&body).build();
         // Picking closes it.
-        let p = popover.clone();
-        fixed.connect_row_activated(move |_, _| p.popdown());
-        let p = popover.clone();
-        results.connect_row_activated(move |_, _| p.popdown());
+        for l in [&fixed, &results] {
+            let p = popover.clone();
+            l.connect_row_activated(move |_, _| p.popdown());
+        }
         let pick = gtk::MenuButton::builder()
             .icon_name("edit-find-symbolic")
             .tooltip_text(gettext("Choose the lens profile"))
@@ -113,7 +111,7 @@ impl ProfileUi {
                 }
             });
         }
-        let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
+        let list = crate::meta_ui::list();
         list.append(&row);
         list.append(&focal);
         list.append(&aperture);

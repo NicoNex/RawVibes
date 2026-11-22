@@ -37,7 +37,7 @@ pub struct MetaUi {
     export_note: gtk::Label,
 }
 
-fn list() -> gtk::ListBox {
+pub(crate) fn list() -> gtk::ListBox {
     gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build()
 }
 
@@ -154,13 +154,7 @@ impl MetaUi {
     /// The camera's facts of the open photo; dashes when it recorded none.
     pub fn show_camera(&self, src: Option<&RawMetadata>) {
         let e = src.map(|s| &s.exif);
-        let camera = src.map(|s| {
-            if s.model.starts_with(&s.make) {
-                s.model.clone()
-            } else {
-                format!("{} {}", s.make, s.model).trim().to_string()
-            }
-        });
+        let camera = src.map(rawvibes_core::meta::camera_name);
         let lens = e
             .and_then(|e| e.lens_model.clone())
             .or_else(|| src.and_then(|s| s.lens.as_ref()).map(|l| format!("{} {}", l.lens_make, l.lens_model)));

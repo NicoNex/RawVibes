@@ -102,6 +102,11 @@ impl Db {
         self.cameras.iter().find(|c| same(&c.maker, maker) && same(&c.model, model))
     }
 
+    /// The lens named `maker` `model`, as a sidecar records it.
+    pub fn lens(&self, maker: &str, model: &str) -> Option<&Lens> {
+        self.lenses.iter().find(|l| same(&l.maker, maker) && same(&l.model, model))
+    }
+
     /// The best match for an EXIF lens name on `camera` (its mount and crop narrow the search):
     /// lensfun's `FindLenses` with every word of the name required.
     // shortcut: the name's own focal/aperture range is not parsed into the pattern (lensfun's

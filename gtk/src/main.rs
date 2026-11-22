@@ -222,7 +222,7 @@ enum Msg {
     /// The author defaults changed in Preferences.
     MetaDefaults,
     /// Lens profile row (lens_ui.rs): search text, a pick (None automatic, empty names no
-    /// profile), and typed focal length / aperture. Wired in the next step of the lens plan.
+    /// profile), and typed focal length / aperture.
     LensSearch(String),
     LensPick(Option<(String, String)>),
     LensManual(f32, f32),
@@ -280,6 +280,18 @@ type Edits = (Sidecar, Vec<LabLayer>);
 const HISTORY_MAX: usize = 100;
 
 /// A batch export in progress: photos still to export (last first), where to, and how it went.
+/// What `find_lens` found for the open RAW, and what the Lens section shows of it.
+struct LensView {
+    profile: Option<lens::Profile>,
+    /// The database lens matched or picked, as (maker, model).
+    lens: Option<(String, String)>,
+    status: lens_ui::Status,
+    /// The focal length and aperture the profile is read at, and whether the rows ask for them.
+    focal: f32,
+    aperture: f32,
+    asked: bool,
+}
+
 struct Batch {
     left: Vec<PathBuf>,
     dir: PathBuf,
@@ -913,9 +925,8 @@ impl App {
     fn sync_meta(&self) {
         // Under the photo: camera · lens · focal length.
         let info = self.camera_meta().map(|m| {
-            let lens = m.exif.lens_model.clone().or_else(|| m.lens.as_ref().map(|l| l.lens_model.clone()));
             let focal = m.exif.focal_length.filter(|r| r.d != 0).map(|r| format!("{} mm", r.as_f32().round()));
-            [Some(format!("{} {}", m.make, m.model).trim().to_string()), lens, focal]
+            [Some(meta::camera_name(m)), meta::lens_name(m), focal]
                 .into_iter()
                 .flatten()
                 .filter(|s| !s.is_empty())
@@ -931,57 +942,52 @@ impl App {
         ui.root.set_sensitive(self.path.is_some());
     }
 
-    /// What the open photo's camera recorded; never another photo's, whose load is still on its way.
-    /// The open RAW's lens profile from the database: the one picked, or the one its EXIF names;
-    /// with what the row shows, the focal length and aperture used, and whether to ask for them.
-    fn find_lens(&self) -> (Option<lens::Profile>, lens_ui::Status, f32, f32, bool) {
+    /// The open RAW's lens profile from the database: the one picked, or the one its EXIF names.
+    fn find_lens(&self) -> LensView {
         use lens_ui::Status;
         let src = self.camera_meta();
         let exif = src.map(|m| &m.exif);
         let value = |r: Option<meta::Rational>| r.filter(|r| r.d != 0).map_or(0.0, |r| r.as_f32());
-        let (focal, aperture) = (value(exif.and_then(|e| e.focal_length)), value(exif.and_then(|e| e.fnumber)));
+        let (exif_focal, aperture) = (value(exif.and_then(|e| e.focal_length)), value(exif.and_then(|e| e.fnumber)));
         let distance = value(exif.and_then(|e| e.subject_distance));
-        let Some(db) = self.lens_db.as_deref() else { return (None, Status::NoDatabase, focal, aperture, false) };
-        let camera = src.and_then(|m| db.find_camera(&m.make, &m.model));
-        let (lens, focal, aperture, chosen) = match &self.lens_profile {
-            Some(c) if c.model.is_empty() => return (None, Status::Off, focal, aperture, false),
-            Some(c) => {
-                let lens = db.lenses.iter().find(|l| l.maker == c.maker && l.model == c.model);
-                let pick = |typed: f32, exif: f32| if typed > 0.0 { typed } else { exif };
-                (lens, pick(c.focal, focal), pick(c.aperture, aperture), true)
-            }
-            None => {
-                let name = exif.and_then(|e| e.lens_model.clone());
-                let name = name.or_else(|| src.and_then(|m| m.lens.as_ref()).map(|l| l.lens_model.clone()));
-                (db.find_lens(camera, "", &name.unwrap_or_default()), focal, aperture, false)
-            }
+        let mut view = LensView {
+            profile: None,
+            lens: None,
+            status: Status::NoDatabase,
+            focal: exif_focal,
+            aperture,
+            asked: false,
         };
-        let Some(found) = lens else { return (None, Status::NotFound, focal, aperture, chosen) };
-        let name = found.model.clone();
-        match lens::calib_at(found, focal, aperture, distance) {
+        let Some(db) = self.lens_db.as_deref() else { return view };
+        let camera = src.and_then(|m| db.find_camera(&m.make, &m.model));
+        let (lens, chosen) = match &self.lens_profile {
+            Some(c) if c.model.is_empty() => return LensView { status: Status::Off, ..view },
             Some(c) => {
-                let profile = lens::Profile::new(found, c, camera.map(|c| c.crop));
-                let status = if chosen { Status::Chosen(name) } else { Status::Auto(name) };
-                // A manual lens records no focal length: its row stays open to change it.
-                (Some(profile), status, focal, aperture, chosen || value(exif.and_then(|e| e.focal_length)) <= 0.0)
+                let pick = |typed: f32, exif: f32| if typed > 0.0 { typed } else { exif };
+                (view.focal, view.aperture) = (pick(c.focal, exif_focal), pick(c.aperture, aperture));
+                (db.lens(&c.maker, &c.model), true)
             }
-            None => (None, Status::NeedsFocal(name), focal, aperture, true),
+            None => (db.find_lens(camera, "", &src.and_then(meta::lens_name).unwrap_or_default()), false),
+        };
+        let Some(found) = lens else { return LensView { status: Status::NotFound, asked: chosen, ..view } };
+        let name = found.model.clone();
+        view.lens = Some((found.maker.clone(), name.clone()));
+        match lens::calib_at(found, view.focal, view.aperture, distance) {
+            Some(c) => LensView {
+                profile: Some(lens::Profile::new(found, c, camera.map(|c| c.crop))),
+                status: if chosen { Status::Chosen(name) } else { Status::Auto(name) },
+                // A manual lens records no focal length: its row stays open to change it.
+                asked: chosen || exif_focal <= 0.0,
+                ..view
+            },
+            None => LensView { status: Status::NeedsFocal(name), asked: true, ..view },
         }
-    }
-
-    /// The (maker, model) of the lens the EXIF names, when the database has it.
-    fn found_lens_name(&self) -> Option<(String, String)> {
-        let db = self.lens_db.as_deref()?;
-        let src = self.camera_meta()?;
-        let camera = db.find_camera(&src.make, &src.model);
-        let name = src.exif.lens_model.clone().or_else(|| src.lens.as_ref().map(|l| l.lens_model.clone()))?;
-        db.find_lens(camera, "", &name).map(|l| (l.maker.clone(), l.model.clone()))
     }
 
     /// Puts the open RAW's lens profile into the development and the Lens section;
     /// re-develops when it changed and `redevelop` says so.
     fn update_lens(&mut self, sender: &ComponentSender<Self>, redevelop: bool) {
-        let (profile, status, focal, aperture, asked) = self.find_lens();
+        let LensView { profile, status, focal, aperture, asked, .. } = self.find_lens();
         let changed = self.develop.detail.lens != profile;
         self.develop.detail.lens = profile;
         let ui = &self.ui.sidebar.develop;
@@ -992,6 +998,7 @@ impl App {
         }
     }
 
+    /// What the open photo's camera recorded; never another photo's, whose load is still on its way.
     fn camera_meta(&self) -> Option<&RawMetadata> {
         self.source_meta.as_ref().filter(|(p, _)| Some(p) == self.path.as_ref()).map(|(_, m)| &**m)
     }
@@ -4593,16 +4600,17 @@ impl SimpleComponent for App {
                 self.ui.sidebar.develop.lens_profile.results(found);
             }
             Msg::LensPick(pick) => {
-                let (_, _, focal, aperture, _) = self.find_lens();
+                let LensView { focal, aperture, .. } = self.find_lens();
                 self.lens_profile = pick.map(|(maker, model)| LensChoice { maker, model, focal, aperture });
                 self.update_lens(&sender, true);
                 self.schedule_save();
             }
             Msg::LensManual(focal, aperture) => {
                 // Typed for the automatic lens: it becomes the chosen one, with these values.
-                if self.lens_profile.is_none() {
-                    self.lens_profile =
-                        self.found_lens_name().map(|(maker, model)| LensChoice { maker, model, ..Default::default() });
+                if self.lens_profile.is_none()
+                    && let Some((maker, model)) = self.find_lens().lens
+                {
+                    self.lens_profile = Some(LensChoice { maker, model, ..Default::default() });
                 }
                 if let Some(c) = self.lens_profile.as_mut() {
                     (c.focal, c.aperture) = (focal, aperture);

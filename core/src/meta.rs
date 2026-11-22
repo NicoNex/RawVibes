@@ -148,6 +148,20 @@ pub fn xmp(m: &Meta) -> Option<String> {
 }
 
 /// The year the photo was taken, from its `DateTimeOriginal` (`YYYY:MM:DD hh:mm:ss`).
+/// The camera as `make model`, the make once.
+pub fn camera_name(src: &RawMetadata) -> String {
+    if src.model.starts_with(&src.make) {
+        src.model.clone()
+    } else {
+        format!("{} {}", src.make, src.model).trim().to_string()
+    }
+}
+
+/// The lens model the photo names: the EXIF's, else the maker notes'.
+pub fn lens_name(src: &RawMetadata) -> Option<String> {
+    src.exif.lens_model.clone().or_else(|| src.lens.as_ref().map(|l| l.lens_model.clone()))
+}
+
 pub fn capture_year(src: &RawMetadata) -> Option<i32> {
     src.exif.date_time_original.as_deref()?.get(..4)?.parse().ok()
 }

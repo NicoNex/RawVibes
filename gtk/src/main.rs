@@ -1985,8 +1985,7 @@ fn metadata_prefs(sender: &ComponentSender<App>) -> adw::PreferencesPage {
         });
         author.add(&row);
     }
-    let page =
-        adw::PreferencesPage::builder().title(gettext("Metadata")).icon_name("tag-outline-symbolic").build();
+    let page = adw::PreferencesPage::builder().title(gettext("Metadata")).icon_name("tag-outline-symbolic").build();
     page.add(&export);
     page.add(&author);
     page
@@ -4593,6 +4592,10 @@ impl SimpleComponent for App {
             Msg::MetaEdit(f, text) => {
                 if self.path.is_some() && meta_ui::apply(&mut self.meta, f, &text) {
                     self.schedule_save();
+                    // The text rows show what was typed; keyword chips are drawn from the photo's list.
+                    if matches!(f, MetaField::Keywords) {
+                        self.ui.sidebar.meta.set(&self.meta, &author_defaults());
+                    }
                 }
             }
             Msg::MetaDefaults => self.sync_meta(),

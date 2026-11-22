@@ -260,7 +260,8 @@ pub fn exposure_line(e: &Exif) -> String {
         let secs = t.as_f32();
         parts.push(if secs < 1.0 { format!("1/{} s", (1.0 / secs).round()) } else { format!("{} s", trim(secs)) });
     }
-    if let Some(f) = e.fnumber.filter(|f| f.d != 0) {
+    // A manual lens reports f/0: no aperture is better than a wrong one.
+    if let Some(f) = e.fnumber.filter(|f| f.n != 0 && f.d != 0) {
         parts.push(format!("f/{}", trim(f.as_f32())));
     }
     if let Some(iso) = e.iso_speed_ratings.map(u32::from).or(e.iso_speed) {
@@ -297,5 +298,11 @@ mod tests {
             Exif { exposure_time: Some(Rational::new(2, 1)), fnumber: Some(Rational::new(8, 1)), ..Default::default() };
         assert_eq!(exposure_line(&long), "2 s · f/8");
         assert_eq!(exposure_line(&Exif::default()), "");
+        let manual = Exif {
+            exposure_time: Some(Rational::new(1, 30)),
+            fnumber: Some(Rational::new(0, 1)),
+            ..Default::default()
+        };
+        assert_eq!(exposure_line(&manual), "1/30 s");
     }
 }

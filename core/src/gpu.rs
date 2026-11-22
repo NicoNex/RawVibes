@@ -775,7 +775,12 @@ impl Worker {
                 self.view = None;
                 let same = |s: &Option<Arc<Photo>>| s.as_ref().is_some_and(|s| Arc::ptr_eq(s, &p));
                 self.show_raw = same(&self.raw_small);
-                if self.show_raw || same(&self.source) {
+                if self.show_raw {
+                    // The test chart may have taken the thumbnails' source: give it back to the RAW.
+                    gpu.upload_into(&mut self.thumb, &p.downscaled(THUMB_MAX));
+                    return;
+                }
+                if same(&self.source) {
                     return;
                 }
                 gpu.upload_into(&mut self.thumb, &p.downscaled(THUMB_MAX));
@@ -1321,6 +1326,8 @@ mod tests {
         assert_eq!(rendered(&mut worker), (8, 4));
         worker.handle(&gpu, Job::SetPhoto(small), &notify);
         assert_eq!(rendered(&mut worker), (1000, 667));
+        // The LUT browser's thumbnails follow the RAW again, not the chart.
+        assert_ne!(worker.thumb.as_ref().map(|t| t.width), Some(8));
     }
 
     /// The neutral grade must bake to an identity LUT, and the baked LUT

@@ -1248,10 +1248,14 @@ impl Gpu {
     }
 
     /// Mean camera RGB (as-shot balanced) of the full-resolution pixels within
-    /// `radius` of `at`, a point of the oriented image (white-balance picker).
-    pub fn sample(&self, raw: &GpuRaw, at: [f32; 2], radius: u32) -> [f32; 3] {
+    /// `radius` of `at`, a point of the oriented image as `detail`'s lens correction shows it
+    /// (white-balance picker).
+    pub fn sample(&self, raw: &GpuRaw, at: [f32; 2], radius: u32, detail: &Detail) -> [f32; 3] {
         let (w, h) = raw.size();
-        let [x, y] = sensor_point(at, raw.orientation, w, h).map(|v| v.max(0.0) as u32);
+        let [x, y] = sensor_point(at, raw.orientation, w, h);
+        // As the develop shader: through the lens correction, at pixel centres.
+        let c = crate::lens::correction(detail.lens.as_ref(), detail, (w, h));
+        let [x, y] = c.source([x - 0.5, y - 0.5], 1).map(|v| (v + 0.5).max(0.0) as u32);
         let (x, y) = (x.min(w - 1), y.min(h - 1));
         let (y0, y1) = (y.saturating_sub(radius), (y + radius).min(h - 1));
         let (x0, x1) = (x.saturating_sub(radius), (x + radius).min(w - 1));
@@ -2411,11 +2415,30 @@ mod tests {
             let shown =
                 gpu.read_photo(&gpu.develop(&raw, &whole(ow, oh), ow, oh, &Develop::default(), Profile::VLog).unwrap());
             for (x, y) in [(0, 0), (ow - 1, 0), (1, oh - 1)] {
-                let s = gpu.sample(&raw, [x as f32 + 0.5, y as f32 + 0.5], 0);
+                let s = gpu.sample(&raw, [x as f32 + 0.5, y as f32 + 0.5], 0, &Detail::default());
                 let enc = crate::develop::develop_pixel(s, &Camera::neutral(), &Develop::default(), Profile::VLog);
                 let got = shown.pixels[(y * ow + x) as usize];
                 assert!((got[0] - enc[0]).abs() < 2e-3, "orientation {o} at ({x}, {y})");
             }
+        }
+    }
+
+    /// The picker reads the sensor pixel the lens correction shows at a point.
+    #[test]
+    fn sample_follows_lens_correction() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let (w, h) = (60u32, 40u32);
+        let px: Vec<[f32; 3]> =
+            (0..w * h).map(|i| [(i % w) as f32 / w as f32, (i / w) as f32 / h as f32, 0.25]).collect();
+        let raw = rgb_raw(&gpu, w, h, px.clone(), 1, Camera::neutral());
+        let detail = Detail { lens_distortion: 80.0, ..Detail::default() };
+        let c = crate::lens::correction(None, &detail, (w, h));
+        for at in [[2.5, 2.5], [57.5, 37.5], [30.5, 5.5]] {
+            let g = c.source([at[0] - 0.5, at[1] - 0.5], 1);
+            let (x, y) = (g[0].round() as u32, g[1].round() as u32);
+            let want = px[(y * w + x) as usize];
+            let got = gpu.sample(&raw, at, 0, &detail);
+            assert!((0..3).all(|k| (got[k] - want[k]).abs() < 2e-3), "{at:?}: {got:?} vs {want:?}");
         }
     }
 

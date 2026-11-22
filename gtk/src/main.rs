@@ -716,8 +716,10 @@ impl App {
         (grade.params.input, grade.params.gamut) = (neutral.input, neutral.gamut);
         let (rating, label) = (self.rating, self.label);
         let (profile, off, meta) = (Some(self.profile), self.off.clone(), self.meta.clone());
+        // The lens profile is the photo's, found again on load: not an edit, nor saved.
+        let develop = Develop { detail: Detail { lens: None, ..self.develop.detail }, ..self.develop };
         Sidecar {
-            develop: self.develop,
+            develop,
             grade,
             crop: self.crop,
             ratio: self.ratio,
@@ -4402,7 +4404,7 @@ impl SimpleComponent for App {
             }
             Msg::CanvasClick(p) => {
                 if let Some(at) = self.image_point(p).filter(|_| self.ui.sidebar.develop.picker.is_active()) {
-                    self.send(Job::SampleRaw { at, radius: 4 });
+                    self.send(Job::SampleRaw { at, radius: 4, detail: Box::new(self.applied_develop().detail) });
                 }
             }
             Msg::DevelopSettled(tick) if tick == self.develop_tick && self.drafting && self.refine => {
@@ -4557,8 +4559,11 @@ impl SimpleComponent for App {
             }
             Msg::ResetAll => {
                 let before = (self.sidecar_state(), self.looks.clone());
-                if self.develop != Develop::default() {
-                    self.develop = Develop::default();
+                let develop = self.develop;
+                (self.develop, self.lens_profile) = (Develop::default(), None);
+                // The photo's own lens profile is not an edit: it comes back.
+                self.update_lens(&sender, false);
+                if self.develop != develop {
                     self.sync_develop();
                     self.develop_changed(&sender);
                 }

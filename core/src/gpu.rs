@@ -347,6 +347,8 @@ pub enum Job {
     SampleRaw {
         at: [f32; 2],
         radius: u32,
+        /// Its lens correction moves what is shown at `at`.
+        detail: Box<crate::develop::Detail>,
     },
     /// LUTs applied after the grade on the Grade page (empty = none).
     SetLook(Stack),
@@ -843,9 +845,9 @@ impl Worker {
                 let cost = start.elapsed().as_secs_f32() / (width * height) as f32;
                 notify(Done::Developed { generation, view, profile, photo: Some(photo), cost });
             }
-            Job::SampleRaw { at, radius } => {
+            Job::SampleRaw { at, radius, detail } => {
                 if let Some(raw) = &self.raw {
-                    notify(Done::Sampled(gpu.sample(raw, at, radius)));
+                    notify(Done::Sampled(gpu.sample(raw, at, radius, &detail)));
                 }
             }
             Job::SetView(p) => {

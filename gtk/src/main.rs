@@ -3048,8 +3048,8 @@ impl SimpleComponent for App {
         // ---------------- LUT browser
         let flow = gtk::FlowBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
-            // A click previews; Enter or a double-click adds.
-            .activate_on_single_click(false)
+            // A click or Enter adds; hovering previews.
+            .activate_on_single_click(true)
             .min_children_per_line(2)
             .max_children_per_line(2)
             .homogeneous(true)
@@ -4655,7 +4655,6 @@ impl SimpleComponent for App {
             Msg::SelectLut(i) => {
                 if i < self.luts.len() {
                     self.selected = Some(i);
-                    sender.input(Msg::Preview(Some(i)));
                 }
             }
             Msg::Preview(None) => self.drop_candidate(),
@@ -4685,10 +4684,15 @@ impl SimpleComponent for App {
                 glib::timeout_add_local_once(HOVER_REST, move || s.emit(Msg::HoverSettled(tick, over)));
             }
             Msg::HoverSettled(tick, over) if tick == self.hover_tick => {
-                sender.input(Msg::Preview(over.or(self.selected)));
+                sender.input(Msg::Preview(over));
             }
             Msg::HoverSettled(..) => {}
             Msg::Commit(i) => {
+                let path = self.luts.get(i).map(|l| &l.path);
+                // A double-click activates twice: the second adds nothing, whether the first is loading or in.
+                if self.flash_new_look || path.is_some_and(|p| self.looks.last().and_then(|l| l.path.as_ref()) == Some(p)) {
+                    return;
+                }
                 self.flash_new_look = true;
                 match self.candidate.take().filter(|c| c.0 == i) {
                     Some((_, lut)) => {
@@ -4701,8 +4705,8 @@ impl SimpleComponent for App {
                         }
                     }
                 }
-                // Added: no longer a preview, so leaving the grid cannot bring it back on top of itself.
-                self.clear_selection();
+                // Added: no longer a preview. The card stays selected for Open in LUT Lab.
+                self.drop_candidate();
             }
             Msg::Escape => {
                 if self.ui.sidebar.develop.picker.is_active() {

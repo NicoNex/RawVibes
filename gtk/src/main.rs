@@ -216,7 +216,7 @@ enum Msg {
     /// A Metadata tab field typed into.
     MetaEdit(MetaField, String),
     /// The camera's metadata of the photo loading as `load_gen`.
-    SourceMeta(u64, Option<Arc<RawMetadata>>),
+    SourceMeta(u64, PathBuf, Option<Arc<RawMetadata>>),
     /// The author defaults changed in Preferences.
     MetaDefaults,
     /// Preferences: render the full-quality frame once development controls rest.
@@ -484,8 +484,8 @@ struct App {
     off: Vec<Off>,
     /// The open photo's own metadata (title, keywords, rights…).
     meta: Meta,
-    /// What its camera recorded.
-    source_meta: Option<Arc<RawMetadata>>,
+    /// What a photo's camera recorded, and which photo: it arrives before that photo is open.
+    source_meta: Option<(PathBuf, Arc<RawMetadata>)>,
     /// The LUT browser is open (its thumbnails follow the grade).
     browsing: bool,
     /// Library LUT previewed after the looks (not part of them until
@@ -752,7 +752,7 @@ impl App {
         let to = if back { self.undo_at.checked_sub(1) } else { Some(self.undo_at + 1) };
         let Some((i, (mut sc, looks))) = to.and_then(|i| Some((i, self.history.get(i)?.clone()))) else { return };
         self.undo_at = i;
-        (sc.rating, sc.label, sc.meta) = (self.rating, self.label, self.meta.clone());
+        (sc.rating, sc.label) = (self.rating, self.label);
         self.restore_edits((sc, looks), sender);
         self.sync_undo();
     }
@@ -760,6 +760,8 @@ impl App {
     /// Puts `edits` on the open photo: develop, grade, crop and looks.
     fn restore_edits(&mut self, (mut sc, looks): Edits, sender: &ComponentSender<Self>) {
         let develop = self.develop;
+        // Metadata is not an edit: undo, paste and undoing a reset leave what was typed.
+        sc.meta = self.meta.clone();
         // Only onto a cleared photo, so its grade and looks come back too.
         self.apply_grade(Grade::default());
         sc.looks.clear();
@@ -879,9 +881,14 @@ impl App {
         }
     }
 
+    /// What the open photo's camera recorded; never another photo's, whose load is still on its way.
+    fn camera_meta(&self) -> Option<&RawMetadata> {
+        self.source_meta.as_ref().filter(|(p, _)| Some(p) == self.path.as_ref()).map(|(_, m)| &**m)
+    }
+
     /// The metadata an export of `crop` embeds: the photo's, with the author defaults, as Preferences allow.
     fn export_tags(&self, crop: &Region) -> meta::Tags {
-        let src = self.source_meta.as_deref();
+        let src = self.camera_meta();
         let m = meta::with_defaults(&self.meta, &author_defaults(), src.and_then(meta::capture_year));
         let policy = settings::value(settings::METADATA_POLICY).and_then(|t| meta::Policy::from_tag(&t)).unwrap_or_default();
         meta::tags(src, &m, policy, Decoded::fit_size(crop, u32::MAX))
@@ -1183,7 +1190,7 @@ impl App {
             // One full-resolution decode at a time: each peaks above 1 GB on a 24 MP RAW.
             static FULL_DECODE: std::sync::Mutex<()> = std::sync::Mutex::new(());
             let _one = FULL_DECODE.lock().unwrap_or_else(|e| e.into_inner());
-            s.emit(Msg::SourceMeta(generation, meta::read(&path).map(Arc::new)));
+            s.emit(Msg::SourceMeta(generation, path.clone(), meta::read(&path).map(Arc::new)));
             if is_raw(&path) {
                 // Developed on the GPU: the strip copy comes back with it (Done::RawLoaded).
                 return s.emit(Msg::RawRead(generation, path.clone(), read_raw(&path).map(Arc::new)));
@@ -1835,10 +1842,9 @@ const COPYRIGHT_TEMPLATE: &str = "© {year} {creator}";
 /// The author fields from Preferences, which a photo's empty fields take.
 fn author_defaults() -> Meta {
     let get = |k| settings::value(k).unwrap_or_default();
-    let copyright = settings::value(settings::COPYRIGHT).unwrap_or_else(|| COPYRIGHT_TEMPLATE.into());
     Meta {
         creator: get(settings::AUTHOR),
-        copyright: if get(settings::AUTHOR).is_empty() { String::new() } else { copyright },
+        copyright: settings::value(settings::COPYRIGHT).unwrap_or_else(|| COPYRIGHT_TEMPLATE.into()),
         email: get(settings::AUTHOR_EMAIL),
         website: get(settings::AUTHOR_WEBSITE),
         ..Default::default()
@@ -4184,6 +4190,7 @@ impl SimpleComponent for App {
                     }
                 }
                 self.ui.sidebar.meta.set(&self.meta, &author_defaults());
+                self.ui.sidebar.meta.show_camera(self.camera_meta());
                 // Left earlier this session: that stack is newer than the sidecar's and keeps path-less layers.
                 if let Some(looks) =
                     self.roll.iter().find(|it| it.path == path).map(|it| it.looks.clone()).filter(|l| !l.is_empty())
@@ -4274,10 +4281,10 @@ impl SimpleComponent for App {
                 }
             }
             Msg::MetaDefaults => self.ui.sidebar.meta.set(&self.meta, &author_defaults()),
-            Msg::SourceMeta(generation, _) if generation != self.load_gen => {}
-            Msg::SourceMeta(_, m) => {
-                self.ui.sidebar.meta.show_camera(m.as_deref());
-                self.source_meta = m;
+            Msg::SourceMeta(generation, ..) if generation != self.load_gen => {}
+            Msg::SourceMeta(_, path, m) => {
+                self.source_meta = m.map(|m| (path, m));
+                self.ui.sidebar.meta.show_camera(self.camera_meta());
             }
             Msg::Undo => self.step_history(true, &sender),
             Msg::Redo => self.step_history(false, &sender),

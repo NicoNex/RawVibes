@@ -50,7 +50,13 @@ pub fn with_defaults(m: &Meta, d: &Meta, year: Option<i32>) -> Meta {
     let pick = |a: &String, b: &String| if a.trim().is_empty() { b.clone() } else { a.clone() };
     let creator = pick(&m.creator, &d.creator);
     let year = year.unwrap_or_else(current_year).to_string();
-    let copyright = pick(&m.copyright, &d.copyright).replace("{year}", &year).replace("{creator}", &creator);
+    let template = pick(&m.copyright, &d.copyright);
+    // "© 2024 " would be stamped on every photo of an unnamed author.
+    let copyright = if template.contains("{creator}") && creator.trim().is_empty() {
+        String::new()
+    } else {
+        template.replace("{year}", &year).replace("{creator}", &creator)
+    };
     Meta {
         title: pick(&m.title, &d.title),
         caption: pick(&m.caption, &d.caption),
@@ -78,6 +84,8 @@ fn current_year() -> i32 {
 }
 
 fn escape(s: &str) -> String {
+    // XML 1.0 allows no control characters but tab, newline and carriage return.
+    let s: String = s.chars().filter(|&c| !c.is_control() || matches!(c, '\t' | '\n' | '\r')).collect();
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
@@ -287,6 +295,22 @@ mod tests {
         let d = Meta { creator: "Bob".into(), copyright: "© {year} {creator}".into(), email: "b@x.it".into(), ..Default::default() };
         let out = with_defaults(&m, &d, Some(2024));
         assert_eq!((out.creator.as_str(), out.copyright.as_str(), out.email.as_str()), ("Ada", "© 2024 Ada", "b@x.it"));
+    }
+
+    /// A template naming `{creator}` with no creator anywhere stamps nothing; one without stays.
+    #[test]
+    fn copyright_without_creator() {
+        let d = Meta { copyright: "© {year} {creator}".into(), ..Default::default() };
+        assert_eq!(with_defaults(&Meta::default(), &d, Some(2024)).copyright, "");
+        let studio = Meta { copyright: "© {year} Studio X".into(), ..Default::default() };
+        assert_eq!(with_defaults(&Meta::default(), &studio, Some(2024)).copyright, "© 2024 Studio X");
+    }
+
+    /// Characters XML 1.0 forbids would make readers drop the whole packet.
+    #[test]
+    fn xmp_drops_control_characters() {
+        let x = xmp(&Meta { caption: "a\u{b}b\u{1f}c\td".into(), ..Default::default() }).unwrap();
+        assert!(x.contains("abc\td") && !x.contains('\u{b}') && !x.contains('\u{1f}'), "{x}");
     }
 
     #[test]

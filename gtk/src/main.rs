@@ -2122,6 +2122,11 @@ fn camera_button(tip: &str, msg: fn() -> Msg, sender: &ComponentSender<App>) -> 
 }
 
 /// Heading of a sidebar group (Develop, Grade, Finish).
+/// A phase of the workflow over the sections that follow ("Geometry", "Primaries"…), on the background.
+fn phase_label(text: &str) -> gtk::Label {
+    gtk::Label::builder().label(text.to_uppercase()).xalign(0.0).css_classes(["phase-label"]).build()
+}
+
 fn group_heading(text: &str) -> gtk::Label {
     let l = gtk::Label::builder().label(text).xalign(0.0).css_classes(["caption-heading", "dim-label"]).build();
     l.set_margin_top(6);
@@ -2310,6 +2315,7 @@ scale.track-film-sat trough highlight, scale.track-film-density trough highlight
 .roll-remove { min-width: 22px; min-height: 22px; padding: 0; opacity: 0; transition: opacity 150ms ease; }
 .roll-item:hover .roll-remove, .roll-remove:focus-visible { opacity: 1; }
 .star { padding: 4px 3px; min-width: 22px; }
+.phase-label { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; opacity: 0.62; margin: 8px 4px 0; }
 .info-bar { min-height: 38px; padding: 0 10px; background-color: mix(@window_bg_color, black, 0.18); border-top: 1px solid alpha(black, 0.35); }
 .info-bar .star image { color: @yellow_2; }
 .label-red { color: #e5534b; }
@@ -2510,6 +2516,7 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     let dev_section = |title: &str, child: &gtk::Box, extra: &[gtk::Widget], part: DevPart| {
         eye_section(title, child, true, extra, sender, Off::Develop(part))
     };
+    root.append(&phase_label(&gettext("Light and colour")));
     root.append(&dev_section(&gettext("White balance"), &wb, &[as_shot.upcast()], DevPart::WhiteBalance));
 
     let exp = vbox(4);
@@ -2578,6 +2585,7 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     detail_slider(&haze, &gettext("Local contrast"), (0.0, 100.0), |d| &mut d.local_contrast);
     root.append(&dev_section(&gettext("Presence"), &haze, &[], DevPart::Presence));
     // Noise first, then sharpening dosed on the cleaned photo; both judged at 100% at the end.
+    root.append(&phase_label(&gettext("Detail")));
     root.append(&nr_sec);
     let sharp = vbox(4);
     // Capture restores the lens's softness; output sharpening is the visible, creative kind.
@@ -2904,6 +2912,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     photo.append(&group_heading(&gettext("Not in the exported LUT")));
     let develop = build_develop(sender);
     // Geometry (lens, crop), light and colour, detail, then the vignette effect.
+    photo.append(&phase_label(&gettext("Geometry")));
     photo.append(&develop.lens);
     photo.append(crop);
     photo.append(&develop.root);
@@ -3110,21 +3119,16 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     let luts_sec = eye_section(&gettext("LUTs"), &look_box, true, &[], sender, Off::Looks);
     // A grading workflow, top to bottom: the look to grade under, balance, primaries, secondaries,
     // the look's finishing touches. The GPU's order is its own (the LUT comes last there).
-    for s in [
-        &profile_sec,
-        &luts_sec,
-        &match_sec,
-        &warmth_sec,
-        &tone_sec,
-        &curves_sec,
-        &wheels_sec,
-        &color_sec,
-        &selective_sec,
-        &hue_sec,
-        &film_sec,
-        &mixer_sec,
-    ] {
-        grade.append(s);
+    let phases = [
+        (gettext("Look"), vec![&profile_sec, &luts_sec]),
+        (gettext("Balance"), vec![&match_sec, &warmth_sec]),
+        (gettext("Primaries"), vec![&tone_sec, &curves_sec, &wheels_sec, &color_sec]),
+        (gettext("Secondaries"), vec![&selective_sec, &hue_sec]),
+        (gettext("Finishing"), vec![&film_sec, &mixer_sec]),
+    ];
+    for (phase, sections) in phases {
+        grade.append(&phase_label(&phase));
+        sections.into_iter().for_each(|s| grade.append(s));
     }
 
     let vig = vbox(4);
@@ -3132,6 +3136,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     add(&vig, &gettext("Midpoint"), -100.0, 100.0, 0, None, |p| &mut p.vignette_mid);
     add(&vig, &gettext("Roundness"), -100.0, 100.0, 0, None, |p| &mut p.vignette_round);
     add(&vig, &gettext("Feather"), -100.0, 100.0, 0, None, |p| &mut p.vignette_feather);
+    photo.append(&phase_label(&gettext("Effects")));
     photo.append(&eye_section(&gettext("Vignette"), &vig, false, &[], sender, Off::Grade(Stage::Vignette)));
     panel.append(&photo);
     panel.append(&grade);

@@ -26,20 +26,20 @@ DTMODEL    := target/models/rawdenoise-nind.dtmodel
 # macOS: shasum (its sha256sum -c reads no stdin); Linux: sha256sum.
 SHA256     := $(shell command -v shasum >/dev/null && echo shasum -a 256 || echo sha256sum)
 
-.PHONY: all build run release run-release test check fmt clean install uninstall arch dmg pot locale models
+.PHONY: all build run release run-release test check fmt clean install uninstall arch dmg pot locale models lensfun
 
 all: release
 
-build: locale
+build: locale lensfun
 	$(CARGO) build
 
-run: locale
+run: locale lensfun
 	$(CARGO) run -p $(BIN) -- $(FILE)
 
-release: locale
+release: locale lensfun
 	$(CARGO) build --release
 
-run-release: locale
+run-release: locale lensfun
 	$(CARGO) run --release -p $(BIN) -- $(FILE)
 
 test:
@@ -54,6 +54,14 @@ fmt:
 	$(CARGO) fmt --all
 
 locale: $(MOS)
+
+# The lensfun database (CC-BY-SA 3.0) as JSON for the Lens section; none found, no profiles.
+LENSFUN_DB ?= $(firstword $(wildcard /usr/share/lensfun/version_1 /opt/homebrew/share/lensfun/version_1 /usr/local/share/lensfun/version_1))
+lensfun: target/lensfun.json
+
+target/lensfun.json: tools/lensfun_db.py
+	@if [ -n "$(LENSFUN_DB)" ]; then python3 -I tools/lensfun_db.py $(LENSFUN_DB) $@; \
+	  else echo "lensfun database not found: no lens profiles"; fi
 
 target/locale/%/LC_MESSAGES/$(BIN).mo: po/%.po
 	@mkdir -p $(dir $@)
@@ -82,7 +90,7 @@ $(MODELS) &: $(DTMODEL)
 	python3 tools/convert_rawnind.py target/models/rawdenoise-nind models/rawnind || { rm -rf models/rawnind; exit 1; }
 
 # Installs the AI models when `make models` fetched them (no network here: packagers run it first).
-install: target/release/$(BIN) locale
+install: target/release/$(BIN) locale lensfun
 	install -Dm755 target/release/$(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
 	for l in $(LINGUAS); do install -Dm644 target/locale/$$l/LC_MESSAGES/$(BIN).mo \
 	  $(DESTDIR)$(PREFIX)/share/locale/$$l/LC_MESSAGES/$(BIN).mo; done
@@ -91,6 +99,8 @@ install: target/release/$(BIN) locale
 	install -Dm644 data/icons/hicolor/scalable/actions/$(BIN)-lut-symbolic.svg \
 	  $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/actions/$(BIN)-lut-symbolic.svg
 	install -Dm644 LICENSE $(DESTDIR)$(PREFIX)/share/licenses/$(BIN)/LICENSE
+	if [ -f target/lensfun.json ]; then install -Dm644 target/lensfun.json $(DESTDIR)$(PREFIX)/share/$(BIN)/lensfun.json; \
+	  install -Dm644 LENSFUN.md $(DESTDIR)$(PREFIX)/share/licenses/$(BIN)/LENSFUN.md; fi
 	# A package manager refreshes these caches itself; a plain install must, or Open With misses the app.
 	if [ -z "$(DESTDIR)" ]; then update-desktop-database -q $(PREFIX)/share/applications || true; \
 	  gtk-update-icon-cache -q -t $(PREFIX)/share/icons/hicolor || true; fi
@@ -131,6 +141,7 @@ dmg: release models
 	  install -m644 target/locale/$$l/LC_MESSAGES/$(BIN).mo $(APP)/Contents/share/locale/$$l/LC_MESSAGES/; done
 	install -m644 $(BREW)/share/glib-2.0/schemas/gschemas.compiled $(APP)/Contents/share/glib-2.0/schemas/
 	cp -RL $(BREW)/share/icons $(APP)/Contents/share/
+	if [ -f target/lensfun.json ]; then install -d $(APP)/Contents/share/$(BIN) && install -m644 target/lensfun.json $(APP)/Contents/share/$(BIN)/; fi
 	install -Dm644 data/icons/hicolor/scalable/actions/$(BIN)-lut-symbolic.svg \
 	  $(APP)/Contents/share/icons/hicolor/scalable/actions/$(BIN)-lut-symbolic.svg
 	install -d $(APP)/Contents/$(PIXBUF)/loaders

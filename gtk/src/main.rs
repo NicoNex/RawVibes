@@ -217,6 +217,8 @@ enum Msg {
     MetaEdit(MetaField, String),
     /// The camera's metadata of the photo loading as `load_gen`.
     SourceMeta(u64, Option<Arc<RawMetadata>>),
+    /// The author defaults changed in Preferences.
+    MetaDefaults,
     /// Preferences: render the full-quality frame once development controls rest.
     Refine(bool),
     /// Filmstrip: add photos, a photo decoded small (already encoded for
@@ -864,9 +866,10 @@ impl App {
         let path = b.waiting.take().expect("checked above");
         let ext = self.ui.export_photo.format().ext();
         let stem = stem_label(&path).unwrap_or_default();
+        let suffix = export_suffix();
         // Never over an existing file: a RAW+JPEG pair, or a photo of the strip itself.
         let out = (1..)
-            .map(|n| if n == 1 { edit_name(&stem, ext) } else { edit_name(&format!("{stem}-{n}"), ext) })
+            .map(|n| if n == 1 { edit_name(&stem, ext, &suffix) } else { edit_name(&format!("{stem}-{n}"), ext, &suffix) })
             .map(|name| b.dir.join(name))
             .find(|p| !p.exists())
             .expect("unbounded");
@@ -874,6 +877,14 @@ impl App {
             self.batch.as_mut().expect("checked above").failed.push(gettext!("{}: cannot export", file_label(&path)));
             self.batch_next(sender);
         }
+    }
+
+    /// The metadata an export of `crop` embeds: the photo's, with the author defaults, as Preferences allow.
+    fn export_tags(&self, crop: &Region) -> meta::Tags {
+        let src = self.source_meta.as_deref();
+        let m = meta::with_defaults(&self.meta, &author_defaults(), src.and_then(meta::capture_year));
+        let policy = settings::value(settings::METADATA_POLICY).and_then(|t| meta::Policy::from_tag(&t)).unwrap_or_default();
+        meta::tags(src, &m, policy, Decoded::fit_size(crop, u32::MAX))
     }
 
     /// Starts exporting the open photo to `path`; false if there is none.
@@ -899,7 +910,7 @@ impl App {
             quality: ui.quality(),
             path,
             cancel,
-            tags: Default::default(),
+            tags: self.export_tags(&crop),
         }));
         true
     }
@@ -1742,8 +1753,96 @@ fn texture(width: u32, height: u32, rgba: Vec<u8>) -> gdk::MemoryTexture {
 }
 
 /// Name of an exported photo: never the original's own.
-fn edit_name(stem: &str, ext: &str) -> String {
-    format!("{stem}_edit.{ext}")
+fn edit_name(stem: &str, ext: &str, suffix: &str) -> String {
+    // A suffix is part of a file name: no folders, never empty (it would overwrite the photo's own JPEG).
+    let suffix: String = suffix.trim().chars().filter(|c| !matches!(c, '/' | '\\')).collect();
+    let suffix = if suffix.is_empty() { "_edit" } else { &suffix };
+    format!("{stem}{suffix}.{ext}")
+}
+
+/// The export file name suffix from Preferences.
+fn export_suffix() -> String {
+    settings::value(settings::EXPORT_SUFFIX).unwrap_or_default()
+}
+
+/// What each export policy leaves in a photo, for the Preferences row.
+fn policy_hint(p: meta::Policy) -> String {
+    match p {
+        meta::Policy::All => gettext("Everything the camera recorded, location and serial numbers included"),
+        meta::Policy::Essential => gettext("Camera, exposure, date, rights and description; no location, no serial numbers"),
+        meta::Policy::Copyright => gettext("Only the creator, copyright and contact"),
+        meta::Policy::None => gettext("No metadata at all"),
+    }
+}
+
+/// Preferences → Metadata: what exports carry, their file name, the author stamped on them.
+fn metadata_prefs(sender: &ComponentSender<App>) -> adw::PreferencesPage {
+    let labels = [gettext("All"), gettext("Essential"), gettext("Copyright only"), gettext("None")];
+    let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let stored = settings::value(settings::METADATA_POLICY).and_then(|t| meta::Policy::from_tag(&t)).unwrap_or_default();
+    let policy = adw::ComboRow::builder()
+        .title(gettext("Metadata in exported photos"))
+        .subtitle(policy_hint(stored))
+        .model(&gtk::StringList::new(&labels))
+        .selected(meta::Policy::ALL.iter().position(|&p| p == stored).unwrap_or(1) as u32)
+        .build();
+    policy.connect_selected_notify(|r| {
+        let p = meta::Policy::ALL.get(r.selected() as usize).copied().unwrap_or_default();
+        let _ = settings::set_value(settings::METADATA_POLICY, p.tag());
+        r.set_subtitle(&policy_hint(p));
+    });
+    let suffix = adw::EntryRow::builder().title(gettext("File name suffix")).text(export_suffix()).build();
+    suffix.connect_changed(|r| {
+        let _ = settings::set_value(settings::EXPORT_SUFFIX, &r.text());
+    });
+    let export = adw::PreferencesGroup::builder()
+        .title(gettext("Export"))
+        .description(gettext("Exported photos are named after the original plus this suffix (_edit when empty)."))
+        .build();
+    export.add(&policy);
+    export.add(&suffix);
+    let author = adw::PreferencesGroup::builder()
+        .title(gettext("Author"))
+        .description(gettext(
+            "Written into every export whose photo leaves the field empty. In the copyright, {year} becomes the year the photo was taken and {creator} the creator.",
+        ))
+        .build();
+    let d = author_defaults();
+    let copyright = settings::value(settings::COPYRIGHT).unwrap_or_else(|| COPYRIGHT_TEMPLATE.into());
+    for (key, title, text) in [
+        (settings::AUTHOR, gettext("Creator"), d.creator),
+        (settings::COPYRIGHT, gettext("Copyright"), copyright),
+        (settings::AUTHOR_EMAIL, gettext("Email"), d.email),
+        (settings::AUTHOR_WEBSITE, gettext("Website"), d.website),
+    ] {
+        let row = adw::EntryRow::builder().title(title).text(text).build();
+        let snd = sender.clone();
+        row.connect_changed(move |r| {
+            let _ = settings::set_value(key, &r.text());
+            snd.input(Msg::MetaDefaults);
+        });
+        author.add(&row);
+    }
+    let page = adw::PreferencesPage::builder().title(gettext("Metadata")).icon_name("document-properties-symbolic").build();
+    page.add(&export);
+    page.add(&author);
+    page
+}
+
+/// The copyright Preferences start from.
+const COPYRIGHT_TEMPLATE: &str = "© {year} {creator}";
+
+/// The author fields from Preferences, which a photo's empty fields take.
+fn author_defaults() -> Meta {
+    let get = |k| settings::value(k).unwrap_or_default();
+    let copyright = settings::value(settings::COPYRIGHT).unwrap_or_else(|| COPYRIGHT_TEMPLATE.into());
+    Meta {
+        creator: get(settings::AUTHOR),
+        copyright: if get(settings::AUTHOR).is_empty() { String::new() } else { copyright },
+        email: get(settings::AUTHOR_EMAIL),
+        website: get(settings::AUTHOR_WEBSITE),
+        ..Default::default()
+    }
 }
 
 /// `clip`'s edits onto `target`, which keeps its crop, stars, label and metadata.
@@ -3519,6 +3618,7 @@ impl SimpleComponent for App {
         prefs_page.add(&view_group);
         let prefs = adw::PreferencesDialog::new();
         prefs.add(&prefs_page);
+        prefs.add(&metadata_prefs(&sender));
         for (name, msg) in [
             ("copy-edits", (|| Msg::CopyEdits) as fn() -> Msg),
             ("paste-edits", || Msg::PasteEdits),
@@ -4070,7 +4170,7 @@ impl SimpleComponent for App {
                         self.toast(&gettext!("Cannot read the edits saved for {}: {}", file_label(&path), e))
                     }
                 }
-                self.ui.sidebar.meta.set(&self.meta, &Meta::default());
+                self.ui.sidebar.meta.set(&self.meta, &author_defaults());
                 // Left earlier this session: that stack is newer than the sidecar's and keeps path-less layers.
                 if let Some(looks) =
                     self.roll.iter().find(|it| it.path == path).map(|it| it.looks.clone()).filter(|l| !l.is_empty())
@@ -4160,6 +4260,7 @@ impl SimpleComponent for App {
                     self.schedule_save();
                 }
             }
+            Msg::MetaDefaults => self.ui.sidebar.meta.set(&self.meta, &author_defaults()),
             Msg::SourceMeta(generation, _) if generation != self.load_gen => {}
             Msg::SourceMeta(_, m) => {
                 self.ui.sidebar.meta.show_camera(m.as_deref());
@@ -4511,7 +4612,7 @@ impl SimpleComponent for App {
                 let dialog = gtk::FileDialog::builder()
                     .title(gettext("Export Photo"))
                     // Never the original's own name: a JPEG source sits in the same folder.
-                    .initial_name(edit_name(&stem, format.ext()))
+                    .initial_name(edit_name(&stem, format.ext(), &export_suffix()))
                     .filters(&file_filters(&format.ext().to_uppercase(), &[format.ext()]))
                     .modal(true)
                     .build();
@@ -5476,6 +5577,14 @@ mod tests {
         assert_eq!((p.develop.exposure, p.crop, p.rating, p.label), (1.0, target.crop, 2, Label::Blue));
         assert_eq!(p.off, [Off::Looks]);
         assert_eq!(p.meta, target.meta);
+    }
+
+    #[test]
+    fn suffix_is_sanitized() {
+        assert_eq!(edit_name("IMG_1", "jpg", ""), "IMG_1_edit.jpg");
+        assert_eq!(edit_name("IMG_1", "jpg", "  "), "IMG_1_edit.jpg");
+        assert_eq!(edit_name("IMG_1", "jpg", "../x"), "IMG_1..x.jpg");
+        assert_eq!(edit_name("IMG_1", "jpg", "-web"), "IMG_1-web.jpg");
     }
 
     /// The catalogs `make` builds are found and read (needs the it_IT.UTF-8 locale).

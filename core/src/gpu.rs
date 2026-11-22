@@ -1246,7 +1246,12 @@ mod tests {
                 quality: 90,
                 path: PathBuf::from(&out).join(format!("export.{}", format.ext())),
                 cancel: Arc::default(),
-                tags: Default::default(),
+                tags: crate::meta::tags(
+                    crate::meta::read(&path).as_ref(),
+                    &crate::sidecar::Meta { creator: "RawVibes test".into(), title: "Sample".into(), ..Default::default() },
+                    crate::meta::Policy::Essential,
+                    Decoded::fit_size(&crop, u32::MAX),
+                ),
             };
             let t = std::time::Instant::now();
             let (w, h, rgb) = worker.export_photo(&gpu, &e, EXPORT_ROWS_BYTES, &notify).unwrap().unwrap();

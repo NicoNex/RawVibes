@@ -67,3 +67,15 @@ pub const EXPORT_FORMAT: &str = "export-format";
 
 /// Last JPEG export quality, 1–100.
 pub const JPEG_QUALITY: &str = "jpeg-quality";
+
+/// What exported photos carry (`rawvibes_core::meta::Policy::tag`).
+pub const METADATA_POLICY: &str = "metadata-policy";
+
+/// Appended to an exported photo's name (`_edit` when empty).
+pub const EXPORT_SUFFIX: &str = "export-suffix";
+
+/// The author defaults stamped on exports whose photo leaves them empty.
+pub const AUTHOR: &str = "author";
+pub const COPYRIGHT: &str = "copyright";
+pub const AUTHOR_EMAIL: &str = "author-email";
+pub const AUTHOR_WEBSITE: &str = "author-website";

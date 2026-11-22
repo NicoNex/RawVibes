@@ -10,7 +10,7 @@ Exports should also gain the quality steps a pro raw converter takes.
 
 ## Goals
 
-1. **Metadata section in the editor** (Photo tab, a new "Metadata" section at the bottom):
+1. **Metadata tab in the editor** (its own tab next to Photo / Grade / LUT Lab, user's call):
    - read-only camera facts: camera, lens, exposure (shutter, aperture, ISO, bias), focal length,
      capture date, GPS present yes/no;
    - editable per photo: title, caption, keywords (comma separated), creator, copyright,
@@ -66,12 +66,20 @@ Exports should also gain the quality steps a pro raw converter takes.
 - Option 1 writer, quality steps dithering + ICC (user).
 - Lab tab icon: a cube symbolic SVG (my call, no objection).
 - Paste edits keeps the target's metadata, like its crop and stars (my call: a title is per photo).
-- Source metadata: RAWs via `rawler` `raw_metadata().exif`. JPEG/TIFF sources: only the user's
-  fields and defaults are written — `shortcut: no EXIF reader for non-RAW sources, add one when
-  camera JPEGs are exported often`.
+- Source metadata: RAWs via `rawler` `raw_metadata().exif`; JPEG sources via `rawler`'s JFIF
+  parser (`formats::jfif`), TIFF sources via `GenericTiffReader` + `Exif::new` (user: read them too).
+- EXIF bytes built with `rawler`'s `TiffWriter` / `DirectoryWriter` and
+  `RawMetadata::write_exif_tags` (the DNG writer's code), after the policy clears the fields it
+  leaves out; Make / Model / Software / dimensions added on top.
 - TIFF: ICC only — `shortcut: no EXIF/XMP in TIFF, add via tiff crate custom tags when asked`.
 - Metadata policy and defaults are global settings, not per photo ("per ogni foto" = applied to
   every export).
+
+## Also in this round: the crop grid goes away
+
+Crop editing (grid and handles) today ends only with the Edit crop toggle, Return or Escape.
+It must end by itself once the user moves on: a click on any sidebar control outside the Crop
+section, or a switch to another tab, finishes the edit (keeps the crop, like Return).
 
 ## Left to the builder
 

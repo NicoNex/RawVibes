@@ -794,9 +794,14 @@ impl Worker {
                 self.source = Some(p);
             }
             Job::LoadRaw(generation, path, data) => {
+                // X-Trans becomes RGB once, so the AI and the reloads start from it too.
+                let data = match &data.pixels {
+                    crate::raw::Pixels::XTrans(_) => gpu.demosaic_xtrans(&data).map(Arc::new),
+                    _ => Ok(data),
+                };
                 // The previous RAW stays until this one loads: a failed open keeps editing it.
                 // Loaded uncorrected (fast); the first develop asking for CA correction reloads.
-                let loaded = gpu.load_raw(&data).map(|raw| {
+                let loaded = data.and_then(|data| gpu.load_raw(&data).map(|raw| (raw, data))).map(|(raw, data)| {
                     let size = raw.oriented_size();
                     let small = gpu.small(&raw, RAW_SMALL);
                     let decoded = Decoded::raw(small, raw.camera.clone(), size);

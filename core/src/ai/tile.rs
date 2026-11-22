@@ -160,6 +160,8 @@ impl Gpu {
                 let back = pseudo_inverse(m);
                 (self.storage(bytemuck::cast_slice(&lin)), 0, 0, 1, diag(back))
             }
+            // The worker hands the AI the demosaiced RGB (`Job::LoadRaw`).
+            Pixels::XTrans(_) => return Err("X-Trans must be demosaiced before AI denoise".into()),
         };
         let (pw, ph) = ((raw.width - ox) / s, (raw.height - oy) / s);
         // As few tiles as edge `t` allows, then as small as they can be: less overlap to compute.

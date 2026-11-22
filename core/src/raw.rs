@@ -36,7 +36,9 @@ pub struct RawData {
 pub enum Pixels {
     /// Rescaled (0 = black, 1 = white) Bayer mosaic, not white-balanced.
     Bayer(Vec<f32>),
-    /// Already demosaiced and cropped by rawler (X-Trans, linear DNG),
+    /// The same for a 6×6 X-Trans mosaic: [`Gpu::demosaic_xtrans`] turns it into `Rgb`.
+    XTrans(Vec<f32>),
+    /// Already demosaiced and cropped (X-Trans by [`Gpu::demosaic_xtrans`]; rawler: 4-colour, linear DNG),
     /// as-shot-balanced camera RGB.
     Rgb(Vec<[f32; 3]>),
 }
@@ -51,13 +53,11 @@ impl std::fmt::Debug for RawData {
 pub fn read_raw(path: &Path) -> Result<RawData, String> {
     let (mut raw, orientation) = decode(path)?;
     let (w, h) = (raw.width as u32, raw.height as u32);
-    let bayer = match &raw.photometric {
-        RawPhotometricInterpretation::Cfa(c) if raw.cpp == 1 && c.cfa.is_rgb() && c.sensor == SensorType::Bayer => {
-            Some(c.cfa.clone())
-        }
+    let mosaic = match &raw.photometric {
+        RawPhotometricInterpretation::Cfa(c) if raw.cpp == 1 && c.cfa.is_rgb() => Some((c.cfa.clone(), c.sensor)),
         _ => None,
     };
-    if let Some(cfa) = bayer {
+    if let Some((cfa, sensor)) = mosaic {
         let rect = raw.crop_area.or(raw.active_area);
         raw.apply_scaling().map_err(|e| e.to_string())?;
         let mut pattern = [0; 36];
@@ -67,8 +67,9 @@ pub fn read_raw(path: &Path) -> Result<RawData, String> {
             }
         }
         let crop = rect.map_or([0, 0, w, h], |r| [r.p.x as u32, r.p.y as u32, r.d.w as u32, r.d.h as u32]);
+        let data = raw.data.as_f32().into_owned();
         return Ok(RawData {
-            pixels: Pixels::Bayer(raw.data.as_f32().into_owned()),
+            pixels: if sensor == SensorType::Xtrans { Pixels::XTrans(data) } else { Pixels::Bayer(data) },
             width: w,
             height: h,
             pattern,
@@ -751,6 +752,7 @@ impl Gpu {
                 let rgb = self.storage(bytemuck::cast_slice(px));
                 self.passes(&[(&p.rgb_pack, &[(0, &params), (1, &rgb), (10, &level0)], grid(n))]);
             }
+            Pixels::XTrans(_) => return self.load_raw(&self.demosaic_xtrans(raw)?),
         }
         let mut gpu_raw = GpuRaw {
             levels: self.mips(raw, level0),
@@ -768,6 +770,40 @@ impl Gpu {
         let up = 4f32.powi(k as i32);
         gpu_raw.noise = NoiseModel { a: m.a * up, b: m.b * up };
         Ok(gpu_raw)
+    }
+
+    /// An X-Trans `raw` as as-shot-balanced camera RGB of its visible area: white balance and
+    /// highlight reconstruction on the mosaic (as for Bayer), then rawler's Markesteijn 3-pass
+    /// (dcraw's, darktable's and RawTherapee's reference X-Trans demosaic) on the CPU.
+    // shortcut: CPU Markesteijn, a second or two per load on 26 MP; port it to WGSL if loads feel slow.
+    pub fn demosaic_xtrans(&self, raw: &RawData) -> Result<RawData, String> {
+        use rawler::imgop::sensor::{Demosaic, xtrans::markesteijn::XTransMarkesteijnDemosaic};
+        use rawler::imgop::{Dim2, Point, Rect};
+        let Pixels::XTrans(mosaic) = &raw.pixels else { return Err("not an X-Trans mosaic".into()) };
+        let cfa = self.read_f32(&self.reconstruct(raw, mosaic)?);
+        let pattern: String = raw.pattern.iter().map(|&c| ['R', 'G', 'B'][c as usize]).collect();
+        let (fw, fh) = (raw.width as usize, raw.height as usize);
+        // The whole sensor, then the visible area: rawler crops its input to the ROI, so a ROI
+        // would leave the visible area's own border without neighbours.
+        let rgb = XTransMarkesteijnDemosaic::new_pass_3().demosaic(
+            &rawler::pixarray::PixF32::new_with(cfa, fw, fh),
+            &rawler::CFA::new(&pattern),
+            &Default::default(),
+            Rect::new(Point::new(0, 0), Dim2::new(fw, fh)),
+        );
+        let [x, y, w, h] = raw.crop.map(|v| v as usize);
+        let px = (y..y + h).flat_map(|r| rgb.data[r * fw + x..][..w].to_vec()).collect();
+        let (w, h) = (w as u32, h as u32);
+        Ok(RawData {
+            pixels: Pixels::Rgb(px),
+            width: w,
+            height: h,
+            pattern: [0; 36],
+            pattern_size: [1, 1],
+            crop: [0, 0, w, h],
+            orientation: raw.orientation,
+            camera: raw.camera.clone(),
+        })
     }
 
     /// The mip chain from `level0` (the visible area of `raw`).
@@ -2605,6 +2641,35 @@ mod tests {
         let v: Vec<f32> = (30..34).flat_map(|y| (30..34).map(move |x| (y * w + x) as usize)).map(|i| out[i]).collect();
         let (lo, hi) = v.iter().fold((f32::MAX, f32::MIN), |(a, b), &x| (a.min(x), b.max(x)));
         assert!(lo >= 1.0 && hi / lo < 1.02, "{v:?}");
+    }
+
+    /// A flat colour on an X-Trans mosaic demosaics (Markesteijn 3-pass) back to that colour, balanced.
+    #[test]
+    fn xtrans_flat_colour_survives_demosaic() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        const XT: [u32; 36] = [
+            1, 1, 0, 1, 1, 2, 1, 1, 2, 1, 1, 0, 2, 0, 1, 0, 2, 1, 1, 1, 2, 1, 1, 0, 1, 1, 0, 1, 1, 2, 0, 2, 1, 2, 0, 1,
+        ];
+        let (w, h) = (120, 96);
+        let mut raw = data(w, h, [1.7, 1.0, 1.3]);
+        let flat = [0.2, 0.3, 0.4];
+        let m = (0..w * h).map(|i| flat[XT[(((i / w) % 6) * 6 + (i % w) % 6) as usize] as usize]).collect();
+        (raw.pattern, raw.pattern_size, raw.crop, raw.pixels) = (XT, [6, 6], [6, 6, w - 12, h - 12], Pixels::XTrans(m));
+        let out = gpu.demosaic_xtrans(&raw).unwrap();
+        assert_eq!((out.width, out.height, out.crop), (w - 12, h - 12, [0, 0, w - 12, h - 12]));
+        let Pixels::Rgb(px) = &out.pixels else { panic!("not RGB") };
+        let want: [f32; 3] = std::array::from_fn(|c| flat[c] * raw.camera.as_shot[c]);
+        let bad: Vec<_> =
+            px.iter().enumerate().filter(|(_, p)| (0..3).any(|c| (p[c] - want[c]).abs() >= 1e-4)).collect();
+        let edge = |i: usize| (i % (w as usize - 12), i / (w as usize - 12));
+        assert!(
+            bad.is_empty(),
+            "{} bad, first {:?} at {:?}, last at {:?}",
+            bad.len(),
+            bad[0].1,
+            edge(bad[0].0),
+            edge(bad[bad.len() - 1].0)
+        );
     }
 
     #[test]

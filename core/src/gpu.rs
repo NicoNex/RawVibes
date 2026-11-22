@@ -417,6 +417,8 @@ pub struct PhotoExport {
     pub path: PathBuf,
     /// Set by the UI to stop between strips.
     pub cancel: Arc<AtomicBool>,
+    /// The metadata the file embeds.
+    pub tags: crate::meta::Tags,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -921,7 +923,7 @@ impl Worker {
             Job::ExportPhoto(e) => {
                 let cancelled = || e.cancel.load(Ordering::Relaxed);
                 let r = self.export_photo(gpu, &e, EXPORT_ROWS_BYTES, notify).and_then(|done| match done {
-                    Some((w, h, rgb)) => export::save(&e.path, w, h, rgb, e.format, e.quality, cancelled)
+                    Some((w, h, rgb)) => export::save(&e.path, w, h, rgb, e.format, e.quality, &e.tags, cancelled)
                         .map(|saved| saved.then_some(e.path.clone())),
                     None => Ok(None),
                 });
@@ -1202,6 +1204,7 @@ mod tests {
             quality: 90,
             path: PathBuf::new(),
             cancel: Arc::default(),
+            tags: Default::default(),
         };
         let (_, _, one) = worker.export_photo(&gpu, &e, u64::MAX, &notify).unwrap().unwrap();
         // 37 rows per strip (plus the margin all round): 5 strips, the last one short.
@@ -1243,11 +1246,12 @@ mod tests {
                 quality: 90,
                 path: PathBuf::from(&out).join(format!("export.{}", format.ext())),
                 cancel: Arc::default(),
+                tags: Default::default(),
             };
             let t = std::time::Instant::now();
             let (w, h, rgb) = worker.export_photo(&gpu, &e, EXPORT_ROWS_BYTES, &notify).unwrap().unwrap();
             let dev = t.elapsed();
-            export::save(&e.path, w, h, rgb, format, 90, || false).unwrap();
+            export::save(&e.path, w, h, rgb, format, 90, &e.tags, || false).unwrap();
             let size = std::fs::metadata(&e.path).unwrap().len();
             eprintln!("{format:?} {w}x{h}: develop {dev:.2?}, total {:.2?}, {} MB", t.elapsed(), size / 1_000_000);
         }

@@ -890,6 +890,7 @@ impl App {
             quality: ui.quality(),
             path,
             cancel,
+            tags: Default::default(),
         }));
         true
     }

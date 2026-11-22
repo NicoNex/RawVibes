@@ -236,6 +236,9 @@ fn write_exif(md: &RawMetadata, title: &str, size: Option<(u32, u32)>) -> rawler
         root.add_tag(ExifTag::ImageDescription, title);
     }
     if let Some((w, h)) = size {
+        // Required by the EXIF spec for JPEG: centred chroma, Y Cb Cr order.
+        root.add_tag(ExifTag::YCbCrPositioning, 1u16);
+        ex.add_tag_undefined(ExifTag::ComponentsConfiguration, vec![1, 2, 3, 0]);
         ex.add_tag_undefined(ExifTag::ExifVersion, b"0232".to_vec());
         ex.add_tag(ExifTag::ExifImageWidth, w);
         ex.add_tag(ExifTag::ExifImageHeight, h);
@@ -360,6 +363,17 @@ mod tests {
     fn none_policy_writes_no_exif() {
         let (t, _) = written(Policy::None);
         assert_eq!(t, Tags::default());
+    }
+
+    /// What exiftool's validation requires of a JPEG's EXIF.
+    #[test]
+    fn exif_has_the_required_tags() {
+        let t = tags(None, &Meta::default(), Policy::Essential, (10, 10));
+        let reader = GenericTiffReader::new(&mut Cursor::new(&t.exif), 0, 0, Some(0), &[TiffCommonTag::ExifIFDPointer.into()]).unwrap();
+        let root = &reader.file().chain[0];
+        assert!(root.get_entry(ExifTag::YCbCrPositioning).is_some());
+        let ex = root.get_sub_ifd(TiffCommonTag::ExifIFDPointer).unwrap();
+        assert!(ex.get_entry(ExifTag::ComponentsConfiguration).is_some());
     }
 
     #[test]

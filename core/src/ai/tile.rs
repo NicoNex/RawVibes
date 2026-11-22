@@ -242,6 +242,12 @@ impl Gpu {
     }
 }
 
+/// A sample file as the worker hands it to the AI: X-Trans demosaiced first (`Job::LoadRaw`).
+#[cfg(test)]
+fn xtrans_as_rgb(gpu: &Gpu, raw: RawData) -> RawData {
+    if matches!(raw.pixels, Pixels::XTrans(_)) { gpu.demosaic_xtrans(&raw).unwrap() } else { raw }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,7 +437,7 @@ mod tests {
     fn ai_on_sample() {
         let Ok(path) = std::env::var("RAWVIBES_RAW") else { return };
         let Some((gpu, net)) = setup() else { return };
-        let raw = crate::raw::read_raw(std::path::Path::new(&path)).unwrap();
+        let raw = xtrans_as_rgb(&gpu, crate::raw::read_raw(std::path::Path::new(&path)).unwrap());
         let start = std::time::Instant::now();
         gpu.ai_denoise(&raw, &net, &AtomicBool::new(false), &|_| {}).unwrap().unwrap();
         eprintln!("AI denoise {}×{}: {:.2?}", raw.width, raw.height, start.elapsed());
@@ -655,7 +661,7 @@ mod quality {
         else {
             return;
         };
-        let data = crate::raw::read_raw(std::path::Path::new(&path)).unwrap();
+        let data = xtrans_as_rgb(&gpu, crate::raw::read_raw(std::path::Path::new(&path)).unwrap());
         let net = UNet::new(&gpu, &Weights::load(&dir, Variant::Bayer).unwrap());
         let mut raw = gpu.load_raw(&data).unwrap();
         let level0 = gpu.ai_denoise(&data, &net, &AtomicBool::new(false), &|_| {}).unwrap().unwrap();

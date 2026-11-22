@@ -5,7 +5,9 @@
 //! The mask is the pixel's RGB norm smoothed by the EIGF, so a gain follows areas
 //! and stops at their edges. Gains are set on nine 1-EV nodes from −8 to 0 EV of the
 //! mask and interpolated by eight Gaussian radial basis functions (σ √2, centres
-//! 8/7 EV apart), fitted by least squares as darktable does. The two sliders shape
+//! 8/7 EV apart), fitted by least squares as darktable does, but on the gains in EV
+//! (darktable fits linear factors): zero sliders give weights of exactly 0, so the
+//! curve leaves the slider's first step continuous with off. The two sliders shape
 //! the nodes like darktable's "compress shadows/highlights" presets: shadows move
 //! −8…−5 EV, highlights −3…0 EV, in the ratio 1 : 5/3 : 5/3 : 1.
 
@@ -24,7 +26,7 @@ const SIGMA: f64 = std::f64::consts::SQRT_2;
 /// Peak EV of a slider at ±100.
 const STEP: f32 = 1.0;
 
-/// The eight RBF weights for `shadows` and `highlights` (−100…100), as linear gains.
+/// The eight RBF weights (EV) for `shadows` and `highlights` (−100…100).
 pub(crate) fn factors(shadows: f32, highlights: f32) -> [f32; 8] {
     let (s, h) = (shadows / 100.0 * STEP, highlights / 100.0 * STEP);
     let shape = [1.0, 5.0 / 3.0, 5.0 / 3.0, 1.0];
@@ -33,7 +35,7 @@ pub(crate) fn factors(shadows: f32, highlights: f32) -> [f32; 8] {
         ev[k] = s * shape[k];
         ev[5 + k] = h * shape[k];
     }
-    solve(ev.map(|e| f64::from(e).exp2()))
+    solve(ev.map(f64::from))
 }
 
 fn centre(j: usize) -> f64 {
@@ -44,7 +46,7 @@ fn rbf(x: f64, j: usize) -> f64 {
     (-(x - centre(j)).powi(2) / (2.0 * SIGMA * SIGMA)).exp()
 }
 
-/// Least-squares RBF weights so the curve passes as close as it can to `gains`
+/// Least-squares RBF weights so the curve passes as close as it can to `gains` (EV)
 /// at the nodes −8…0 EV (normal equations, Gaussian elimination in f64).
 fn solve(gains: [f64; 9]) -> [f32; 8] {
     let a = |i: usize, j: usize| rbf(i as f64 - 8.0, j);
@@ -72,7 +74,7 @@ fn solve(gains: [f64; 9]) -> [f32; 8] {
 pub(crate) fn gain(ev: f32, f: &[f32; 8]) -> f32 {
     let ev = f64::from(ev.clamp(-8.0, 0.0));
     let g: f64 = (0..8).map(|j| rbf(ev, j) * f64::from(f[j])).sum();
-    (g as f32).clamp(0.25, 4.0)
+    (g as f32).clamp(-2.0, 2.0).exp2()
 }
 
 #[cfg(test)]
@@ -82,10 +84,12 @@ mod tests {
     #[test]
     fn neutral_is_unity_everywhere() {
         let f = factors(0.0, 0.0);
-        // Eight Gaussians fit a flat line to within 2 % (darktable's fit too; the pass is skipped at 0).
+        assert_eq!(f, [0.0; 8]);
+        // One step off neutral moves no tone by more than that step's share.
+        let f = factors(1.0, 0.0);
         for k in 0..=80 {
-            let g = gain(-8.0 + k as f32 / 10.0, &f);
-            assert!((g - 1.0).abs() < 0.02, "{g} at {k}");
+            let g = gain(-8.0 + k as f32 / 10.0, &f).log2();
+            assert!(g.abs() < 0.02, "{g} EV at {k}");
         }
     }
 

@@ -792,7 +792,9 @@ impl Gpu {
             Rect::new(Point::new(0, 0), Dim2::new(fw, fh)),
         );
         let [x, y, w, h] = raw.crop.map(|v| v as usize);
-        let px = (y..y + h).flat_map(|r| rgb.data[r * fw + x..][..w].to_vec()).collect();
+        let mut px = Vec::with_capacity(w * h);
+        (y..y + h).for_each(|r| px.extend_from_slice(&rgb.data[r * fw + x..][..w]));
+        drop(rgb);
         let (w, h) = (w as u32, h as u32);
         Ok(RawData {
             pixels: Pixels::Rgb(px),
@@ -900,14 +902,15 @@ impl Gpu {
         );
         key.extend([d.nr_luma, d.nr_chroma, d.nr_detail]);
         let nr_key = (raw.id, key.clone());
-        key.extend([d.defringe, d.defringe_green, d.shadows, d.highlights, d.dehaze]);
+        key.extend([d.defringe, d.defringe_green, d.dehaze]);
         let haze_key = (raw.id, key.clone());
-        key.push(d.local_contrast);
+        // Shadows and highlights share local contrast's stage: their drags leave defringe and dehaze cached.
+        key.extend([d.shadows, d.highlights, d.local_contrast]);
         let contrast_key = (raw.id, key);
         let nr_on = d.nr_luma > 0.0 || d.nr_chroma > 0.0;
         let tones_on = d.shadows != 0.0 || d.highlights != 0.0;
-        let haze_on = d.defringe > 0.0 || d.defringe_green > 0.0 || tones_on || d.dehaze != 0.0;
-        let contrast_on = d.local_contrast > 0.0;
+        let haze_on = d.defringe > 0.0 || d.defringe_green > 0.0 || d.dehaze != 0.0;
+        let contrast_on = tones_on || d.local_contrast > 0.0;
         // A tool turned off frees its cache (a 100% view's is ~100 MB).
         if !nr_on {
             work.after_nr = None;
@@ -945,9 +948,6 @@ impl Gpu {
                     self.defringe(&lin, work.scratch(self), &fringe, lw, lh, s, amount, brighten);
                 }
             }
-            if tones_on {
-                self.tones(&lin, work.scratch(self), lw, lh, s, d);
-            }
             if d.dehaze != 0.0 {
                 self.airlight(raw, dev, profile);
                 self.dehaze(&lin, work.scratch(self), lw, lh, s, d.dehaze);
@@ -956,7 +956,12 @@ impl Gpu {
         }
         if from < 3 && contrast_on {
             let lin = work.lin.clone();
-            self.local_laplacian(&lin, work.scratch(self), lw, lh, s, d.local_contrast);
+            if tones_on {
+                self.tones(&lin, work.scratch(self), lw, lh, s, d);
+            }
+            if d.local_contrast > 0.0 {
+                self.local_laplacian(&lin, work.scratch(self), lw, lh, s, d.local_contrast);
+            }
             keep(self, &work.lin, &mut work.after_contrast, contrast_key);
         }
         if d.sharpen > 0.0 {

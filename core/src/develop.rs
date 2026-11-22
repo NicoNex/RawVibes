@@ -212,10 +212,10 @@ impl Default for Detail {
     }
 }
 
-/// White-balance presets: name, Kelvin, tint.
 /// `Detail::support` of the tone equalizer: 3σ of its mask's guided filter, √3 for three iterations.
 const TONES_SUPPORT: f32 = 3.0 * 1.732_050_8 * crate::tones::RADIUS;
 
+/// White-balance presets: name, Kelvin, tint.
 pub const WB_PRESETS: [(&str, f32, f32); 6] = [
     ("Daylight", 5500.0, 0.0),
     ("Cloudy", 6500.0, 10.0),

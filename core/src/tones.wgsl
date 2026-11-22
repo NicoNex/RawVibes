@@ -127,7 +127,7 @@ fn te_blend(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: ve
     sa[i].x = max(image * a + b, MIN_FLOAT);
 }
 
-// The gain of the mask's exposure (apply_toneequalizer).
+// The gain of the mask's exposure (apply_toneequalizer, interpolated in EV).
 @compute @workgroup_size(256)
 fn te_apply(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
             @builtin(local_invocation_index) lid: u32) {
@@ -139,5 +139,6 @@ fn te_apply(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: ve
         let d = ev - (-8.0 + 8.0 * f32(j) / 7.0);
         g += exp(-d * d / 4.0) * p.factors[j / 4][j % 4];
     }
-    lin[i] = vec4<f32>(lin[i].xyz * clamp(g, 0.25, 4.0), lin[i].w);
+    // Weights are in EV (tones.rs); darktable's ±2 EV limit.
+    lin[i] = vec4<f32>(lin[i].xyz * exp2(clamp(g, -2.0, 2.0)), lin[i].w);
 }

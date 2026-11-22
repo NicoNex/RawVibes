@@ -17,6 +17,7 @@ pub mod lab;
 pub mod lut;
 pub mod makernote;
 pub mod matching;
+pub mod meta;
 pub mod noise;
 pub mod photo;
 pub mod preset;

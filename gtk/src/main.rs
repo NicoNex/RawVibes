@@ -2403,7 +2403,6 @@ struct Sidebar {
     /// What the Photo tab shows (develop, crop, vignette: not in the LUT) and the Grade tab (all in the LUT).
     photo: gtk::Box,
     grade: gtk::Box,
-    scroll: gtk::ScrolledWindow,
     sliders: Vec<(Slider, Field)>,
     wheels: Vec<(ColorWheel, Slider)>,
     hue: [Slider; 3],
@@ -2420,7 +2419,9 @@ struct Sidebar {
     look_blend_toggle: adw::ToggleGroup,
     profile_sel: gtk::DropDown,
     /// The LUT browser, revealed under the look stack.
-    browse: gtk::Revealer,
+    /// The LUT browser page, shown in place of the sections (`side_stack`).
+    browse: gtk::Box,
+    side_stack: gtk::Stack,
     browse_btn: gtk::ToggleButton,
     develop: DevelopUi,
     /// What the Metadata tab shows.
@@ -3113,8 +3114,20 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     buttons.append(&browse_btn);
     buttons.append(&from_file);
     look_box.append(&buttons);
-    let browse = gtk::Revealer::builder().transition_type(gtk::RevealerTransitionType::SlideDown).build();
-    look_box.append(&browse);
+    // The LUT browser: a page of its own in place of the sections, one scroll for the whole grid.
+    let browse = vbox(0);
+    let back = gtk::Button::builder()
+        .icon_name("go-previous-symbolic")
+        .tooltip_text(gettext("Back to the grade (B)"))
+        .css_classes(["flat"])
+        .build();
+    back.update_property(&[gtk::accessible::Property::Label(&gettext("Back to the grade"))]);
+    let snd = sender.clone();
+    back.connect_clicked(move |_| snd.input(Msg::Browse(false)));
+    let browse_head = gtk::Box::builder().spacing(6).margin_start(8).margin_end(8).margin_top(6).build();
+    browse_head.append(&back);
+    browse_head.append(&gtk::Label::builder().label(gettext("LUTs")).css_classes(["heading"]).build());
+    browse.append(&browse_head);
     look_box.append(&caption(&gettext("Applied after the grade, top to bottom, and included in the exported LUT.")));
     let luts_sec = eye_section(&gettext("LUTs"), &look_box, true, &[], sender, Off::Looks);
     // A grading workflow, top to bottom: the look to grade under, balance, primaries, secondaries,
@@ -3161,8 +3174,12 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         .vexpand(true)
         .css_classes(["sidebar-pane"])
         .build();
+    let side_stack =
+        gtk::Stack::builder().transition_type(gtk::StackTransitionType::SlideLeftRight).vexpand(true).build();
+    side_stack.add_named(&scroll, Some("sections"));
+    side_stack.add_named(&browse, Some("browser"));
     let body = vbox(0);
-    body.append(&scroll);
+    body.append(&side_stack);
     // The section tabs go above `body`, and the pinned scopes atop it.
     let pane = vbox(0);
     pane.add_css_class("sidebar-pane");
@@ -3189,7 +3206,6 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         pane,
         photo,
         grade,
-        scroll,
         sliders,
         wheels,
         hue,
@@ -3203,6 +3219,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         looks,
         look_blend,
         browse,
+        side_stack,
         browse_btn,
         develop,
         look_blend_toggle,
@@ -3526,9 +3543,7 @@ impl SimpleComponent for App {
             &gtk::ScrolledWindow::builder()
                 .hscrollbar_policy(gtk::PolicyType::Never)
                 .child(&flow)
-                .min_content_height(360)
-                .max_content_height(520)
-                .propagate_natural_height(true)
+                .vexpand(true)
                 .build(),
             Some("grid"),
         );
@@ -3538,21 +3553,16 @@ impl SimpleComponent for App {
         gallery.append(&search);
         gallery.append(&gallery_stack);
 
-        sidebar.browse.set_child(Some(&gallery));
-        // Once revealed: the sidebar scrolls to the browser and the grid takes the
-        // keyboard, so arrows browse at once.
-        let (f, btn, scroll) = (flow.clone(), sidebar.browse_btn.clone(), sidebar.scroll.clone());
-        sidebar.browse.connect_child_revealed_notify(move |browse| {
-            if !browse.is_child_revealed() {
+        gallery.set_vexpand(true);
+        gallery_stack.set_vexpand(true);
+        sidebar.browse.append(&gallery);
+        // Once shown, the grid takes the keyboard, so arrows browse at once (Ctrl+F's search keeps it).
+        let (f, browse) = (flow.clone(), sidebar.browse.clone());
+        sidebar.side_stack.connect_visible_child_name_notify(move |st| {
+            if st.visible_child_name().as_deref() != Some("browser") {
                 return;
             }
-            // The viewport's coordinates are those of what is visible: add the current offset.
-            if let Some(p) = scroll.child().and_then(|c| btn.compute_point(&c, &gtk::graphene::Point::zero())) {
-                let adj = scroll.vadjustment();
-                adj.set_value(adj.value() + p.y() as f64 - 12.0);
-            }
-            // Ctrl+F put the focus in the search entry: leave it there.
-            let inside = browse.root().and_then(|r| r.focus()).is_some_and(|f| f.is_ancestor(browse));
+            let inside = browse.root().and_then(|r| r.focus()).is_some_and(|f| f.is_ancestor(&browse));
             if !inside {
                 f.child_at_index(0).map_or_else(|| f.grab_focus(), |c| c.grab_focus());
             }
@@ -3573,8 +3583,13 @@ impl SimpleComponent for App {
         let snd = sender.clone();
         let (split, photo, grade, meta) =
             (grade_split.clone(), sidebar.photo.clone(), sidebar.grade.clone(), sidebar.meta.root.clone());
+        let browse_btn = sidebar.browse_btn.clone();
         stack.connect_visible_child_name_notify(move |s| {
             let name = s.visible_child_name();
+            // The browser belongs to the Grade tab: another tab closes it.
+            if name.as_deref() != Some("grade") {
+                browse_btn.set_active(false);
+            }
             if let Some(tab) = s.visible_child().and_downcast::<gtk::Box>().filter(|_| name.as_deref() != Some("lab"))
                 && split.parent().as_ref() != Some(tab.upcast_ref())
             {
@@ -5087,7 +5102,7 @@ impl SimpleComponent for App {
             }
             Msg::Browse(on) => {
                 self.browsing = on;
-                self.ui.sidebar.browse.set_reveal_child(on);
+                self.ui.sidebar.side_stack.set_visible_child_name(if on { "browser" } else { "sections" });
                 if self.ui.sidebar.browse_btn.is_active() != on {
                     self.ui.sidebar.browse_btn.set_active(on);
                 }
@@ -5171,6 +5186,8 @@ impl SimpleComponent for App {
                     sender.input(Msg::CropCancel);
                 } else if self.candidate.is_some() || self.preview_req.is_some() {
                     self.clear_selection();
+                } else if self.browsing {
+                    sender.input(Msg::Browse(false));
                 }
             }
             Msg::Profile(profile) => {

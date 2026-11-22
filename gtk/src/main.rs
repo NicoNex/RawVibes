@@ -2143,8 +2143,8 @@ const CSS: &str = r#"
 .sidebar-pane { background-color: var(--sidebar-bg-color); }
 .section { padding: 4px 8px 10px 8px; }
 .section.collapsed { padding-bottom: 4px; }
-.sidebar-handle { padding: 12px 3px; }
-.sidebar-handle > box { min-width: 5px; border-radius: 4px; background-color: alpha(@borders, 0.7); transition: background-color 150ms ease; }
+.sidebar-handle { padding: 0 3px; }
+.sidebar-handle > box { min-width: 4px; min-height: 36px; border-radius: 2px; background-color: alpha(@borders, 0.7); transition: background-color 150ms ease; }
 .sidebar-handle:hover > box, .sidebar-handle.dragging > box { background-color: @accent_bg_color; }
 .section-header { padding: 6px 6px; margin-bottom: 2px; border-radius: 8px; }
 .slider-row { margin: 2px 4px 0 4px; }
@@ -3206,7 +3206,7 @@ impl SimpleComponent for App {
         // The sidebar's left edge drags to resize it; the width is remembered.
         // A visible pill in a wider grab area, as in RapidRAW.
         let handle = gtk::Box::builder().css_classes(["sidebar-handle"]).tooltip_text(gettext("Drag to resize")).build();
-        handle.append(&gtk::Box::builder().vexpand(true).build());
+        handle.append(&gtk::Box::builder().valign(gtk::Align::Center).build());
         handle.set_cursor_from_name(Some("col-resize"));
         handle.update_property(&[gtk::accessible::Property::Label(&gettext("Resize the sidebar"))]);
         let side = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -3223,18 +3223,17 @@ impl SimpleComponent for App {
             .sidebar(&side)
             .build();
         let drag = gtk::GestureDrag::new();
-        let (split, start) = (grade_split.clone(), Rc::new(Cell::new(0.0)));
-        let s = start.clone();
-        let sd = side.clone();
-        let h = handle.clone();
-        drag.connect_drag_begin(move |_, _, _| {
-            s.set(sd.width() as f64);
-            h.add_css_class("dragging");
-        });
-        let sp = split.clone();
-        drag.connect_drag_update(move |_, dx, _| {
-            // The sidebar is on the right: dragging its edge left widens it.
-            let w = clamp_sidebar(start.get() - dx);
+        let (split, h) = (grade_split.clone(), handle.clone());
+        drag.connect_drag_begin(move |_, _, _| h.add_css_class("dragging"));
+        let (sp, h) = (split.clone(), handle.clone());
+        drag.connect_drag_update(move |g, _, _| {
+            // From the pointer's place in the split view, not the offset from the handle:
+            // the handle moves with the width, and an offset from it would feed back (flicker).
+            let Some(at) = g.point(None).and_then(|(x, y)| h.compute_point(&sp, &gtk::graphene::Point::new(x as f32, y as f32)))
+            else {
+                return;
+            };
+            let w = clamp_sidebar(sp.width() as f64 - at.x() as f64);
             sp.set_min_sidebar_width(w);
             sp.set_max_sidebar_width(w);
         });

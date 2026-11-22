@@ -61,10 +61,11 @@ int main(void) {
             printf("%s{\"camera\":\"%s\",\"lens\":\"%s\",\"camera_crop\":%g,\"w\":%d,\"h\":%d,\"focal\":%g,\"aperture\":%g,\"distance\":%g,"
                    "\"flags\":%d,\"dist\":{\"model\":\"%s\",\"k\":[%.9g,%.9g,%.9g]},"
                    "\"tca\":{\"model\":\"%s\",\"k\":[%.9g,%.9g,%.9g,%.9g,%.9g,%.9g]},\"vig\":[%.9g,%.9g,%.9g],"
-                   "\"autoscale\":%.9g,\"points\":[",
+                   "\"autoscale\":%.9g,\"focal_range\":[%g,%g],\"points\":[",
                    first ? "" : ",\n", k->cam_model, k->lens_model, crop, w, h, k->focal, k->aperture, k->distance, flags,
                    dist_model(d.Model), d.Terms[0], d.Terms[1], d.Terms[2], tca_model(t.Model), t.Terms[0], t.Terms[1],
-                   t.Terms[2], t.Terms[3], t.Terms[4], t.Terms[5], v.Terms[0], v.Terms[1], v.Terms[2], scale);
+                   t.Terms[2], t.Terms[3], t.Terms[4], t.Terms[5], v.Terms[0], v.Terms[1], v.Terms[2], scale,
+                   lens->MinFocal, lens->MaxFocal);
             first = 0;
             float xs[] = {0, w * 0.25f, w * 0.5f, w - 1.0f}, ys[] = {0, h * 0.5f, h - 1.0f, h * 0.8f};
             int n = 0;

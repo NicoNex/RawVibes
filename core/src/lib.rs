@@ -14,6 +14,7 @@ pub mod gpu;
 pub mod grade;
 pub mod histmatch;
 pub mod lab;
+pub mod lensdb;
 pub mod lut;
 pub mod makernote;
 pub mod matching;

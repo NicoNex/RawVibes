@@ -9,6 +9,7 @@ rectilinear with aspect ratio 1.5 unless it says otherwise; TCA terms start at 1
 """
 
 import json
+import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -35,6 +36,43 @@ def aspect(s):
         a, b = s.split(":", 1)
         return num(a) / num(b, 1.0)
     return num(s, 1.5)
+
+
+# lensfun's lens name patterns (lens.cpp lens_name_regex): groups for min focal, max focal, min aperture.
+NAME_PATTERNS = [
+    (re.compile(r"(\s+|^)([0-9]+[0-9.]*)(-[0-9]+[0-9.]*)?(mm)?\s+(f/|f|1/|1:)?([0-9.]+)(-[0-9.]+)?", re.I), (2, 3, 6)),
+    (re.compile(r"\s+1:([0-9.]+)(-[0-9.]+)?\s+([0-9.]+)(-[0-9.]+)?(mm)?", re.I), (3, 4, 1)),
+    (re.compile(r"([0-9.]+)(-[0-9.]+)?\s*/\s*([0-9.]+)(-[0-9.]+)?", re.I), (3, 4, 1)),
+]
+SKIP_NAMES = ("adapter", "reducer", "booster", "extender", "converter")
+
+
+def focal_range(lens_el, model, dist, tca, vig, real):
+    """lensfun's lfLens::GuessParameters for MinFocal/MaxFocal (what vignetting interpolation scales by)."""
+    f = lens_el.find("focal")
+    lo = hi = 0.0
+    if f is not None:
+        lo = num(f.get("min", f.get("value")))
+        hi = num(f.get("max", f.get("value")))
+    if lo and hi:
+        return [lo, hi]
+    minf, maxf = float(2**31 - 1), float(-(2**31))
+    if not any(w in model for w in SKIP_NAMES):
+        for rx, (a, b, _) in NAME_PATTERNS:
+            m = rx.search(model)
+            if m:
+                if m.group(a) is not None:
+                    minf = num(m.group(a).lstrip("-"))
+                if m.group(b) is not None:
+                    maxf = num(m.group(b).lstrip("-"))
+                break
+    for x in dist + tca + vig:
+        minf, maxf = min(minf, x["focal"]), max(maxf, x["focal"])
+    for focal, _ in real:
+        minf, maxf = min(minf, focal), max(maxf, focal)
+    lo = lo or (minf if minf != float(2**31 - 1) else 0.0)
+    hi = hi or (maxf if maxf != float(-(2**31)) else 0.0)
+    return [lo, hi or lo]
 
 
 def calibration(lens_el):
@@ -102,6 +140,7 @@ def convert(xml_dir, only=None):
                 "tca": tca,
                 "vig": vig,
                 "real_focal": real,
+                "focal": focal_range(l, model, dist, tca, vig, real),
             })
     return db
 

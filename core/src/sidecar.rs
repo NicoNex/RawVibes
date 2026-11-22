@@ -41,6 +41,18 @@ pub struct Sidecar {
     /// Sections switched off with their eye toggle.
     pub off: Vec<Off>,
     pub meta: Meta,
+    /// The lens profile chosen by hand; `None` = found from the EXIF.
+    pub lens_profile: Option<LensChoice>,
+}
+
+/// A lens profile picked in the Lens section, with the focal length and aperture a manual lens
+/// does not record. Empty maker and model: no profile at all.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LensChoice {
+    pub maker: String,
+    pub model: String,
+    pub focal: f32,
+    pub aperture: f32,
 }
 
 /// The photo's own metadata, written into its exports; empty fields take the Preferences' defaults.
@@ -121,6 +133,8 @@ struct File {
     off: Vec<Off>,
     #[serde(default)]
     meta: Meta,
+    #[serde(default)]
+    lens_profile: Option<LensChoice>,
 }
 
 /// Where the sidecar of `photo` lives.
@@ -165,6 +179,7 @@ impl Sidecar {
             profile: self.profile,
             off: self.off.clone(),
             meta: self.meta.clone(),
+            lens_profile: self.lens_profile.clone(),
         };
         serde_json::to_string_pretty(&file).expect("sidecars always serialise")
     }
@@ -218,6 +233,7 @@ impl Sidecar {
             profile: f.profile,
             off: f.off,
             meta: f.meta,
+            lens_profile: f.lens_profile,
             rating: f.rating.min(5),
             label: f.label,
         })
@@ -247,6 +263,12 @@ mod tests {
             profile: Some(Profile::VLog),
             off: vec![Off::Grade(Stage::Tone), Off::Develop(DevPart::Noise), Off::Looks, Off::Crop],
             meta: Meta { title: "Alba".into(), keywords: vec!["mare".into(), "luce".into()], ..Default::default() },
+            lens_profile: Some(LensChoice {
+                maker: "Zenit".into(),
+                model: "Helios 44-2".into(),
+                focal: 58.0,
+                aperture: 2.0,
+            }),
         }
     }
 
@@ -312,6 +334,10 @@ mod tests {
         assert_eq!(s.develop.detail, crate::develop::Detail::default());
         assert_eq!(s.develop.exposure, 0.3);
         assert_eq!(s.meta, Meta::default());
+        // No lens choice: automatic; manual corrections neutral, profile amounts full.
+        assert_eq!(s.lens_profile, None);
+        let d = s.develop.detail;
+        assert_eq!((d.lens_distortion, d.lens_ca_red, d.lens_dist_amount, d.lens_tca), (0.0, 0.0, 100.0, true));
     }
 
     #[test]

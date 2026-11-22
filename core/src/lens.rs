@@ -56,6 +56,26 @@ impl Default for Correction {
     }
 }
 
+/// A photo's lens profile: what of the lens and its calibration the correction needs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Profile {
+    /// Crop factor of the calibration camera, the lens's aspect ratio and optical centre offset.
+    pub crop: f32,
+    pub aspect: f32,
+    pub center: [f32; 2],
+    /// Crop factor of the camera the photo was taken with.
+    pub camera_crop: f32,
+    pub calib: Calib,
+}
+
+impl Profile {
+    /// `lens` at `calib` on a camera of `camera_crop` (the lens's own when the camera is unknown).
+    pub fn new(lens: &Lens, calib: Calib, camera_crop: Option<f32>) -> Profile {
+        let camera_crop = camera_crop.filter(|c| *c > 0.0).unwrap_or(lens.crop);
+        Profile { crop: lens.crop, aspect: lens.aspect, center: lens.center, camera_crop, calib }
+    }
+}
+
 /// A lens's calibration for a photo; `None` without a focal length (a manual lens nobody told
 /// us about: no guessing). Unknown aperture means no vignetting; unknown distance is far (1000 m).
 pub fn calib_at(lens: &Lens, focal: f32, aperture: f32, distance: f32) -> Option<Calib> {
@@ -67,25 +87,19 @@ pub fn calib_at(lens: &Lens, focal: f32, aperture: f32, distance: f32) -> Option
     Some(Calib { vig: c.vig.filter(|_| aperture > 0.0), ..c })
 }
 
-/// The correction of a `sensor`-sized RAW: `profile` (the lens and its calibration) on a camera
-/// of `camera_crop` (the lens's own crop when the camera is unknown), and the manual settings in `d`.
-pub fn correction(
-    profile: Option<(&Lens, &Calib)>,
-    d: &Detail,
-    sensor: (u32, u32),
-    camera_crop: Option<f32>,
-) -> Correction {
+/// The correction of a `sensor`-sized RAW: its lens `profile` and the settings in `d`.
+pub fn correction(profile: Option<&Profile>, d: &Detail, sensor: (u32, u32)) -> Correction {
     // lfModifier's constructor: sizes measured between pixel centres, r = 1 at half the short
     // side scaled from the calibration sensor to this one.
     let (wf, hf) = ((sensor.0.max(2) - 1) as f32, (sensor.1.max(2) - 1) as f32);
     let size = wf.min(hf);
     let image_aspect = wf.max(hf) / size;
     // Without a profile the manual corrections use lensfun's defaults (3:2, crop 1).
-    let (cal_crop, aspect, lc) = profile.map_or((1.0, 1.5, [0.0; 2]), |(l, _)| (l.crop, l.aspect, l.center));
-    let crop = camera_crop.filter(|c| *c > 0.0).unwrap_or(cal_crop);
+    let (cal_crop, aspect, lc, crop) =
+        profile.map_or((1.0, 1.5, [0.0; 2], 1.0), |p| (p.crop, p.aspect, p.center, p.camera_crop));
     let aspect_corr = (aspect * aspect + 1.0).sqrt();
     let coord = 1.0 / (image_aspect * image_aspect + 1.0).sqrt() * cal_crop / crop * aspect_corr;
-    let calib = profile.map(|(_, c)| *c).unwrap_or_default();
+    let calib = profile.map(|p| p.calib).unwrap_or_default();
     let (dist_model, dist) = match calib.dist {
         // At amount 0 there is no distortion to correct (nor any auto-scale margin to add).
         Some((m, k)) if d.lens_dist_amount > 0.0 => {
@@ -157,8 +171,9 @@ impl Correction {
         let [k1, k2, k3] = self.vig;
         let profile = 1.0 / (1.0 + k1 * r2 + k2 * r2 * r2 + k3 * r2 * r2 * r2);
         // The manual gain RawVibes always had: 1 + a·r²(1 + r²), r = 1 at the sensor's corners.
+        // `s` is a pixel centre: the sensor's middle is at (size − 1) / 2.
         let half = [self.size[0] / 2.0, self.size[1] / 2.0];
-        let (dx, dy) = (s[0] - half[0], s[1] - half[1]);
+        let (dx, dy) = (s[0] + 0.5 - half[0], s[1] + 0.5 - half[1]);
         let r2 = (dx * dx + dy * dy) / (half[0] * half[0] + half[1] * half[1]) * self.manual_mid;
         let v = self.manual_vig.abs() * r2 * (1.0 + r2);
         profile * if self.manual_vig >= 0.0 { 1.0 + v } else { 1.0 / (1.0 + v) }
@@ -285,7 +300,7 @@ mod tests {
             // lensfun's reference ran without the auto-scale.
             let c = Correction {
                 scale: 1.0,
-                ..correction(Some((&lens, &calib)), &Detail::default(), (r.w, r.h), Some(r.camera_crop))
+                ..correction(Some(&Profile::new(&lens, calib, Some(r.camera_crop))), &Detail::default(), (r.w, r.h))
             };
             for pt in &r.points {
                 for ch in 0..3 {
@@ -301,7 +316,7 @@ mod tests {
     #[test]
     fn gain_matches_lensfun() {
         for (lens, calib, r) in cases() {
-            let c = correction(Some((&lens, &calib)), &Detail::default(), (r.w, r.h), Some(r.camera_crop));
+            let c = correction(Some(&Profile::new(&lens, calib, Some(r.camera_crop))), &Detail::default(), (r.w, r.h));
             for pt in &r.points {
                 let g = c.gain(pt.p);
                 assert!((g - pt.gain).abs() <= 1e-4 * pt.gain, "{} {:?}: {g} vs {}", r.lens, pt.p, pt.gain);
@@ -312,7 +327,7 @@ mod tests {
     #[test]
     fn autoscale_matches_lensfun() {
         for (lens, calib, r) in cases() {
-            let c = correction(Some((&lens, &calib)), &Detail::default(), (r.w, r.h), Some(r.camera_crop));
+            let c = correction(Some(&Profile::new(&lens, calib, Some(r.camera_crop))), &Detail::default(), (r.w, r.h));
             assert!(
                 (c.scale - r.autoscale).abs() <= 1e-4 * r.autoscale,
                 "{} {}x{}: {} vs {}",
@@ -337,8 +352,8 @@ mod tests {
     fn unknown_camera_uses_the_lens_crop() {
         for (lens, calib, r) in cases() {
             let d = Detail::default();
-            let a = correction(Some((&lens, &calib)), &d, (r.w, r.h), None);
-            let b = correction(Some((&lens, &calib)), &d, (r.w, r.h), Some(lens.crop));
+            let a = correction(Some(&Profile::new(&lens, calib, None)), &d, (r.w, r.h));
+            let b = correction(Some(&Profile::new(&lens, calib, Some(lens.crop))), &d, (r.w, r.h));
             assert_eq!(a, b, "{}", r.lens);
         }
     }
@@ -347,8 +362,8 @@ mod tests {
     fn portrait_matches_landscape() {
         let (lens, calib, _) = cases().remove(0);
         let d = Detail::default();
-        let wide = correction(Some((&lens, &calib)), &d, (6000, 4000), Some(1.0));
-        let tall = correction(Some((&lens, &calib)), &d, (4000, 6000), Some(1.0));
+        let wide = correction(Some(&Profile::new(&lens, calib, Some(1.0))), &d, (6000, 4000));
+        let tall = correction(Some(&Profile::new(&lens, calib, Some(1.0))), &d, (4000, 6000));
         for p in [[0.0, 0.0], [1500.0, 3000.0], [5999.0, 10.0]] {
             let (a, b) = (wide.source(p, 0), tall.source([p[1], p[0]], 0));
             assert!((a[0] - b[1]).abs() < 1e-2 && (a[1] - b[0]).abs() < 1e-2, "{p:?}: {a:?} {b:?}");
@@ -362,7 +377,7 @@ mod tests {
             assert!((0..3).all(|ch| c.source(p, ch) == p));
             assert_eq!(c.gain(p), 1.0);
         }
-        let none = correction(None, &Detail::default(), (6000, 4000), None);
+        let none = correction(None, &Detail::default(), (6000, 4000));
         assert!(
             (0..3).all(|ch| none.source([10.0, 20.0], ch).iter().zip([10.0, 20.0]).all(|(a, b)| (a - b).abs() < 1e-3))
         );
@@ -373,18 +388,18 @@ mod tests {
     fn manual_distortion_sign() {
         // Positive distortion corrects barrel: a corner's source moves towards the centre.
         let d = Detail { lens_distortion: 50.0, ..Detail::default() };
-        let c = Correction { scale: 1.0, ..correction(None, &d, (6000, 4000), None) };
+        let c = Correction { scale: 1.0, ..correction(None, &d, (6000, 4000)) };
         let s = c.source([0.0, 0.0], 1);
         assert!(s[0] > 0.0 && s[1] > 0.0, "{s:?}");
         // And the auto-scale keeps the frame full.
-        assert!(correction(None, &Detail { lens_distortion: -50.0, ..d }, (6000, 4000), None).scale > 1.0);
+        assert!(correction(None, &Detail { lens_distortion: -50.0, ..d }, (6000, 4000)).scale > 1.0);
     }
 
     #[test]
     fn amount_zero_is_identity() {
         for (lens, calib, r) in cases() {
             let d = Detail { lens_dist_amount: 0.0, lens_vig_amount: 0.0, lens_tca: false, ..Detail::default() };
-            let c = correction(Some((&lens, &calib)), &d, (r.w, r.h), Some(r.camera_crop));
+            let c = correction(Some(&Profile::new(&lens, calib, Some(r.camera_crop))), &d, (r.w, r.h));
             for pt in &r.points {
                 assert!(
                     (0..3).all(|ch| c.source(pt.p, ch).iter().zip(pt.p).all(|(a, b)| (a - b).abs() < 1e-2)),

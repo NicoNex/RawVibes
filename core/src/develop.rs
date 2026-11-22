@@ -37,7 +37,7 @@ impl DevPart {
             Self::Noise => (x.nr_luma, x.nr_chroma, x.nr_ai) = (n.nr_luma, n.nr_chroma, n.nr_ai),
             Self::Presence => (x.dehaze, x.local_contrast) = (n.dehaze, n.local_contrast),
             Self::Detail => (x.sharpen, x.usm) = (n.sharpen, n.usm),
-            // The profile's correction too: `lens` is what the shader applies.
+            // The profile too: without it only the manual corrections are left, and they are neutral.
             Self::Lens => {
                 (x.lens_vignette, x.ca_correct, x.lens) = (n.lens_vignette, n.ca_correct, n.lens);
                 (x.defringe, x.defringe_green) = (n.defringe, n.defringe_green);
@@ -102,9 +102,9 @@ pub struct Detail {
     pub lens_vignette_mid: f32,
     pub lens_ca_red: f32,
     pub lens_ca_blue: f32,
-    /// The correction these make with the photo's lens profile: worked out by the app, never saved.
+    /// The photo's lens profile (found by the app from its EXIF or the user's choice), never saved.
     #[serde(skip)]
-    pub lens: crate::lens::Correction,
+    pub lens: Option<crate::lens::Profile>,
 }
 
 impl Detail {
@@ -196,7 +196,7 @@ impl Default for Detail {
             lens_vignette_mid: 0.0,
             lens_ca_red: 0.0,
             lens_ca_blue: 0.0,
-            lens: crate::lens::Correction::default(),
+            lens: None,
         }
     }
 }

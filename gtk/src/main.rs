@@ -51,7 +51,7 @@ use rawvibes_core::preset::{self, Preset};
 use rawvibes_core::profiles::Profile;
 use rawvibes_core::raw::{RawData, read_raw};
 use rawvibes_core::scopes::{HIST_H, HIST_W, Scopes, VEC_SIZE};
-use rawvibes_core::sidecar::{Label, LookRef, Meta, Off, Sidecar};
+use rawvibes_core::sidecar::{Label, LensChoice, LookRef, Meta, Off, Sidecar};
 use rawvibes_core::view::{Region, Zoom};
 use relm4::adw::prelude::*;
 use relm4::gtk::{gdk, gio, glib};
@@ -484,6 +484,8 @@ struct App {
     off: Vec<Off>,
     /// The open photo's own metadata (title, keywords, rights…).
     meta: Meta,
+    /// The lens profile picked by hand for the open photo (`None`: from its EXIF).
+    lens_profile: Option<LensChoice>,
     /// What a photo's camera recorded, and which photo: it arrives before that photo is open.
     source_meta: Option<(PathBuf, Arc<RawMetadata>)>,
     /// The LUT browser is open (its thumbnails follow the grade).
@@ -711,6 +713,7 @@ impl App {
             profile,
             off,
             meta,
+            lens_profile: self.lens_profile.clone(),
         }
     }
 
@@ -983,6 +986,7 @@ impl App {
     /// The photo's sidecar into the editor, onto a neutral grade without looks.
     fn restore_sidecar(&mut self, sc: Sidecar, sender: &ComponentSender<Self>) {
         (self.rating, self.label, self.meta) = (sc.rating, sc.label, sc.meta);
+        self.lens_profile = sc.lens_profile;
         self.set_offs(&sc.off);
         if let Some(p) = sc.profile {
             // Set now, so the state read back matches; the dropdown's Msg::Profile echo re-encodes.
@@ -1902,6 +1906,8 @@ fn pasted(clip: &Sidecar, target: &Sidecar) -> Sidecar {
         profile: target.profile,
         off,
         meta: target.meta.clone(),
+        // The lens, like the crop, belongs to the photo pasted onto.
+        lens_profile: target.lens_profile.clone(),
         ..clip.clone()
     }
 }
@@ -3871,6 +3877,7 @@ impl SimpleComponent for App {
             looks: Vec::new(),
             off: Vec::new(),
             meta: Meta::default(),
+            lens_profile: None,
             source_meta: None,
             browsing: false,
             candidate: None,
@@ -4264,6 +4271,7 @@ impl SimpleComponent for App {
                 self.path = Some(path);
                 self.develop = Develop::default();
                 (self.rating, self.label, self.meta) = (0, Label::None, Meta::default());
+                self.lens_profile = None;
                 self.drafting = false;
                 self.sync_develop();
                 let path = self.path.clone().expect("set above");

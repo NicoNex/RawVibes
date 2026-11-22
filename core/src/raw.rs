@@ -314,7 +314,7 @@ pub struct Pipelines {
     /// Open while a develop records: its passes and copies go out in one submission.
     pub(crate) batch: std::cell::RefCell<Option<wgpu::CommandEncoder>>,
     /// What the airlight in `air` was measured from (photo, gains, exposure, lens, AI blend).
-    air_key: std::cell::RefCell<Option<(u64, [f32; 6])>>,
+    air_key: std::cell::RefCell<Option<(u64, Vec<f32>)>>,
 }
 
 impl Pipelines {
@@ -452,6 +452,15 @@ struct DevelopParams {
     /// Weight of the AI chain over the classic one.
     ai: f32,
     _pad: [u32; 3],
+    /// Lens correction (`lens::Correction`): [norm, centre x, centre y, scale],
+    /// [manual k, distortion model, TCA model, vignetting norm], distortion terms (+ manual
+    /// vignetting midpoint), TCA terms vr vb cr cb, br bb and manual CA red/blue, vignetting terms.
+    lens_a: [f32; 4],
+    lens_b: [f32; 4],
+    lens_dist: [f32; 4],
+    lens_tca0: [f32; 4],
+    lens_tca1: [f32; 4],
+    lens_vig: [f32; 4],
 }
 
 /// `DevelopParams` of `r` at `w` × `h` with `margin`, and the mip level it samples:
@@ -472,6 +481,7 @@ fn develop_params(
     let ((_, kw, kh), (fw, fh)) = (&raw.levels[k], raw.size());
     let target = if profile.is_log() { profile.from_rec2020() } else { rec2020_to_rec709() };
     let gains = raw.camera.gains_for(dev);
+    let c = crate::lens::correction(dev.detail.lens.as_ref(), &dev.detail, (fw, fh));
     let params = DevelopParams {
         sizes: [w, h, *kw, *kh, fw, fh, raw.orientation as u32, profile.is_log() as u32],
         region: [r.center[0], r.center[1], sx, sy],
@@ -480,11 +490,17 @@ fn develop_params(
         cam: rows(raw.camera.cam2rec2020),
         target: rows(target),
         k: RAW_TO_SCENE * dev.exposure.exp2(),
-        lens: dev.detail.lens_vignette / 100.0,
+        lens: c.manual_vig,
         margin,
         lin_w: w + 2 * margin,
         ai: if raw.ai_active(&dev.detail) { dev.detail.nr_ai_strength / 100.0 } else { 0.0 },
         _pad: [0; 3],
+        lens_a: [c.norm, c.center[0], c.center[1], c.scale],
+        lens_b: [c.manual_k, c.dist_model as f32, c.tca_model as f32, c.vig_norm],
+        lens_dist: [c.dist[0], c.dist[1], c.dist[2], c.manual_mid],
+        lens_tca0: [c.tca[0], c.tca[1], c.tca[2], c.tca[3]],
+        lens_tca1: [c.tca[4], c.tca[5], c.ca[0], c.ca[1]],
+        lens_vig: [c.vig[0], c.vig[1], c.vig[2], 0.0],
     };
     (params, k)
 }
@@ -811,7 +827,12 @@ impl Gpu {
 
         // Slow stages are cached with everything upstream of them.
         let mut key = vec![r.center[0], r.center[1], r.size[0], r.size[1], r.angle, w as f32, h as f32];
-        key.extend([k as f32, gains[0], gains[1], gains[2], exposure, d.lens_vignette, margin as f32, params.ai]);
+        key.extend([k as f32, gains[0], gains[1], gains[2], exposure, margin as f32, params.ai, params.lens]);
+        // Every lens correction moves or scales what the later stages see.
+        key.extend(
+            [params.lens_a, params.lens_b, params.lens_dist, params.lens_tca0, params.lens_tca1, params.lens_vig]
+                .concat(),
+        );
         key.extend([d.nr_luma, d.nr_chroma, d.nr_detail]);
         let nr_key = (raw.id, key.clone());
         key.extend([d.defringe, d.defringe_green, d.dehaze]);
@@ -943,10 +964,13 @@ impl Gpu {
         let (w, h) = crate::photo::Decoded::fit_size(&whole, AIR_SIZE);
         let (params, k) = develop_params(raw, &whole, w, h, dev, profile, 0);
         let g = params.gains;
-        let key = (raw.id, [g[0], g[1], g[2], dev.exposure, dev.detail.lens_vignette, params.ai]);
-        if self.raw.air_key.replace(Some(key)) == Some(key) {
+        let p = &params;
+        let lens = [p.lens_a, p.lens_b, p.lens_dist, p.lens_tca0, p.lens_tca1, p.lens_vig].concat();
+        let key = (raw.id, [&[g[0], g[1], g[2], dev.exposure, p.lens, params.ai][..], &lens].concat());
+        if self.raw.air_key.borrow().as_ref() == Some(&key) {
             return;
         }
+        *self.raw.air_key.borrow_mut() = Some(key);
         let (params, lin) = (
             self.storage(bytemuck::bytes_of(&params)),
             self.buffer(w as u64 * h as u64 * 16, wgpu::BufferUsages::empty()),
@@ -1679,6 +1703,59 @@ mod tests {
         assert!(at(&flat_lens(&gpu, -50.0), 0, 0) < centre - 0.01);
         // V-Log encodes linear 0 as 0.125: the strongest darkening keeps the corners above black.
         assert!(at(&flat_lens(&gpu, -100.0), 0, 0) > 0.13);
+    }
+
+    /// The GPU's lens correction is lens.rs's: a linear colour ramp developed through a real
+    /// profile (+ manual distortion and CA) equals the ramp the CPU resampled through
+    /// `Correction::source` and `gain`, developed without one.
+    #[test]
+    fn gpu_lens_matches_cpu() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let db = crate::lensdb::Db::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/lensfun-mini.json"),
+        )
+        .unwrap();
+        let lens = db.lenses.iter().find(|l| l.model == "Canon EF 16-35mm f/2.8L USM").unwrap();
+        let calib = crate::lens::calib_at(lens, 16.0, 4.0, 1000.0).unwrap();
+        let (w, h) = (120u32, 80u32);
+        let ramp = |q: [f32; 2]| {
+            [0.1 + 0.6 * q[0] / w as f32, 0.1 + 0.6 * q[1] / h as f32, 0.1 + 0.3 * (q[0] + q[1]) / (w + h) as f32]
+        };
+        let detail = Detail {
+            lens: Some(crate::lens::Profile::new(lens, calib, Some(1.0))),
+            lens_distortion: 20.0,
+            lens_ca_red: 60.0,
+            lens_ca_blue: -40.0,
+            ..Detail::default()
+        };
+        let c = crate::lens::correction(detail.lens.as_ref(), &detail, (w, h));
+        let pixels: Vec<[f32; 3]> = (0..w * h).map(|i| ramp([(i % w) as f32, (i / w) as f32])).collect();
+        let corrected = rgb_raw(&gpu, w, h, pixels, 1, Camera::neutral());
+        let resampled: Vec<[f32; 3]> = (0..w * h)
+            .map(|i| {
+                let p = [(i % w) as f32, (i / w) as f32];
+                let g = c.source(p, 1);
+                [ramp(c.source(p, 0))[0], ramp(g)[1], ramp(c.source(p, 2))[2]].map(|v| v * c.gain(g))
+            })
+            .collect();
+        let plain = rgb_raw(&gpu, w, h, resampled, 1, Camera::neutral());
+        let run = |raw: &GpuRaw, detail: Detail| {
+            let dev = Develop { detail, ..Develop::default() };
+            gpu.read_photo(&gpu.develop(raw, &whole(w, h), w, h, &dev, Profile::VLog).unwrap()).pixels
+        };
+        let (a, b) = (run(&corrected, detail), run(&plain, Detail::default()));
+        let inside = |q: [f32; 2]| q[0] >= 1.0 && q[1] >= 1.0 && q[0] <= (w - 2) as f32 && q[1] <= (h - 2) as f32;
+        let mut checked = 0;
+        for i in 0..(w * h) as usize {
+            let p = [(i as u32 % w) as f32, (i as u32 / w) as f32];
+            if (0..3).all(|ch| inside(c.source(p, ch))) {
+                checked += 1;
+                assert!((0..3).all(|k| (a[i][k] - b[i][k]).abs() < 2e-4), "{p:?}: {:?} vs {:?}", a[i], b[i]);
+            }
+        }
+        assert!(checked > (w * h) as usize / 2, "{checked}");
+        // And it does something: the corrected photo is not the uncorrected one.
+        assert_ne!(a, run(&corrected, Detail::default()));
     }
 
     const NOISE: crate::noise::NoiseModel = crate::noise::NoiseModel { a: 0.002, b: 0.0002 };

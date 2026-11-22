@@ -599,6 +599,13 @@ struct DevelopParams {
     lin_w: u32,
     // Weight of the AI-denoised chain (in `next`) over the classic one.
     ai: f32,
+    // Lens correction (lens.rs `Correction`, as raw.rs packs it).
+    lens_a: vec4<f32>,
+    lens_b: vec4<f32>,
+    lens_dist: vec4<f32>,
+    lens_tca0: vec4<f32>,
+    lens_tca1: vec4<f32>,
+    lens_vig: vec4<f32>,
 }
 
 @group(0) @binding(12) var<storage, read> d: DevelopParams;
@@ -672,6 +679,66 @@ fn gamut_compress(c: vec3<f32>) -> vec3<f32> {
     return max(vec3<f32>(y) + t * (c - vec3<f32>(y)), vec3<f32>(0.0));
 }
 
+/// Bilinear camera RGB at sensor pixel-centre position `q` (level 0 coordinates).
+fn sample_sensor(q: vec2<f32>) -> vec3<f32> {
+    let u = (q + 0.5) * vec2<f32>(f32(d.lw) / f32(d.fw), f32(d.lh) / f32(d.fh)) - 0.5;
+    let b = floor(u);
+    let f = u - b;
+    let x = i32(b.x);
+    let y = i32(b.y);
+    return mix(mix(texel(x, y), texel(x + 1, y), f.x), mix(texel(x, y + 1), texel(x + 1, y + 1), f.x), f.y);
+}
+
+/// lens.rs `Correction::warp`: manual distortion, then the profile's.
+fn lens_warp(q: vec2<f32>) -> vec2<f32> {
+    let m = q * (1.0 + d.lens_b.x * dot(q, q));
+    let ru2 = dot(m, m);
+    let k = d.lens_dist.xyz;
+    var f = 1.0;
+    let model = u32(d.lens_b.y);
+    if model == 1u {
+        f = 1.0 - k.x + k.x * ru2;
+    } else if model == 2u {
+        f = 1.0 + k.x * ru2 + k.y * ru2 * ru2;
+    } else if model == 3u {
+        let r = sqrt(ru2);
+        f = k.x * ru2 * r + k.y * ru2 + k.z * r + 1.0 - k.x - k.y - k.z;
+    }
+    return m * f;
+}
+
+/// lens.rs `Correction::source`: the sensor pixel channel `ch` samples for corrected pixel `p`.
+fn lens_source(p: vec2<f32>, ch: u32) -> vec2<f32> {
+    let c = d.lens_a.yz;
+    var q = lens_warp((p * d.lens_a.x - c) / d.lens_a.w);
+    if ch != 1u {
+        let b = select(0u, 1u, ch == 2u);
+        let model = u32(d.lens_b.z);
+        var f = 1.0;
+        if model == 1u {
+            f = d.lens_tca0[b];
+        } else if model == 2u {
+            let r2 = dot(q, q);
+            f = d.lens_tca1[b] * r2 + d.lens_tca0[2u + b] * sqrt(r2) + d.lens_tca0[b];
+        }
+        q *= f * d.lens_tca1[2u + b];
+    }
+    return (q + c) / d.lens_a.x;
+}
+
+/// lens.rs `Correction::gain`: the profile's de-vignetting times the manual gain.
+fn lens_gain(s: vec2<f32>) -> f32 {
+    let v = (s * d.lens_a.x - d.lens_a.yz) * d.lens_b.w;
+    let r2 = dot(v, v);
+    let k = d.lens_vig.xyz;
+    let profile = 1.0 / (1.0 + k.x * r2 + k.y * r2 * r2 + k.z * r2 * r2 * r2);
+    // 1 + a·r²(1 + r²), r = 1 at the sensor's corners; negative amounts divide by the mirrored gain.
+    let half = 0.5 * vec2<f32>(f32(d.fw), f32(d.fh));
+    let m = dot(s + 0.5 - half, s + 0.5 - half) / dot(half, half) * d.lens_dist.w;
+    let a = abs(d.lens) * m * (1.0 + m);
+    return profile * select(1.0 / (1.0 + a), 1.0 + a, d.lens >= 0.0);
+}
+
 @compute @workgroup_size(256)
 fn develop_linear(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec3<u32>,
                   @builtin(local_invocation_index) lid: u32) {
@@ -680,20 +747,16 @@ fn develop_linear(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups)
     let o = vec2<f32>(f32(i % d.lin_w), f32(i / d.lin_w)) - f32(d.margin);
     let dd = (o + 0.5 - 0.5 * vec2<f32>(f32(d.out_w), f32(d.out_h))) * d.region.zw;
     let r = vec2<f32>(d.rotation.y * dd.x - d.rotation.x * dd.y, d.rotation.x * dd.x + d.rotation.y * dd.y);
-    let s = sensor(d.region.xy + r);
-    let u = s * vec2<f32>(f32(d.lw) / f32(d.fw), f32(d.lh) / f32(d.fh)) - 0.5;
-    let b = floor(u);
-    let f = u - b;
-    let x = i32(b.x);
-    let y = i32(b.y);
-    let cam = mix(mix(texel(x, y), texel(x + 1, y), f.x), mix(texel(x, y + 1), texel(x + 1, y + 1), f.x), f.y);
-    // Lens vignetting: radial gain 1 + a·r²·(1 + r²), r = 1 at the sensor's corners;
-    // negative amounts divide by the mirrored gain, so corners darken without reaching zero.
-    let half = 0.5 * vec2<f32>(f32(d.fw), f32(d.fh));
-    let r2 = dot(s - half, s - half) / dot(half, half);
-    let v = abs(d.lens) * r2 * (1.0 + r2);
-    let lens = select(1.0 / (1.0 + v), 1.0 + v, d.lens >= 0.0);
-    lin[i] = vec4<f32>((cam * d.gains.xyz) * d.cam * (d.k * lens), 1.0);
+    // lensfun works at pixel centres: sensor pixel i spans [i, i + 1) here.
+    let p = sensor(d.region.xy + r) - 0.5;
+    let g = lens_source(p, 1u);
+    var cam = sample_sensor(g);
+    // Lateral CA: red and blue from their own corrected positions.
+    if d.lens_b.z != 0.0 || any(d.lens_tca1.zw != vec2<f32>(1.0)) {
+        cam.x = sample_sensor(lens_source(p, 0u)).x;
+        cam.z = sample_sensor(lens_source(p, 2u)).z;
+    }
+    lin[i] = vec4<f32>((cam * d.gains.xyz) * d.cam * (d.k * lens_gain(g)), 1.0);
 }
 
 @compute @workgroup_size(256)

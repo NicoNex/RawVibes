@@ -231,11 +231,31 @@ pub fn drag(start: Crop, h: Handle, d: [f32; 2], aspect: Option<f32>, img_w: u32
         }
         Crop { rect: [x0, y0, x1 - x0, y1 - y0], ..start }
     };
+    let fits = |c: &Crop| fits(c, img_w, img_h);
     if h == Move {
         let [x, y, w, hh] = start.rect;
-        return clamp(Crop { rect: [x + d[0], y + d[1], w, hh], ..start }, img_w, img_h);
+        let at = |m: [f32; 2]| Crop { rect: [x + m[0], y + m[1], w, hh], ..start };
+        if !fits(&start) {
+            return clamp(at(d), img_w, img_h);
+        }
+        // Each axis as far as it goes, so the crop slides along an edge instead of
+        // being pulled towards the centre; both orders, keeping the one nearer the pointer.
+        let slide = |first: usize| {
+            let mut m = [0.0; 2];
+            for a in [first, 1 - first] {
+                let reach = |t: f32| {
+                    let mut v = m;
+                    v[a] = d[a] * t;
+                    fits(&at(v))
+                };
+                m[a] = d[a] * if reach(1.0) { 1.0 } else { search(reach, true) };
+            }
+            m
+        };
+        let miss = |m: [f32; 2]| (m[0] - d[0]).hypot(m[1] - d[1]);
+        let (a, b) = (slide(0), slide(1));
+        return at(if miss(a) <= miss(b) { a } else { b });
     }
-    let fits = |c: &Crop| fits(c, img_w, img_h);
     if fits(&resized(1.0)) { resized(1.0) } else { resized(search(|t| fits(&resized(t)), true)) }
 }
 
@@ -305,6 +325,18 @@ mod tests {
         assert!((aspect(&c, 6000, 4000) - 1.5).abs() < 1e-3, "{c:?}");
         assert!((c.rect[0] - 0.2).abs() < 1e-5 && (c.rect[1] - 0.2).abs() < 1e-5, "{c:?}");
         assert!(c.rect[2] > 0.45, "{c:?}");
+    }
+
+    /// Pushed against an edge, the crop slides along it: the other axis keeps following the pointer.
+    #[test]
+    fn move_slides_along_the_edge() {
+        let start = Crop { rect: [0.3, 0.1, 0.4, 0.4], angle: 0.0 };
+        let c = drag(start, Handle::Move, [0.5, 0.1], None, 6000, 4000);
+        assert!((c.rect[0] - 0.6).abs() < 1e-4 && (c.rect[1] - 0.2).abs() < 1e-4, "{c:?}");
+        // Turned: still inside, still moved down as far as asked.
+        let start = Crop { rect: [0.3, 0.1, 0.3, 0.3], angle: 5.0 };
+        let c = drag(start, Handle::Move, [0.0, 0.1], None, 6000, 4000);
+        assert!(inside(&region(&c, 6000, 4000), 6000.0, 4000.0) && (c.rect[1] - 0.2).abs() < 1e-4, "{c:?}");
     }
 
     #[test]

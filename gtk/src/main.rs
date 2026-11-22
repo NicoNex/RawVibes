@@ -1777,10 +1777,14 @@ impl App {
                     );
                     // Shown with two looks, and while Mix is on so it can be switched back.
                     self.ui.sidebar.look_blend.set_visible(self.looks.len() > 1 || self.look_blend == Blend::Mix);
+                    self.ui.sidebar.applied_panel.set_visible(!self.looks.is_empty());
                     // Show where a LUT added from the browser went.
                     let last = self.ui.sidebar.looks.row_at_index(self.looks.len() as i32 - 1);
                     if let Some(row) = last.filter(|_| std::mem::take(&mut self.flash_new_look)) {
                         row.add_css_class("flash");
+                        // Under the grid the list scrolls: bring the new LUT into view once it is laid out.
+                        let adj = self.ui.sidebar.applied_dock.vadjustment();
+                        glib::idle_add_local_once(move || adj.set_value(adj.upper() - adj.page_size()));
                         glib::timeout_add_local_once(std::time::Duration::from_millis(900), move || {
                             row.remove_css_class("flash")
                         });
@@ -2448,6 +2452,11 @@ struct Sidebar {
     looks: gtk::ListBox,
     /// Chain / Mix of the looks, shown with two or more.
     look_blend: gtk::Box,
+    /// The look stack's widgets, moved between `look_box` and `applied_dock` by `Msg::Browse`.
+    applied: gtk::Box,
+    look_box: gtk::Box,
+    applied_dock: gtk::ScrolledWindow,
+    applied_panel: gtk::Box,
     look_blend_toggle: adw::ToggleGroup,
     profile_sel: gtk::DropDown,
     /// The LUT browser, revealed under the look stack.
@@ -3125,8 +3134,11 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     look_blend.set_visible(false);
     look_blend.append(&blend);
     look_blend.append(&hint);
-    look_box.append(&look_blend);
-    look_box.append(&looks);
+    // The applied LUTs: in this section, or under the grid while the browser is open (`Msg::Browse`).
+    let applied = vbox(8);
+    applied.append(&look_blend);
+    applied.append(&looks);
+    look_box.append(&applied);
     let browse_btn = gtk::ToggleButton::builder()
         .child(&adw::ButtonContent::builder().icon_name("view-grid-symbolic").label(gettext("Browse LUTs")).build())
         .tooltip_text(gettext("Browse the LUT library on this photo (B)"))
@@ -3160,6 +3172,20 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     browse_head.append(&back);
     browse_head.append(&gtk::Label::builder().label(gettext("LUTs")).css_classes(["heading"]).build());
     browse.append(&browse_head);
+    let applied_dock = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .propagate_natural_height(true)
+        .max_content_height(320)
+        .margin_start(8)
+        .margin_end(8)
+        .margin_top(6)
+        .margin_bottom(8)
+        .build();
+    // Hidden while the photo has no LUTs, so the grid keeps the whole page.
+    let applied_panel = vbox(0);
+    applied_panel.set_visible(false);
+    applied_panel.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    applied_panel.append(&applied_dock);
     look_box.append(&caption(&gettext("Applied after the grade, top to bottom, and included in the exported LUT.")));
     let luts_sec = eye_section(&gettext("LUTs"), &look_box, true, &[], sender, Off::Looks);
     // A grading workflow, top to bottom: the look to grade under, balance, primaries, secondaries,
@@ -3251,6 +3277,10 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         skin_btn,
         looks,
         look_blend,
+        applied,
+        look_box,
+        applied_dock,
+        applied_panel,
         browse,
         side_stack,
         browse_btn,
@@ -3589,6 +3619,7 @@ impl SimpleComponent for App {
         gallery.set_vexpand(true);
         gallery_stack.set_vexpand(true);
         sidebar.browse.append(&gallery);
+        sidebar.browse.append(&sidebar.applied_panel);
         // Once shown, the grid takes the keyboard, so arrows browse at once (Ctrl+F's search keeps it).
         let (f, browse) = (flow.clone(), sidebar.browse.clone());
         sidebar.side_stack.connect_visible_child_name_notify(move |st| {
@@ -5143,6 +5174,15 @@ impl SimpleComponent for App {
             }
             Msg::Browse(on) => {
                 self.browsing = on;
+                // The applied LUTs go with the browser, so a LUT clicked by mistake goes without leaving it.
+                let s = &self.ui.sidebar;
+                if on && s.applied_dock.child().is_none() {
+                    s.look_box.remove(&s.applied);
+                    s.applied_dock.set_child(Some(&s.applied));
+                } else if !on && s.applied_dock.child().is_some() {
+                    s.applied_dock.set_child(None::<&gtk::Widget>);
+                    s.look_box.prepend(&s.applied);
+                }
                 self.ui.sidebar.side_stack.set_visible_child_name(if on { "browser" } else { "sections" });
                 if self.ui.sidebar.browse_btn.is_active() != on {
                     self.ui.sidebar.browse_btn.set_active(on);

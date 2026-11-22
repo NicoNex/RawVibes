@@ -3157,6 +3157,17 @@ impl SimpleComponent for App {
         grade_stack.add_named(&image_page, Some("image"));
 
         let sidebar = build_sidebar(&sender, &crop_ui.section);
+        // Crop editing ends (keeping the crop) once a click lands outside the Crop section: the grid
+        // never stays over the rest of the edit. The click still reaches what it was on.
+        let finish = gtk::GestureClick::builder().button(0).propagation_phase(gtk::PropagationPhase::Capture).build();
+        let (pane, section, edit) = (sidebar.pane.clone(), crop_ui.section.clone(), crop_ui.edit.clone());
+        finish.connect_pressed(move |_, _, x, y| {
+            let inside = pane.pick(x, y, gtk::PickFlags::DEFAULT).is_some_and(|w| w == section || w.is_ancestor(&section));
+            if edit.is_active() && !inside {
+                edit.set_active(false);
+            }
+        });
+        sidebar.pane.add_controller(finish);
         let grade_split = adw::OverlaySplitView::builder()
             .sidebar_position(gtk::PackType::End)
             .min_sidebar_width(340.0)
@@ -3300,7 +3311,9 @@ impl SimpleComponent for App {
         let snd = sender.clone();
         let (split, photo, grade, meta) =
             (grade_split.clone(), sidebar.photo.clone(), sidebar.grade.clone(), sidebar.meta.root.clone());
+        let crop_edit = crop_ui.edit.clone();
         stack.connect_visible_child_name_notify(move |s| {
+            crop_edit.set_active(false);
             let name = s.visible_child_name();
             if let Some(tab) = s.visible_child().and_downcast::<gtk::Box>().filter(|_| name.as_deref() != Some("lab"))
                 && split.parent().as_ref() != Some(tab.upcast_ref())

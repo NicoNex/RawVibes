@@ -429,7 +429,7 @@ msgstr "{}: impossibile esportare"
 #: gtk/src/main.rs:919
 msgid ""
 "Title, keywords and rights are too long for a JPEG: exported without them"
-msgstr ""
+msgstr "Titolo, parole chiave e diritti sono troppo lunghi per un JPEG: esportata senza"
 
 #: gtk/src/main.rs:969
 #, rust-format

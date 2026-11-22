@@ -204,7 +204,7 @@ pub fn build(sender: &ComponentSender<App>, export_menu: &gio::Menu) -> LabUi {
     result.append(&rh);
     result.append(&input);
     result.append(&caption(&gettext(
-        "The camera Photo Style / log you will load the exported LUT on. The signal is converted \
+        "The camera profile (standard or log) you will load the exported LUT on. The signal is converted \
          automatically to each layer's profile.",
     )));
     panel.append(&result);

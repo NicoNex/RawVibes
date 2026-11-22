@@ -2097,7 +2097,7 @@ fn section_tabs(stack: &adw::ViewStack, panes: &[&gtk::Box]) {
     for pane in panes {
         let tabs = adw::ToggleGroup::builder().halign(gtk::Align::Center).margin_top(8).margin_bottom(2).build();
         for (name, icon, tip) in [
-            ("photo", "camera-shutter-symbolic", gettext("Photo: develop the RAW (Alt+1)")),
+            ("photo", "camera-shutter-symbolic", gettext("Photo: develop, correct and crop (Alt+1)")),
             ("grade", "rawvibes-grade-symbolic", gettext("Grade: colour and looks (Alt+2)")),
             ("meta", "tag-outline-symbolic", gettext("Metadata: title, keywords, rights (Alt+3)")),
             ("lab", "rawvibes-lut-symbolic", gettext("LUT Lab: combine and convert LUTs (Alt+4)")),
@@ -3012,11 +3012,11 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     add(&color, &gettext("Vibrance"), -100.0, 100.0, 0, None, |p| &mut p.vibrance);
     add(&color, &gettext("Shadow saturation"), -100.0, 100.0, 0, None, |p| &mut p.sat_shadows);
     add(&color, &gettext("Highlight saturation"), -100.0, 100.0, 0, None, |p| &mut p.sat_highlights);
-    let color_sec = eye_section(&gettext("Color"), &color, true, &[], sender, Off::Grade(Stage::Color));
+    let color_sec = eye_section(&gettext("Colour"), &color, true, &[], sender, Off::Grade(Stage::Color));
 
     let film = vbox(4);
     add(&film, &gettext("Subtractive saturation"), -100.0, 100.0, 0, Some("track-film-sat"), |p| &mut p.film_sat);
-    add(&film, &gettext("Color density"), 0.0, 100.0, 0, Some("track-film-density"), |p| &mut p.film_density);
+    add(&film, &gettext("Colour density"), 0.0, 100.0, 0, Some("track-film-density"), |p| &mut p.film_density);
     film.append(&caption(&gettext(
         "Film makes colour by adding dye, so richer colours are also deeper. Subtractive saturation saturates the way dye does; density deepens saturated colours. Greys are untouched.",
     )));
@@ -3024,7 +3024,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     film.append(&caption(&gettext(
         "Soft light deepens shadows and lifts highlights, as RawTherapee's; 30 is its default.",
     )));
-    let film_sec = eye_section(&gettext("Film color"), &film, true, &[], sender, Off::Grade(Stage::Film));
+    let film_sec = eye_section(&gettext("Film colour"), &film, true, &[], sender, Off::Grade(Stage::Film));
 
     // HSL mixer (OKLCh bands)
     let hsl = vbox(6);
@@ -3064,7 +3064,8 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         hsl.append(&s.root);
         s
     });
-    let selective_sec = eye_section(&gettext("Selective color"), &hsl, true, &[], sender, Off::Grade(Stage::Selective));
+    let selective_sec =
+        eye_section(&gettext("Selective colour"), &hsl, true, &[], sender, Off::Grade(Stage::Selective));
 
     let snd = sender.clone();
     let hue_curves = CurveEditor::new(HUE_HUE..LUM_SAT + 1, move |ch, c| snd.input(Msg::Curve(ch, c)));
@@ -3099,7 +3100,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         wheels.push((wheel, luma));
     }
     let wheels_sec =
-        eye_section(&gettext("Primary color wheels"), &wheels_row, true, &[], sender, Off::Grade(Stage::Wheels));
+        eye_section(&gettext("Primary colour wheels"), &wheels_row, true, &[], sender, Off::Grade(Stage::Wheels));
 
     // Curves
     let snd = sender.clone();
@@ -3447,7 +3448,7 @@ impl SimpleComponent for App {
                 &sender,
                 "image-x-generic-symbolic",
                 &gettext("Open a photo"),
-                &gettext("Drop JPEGs or camera RAWs here, or choose files. Open several to grade them together.\nThe grade becomes a .cube LUT for the Standard profile."),
+                &gettext("Drop camera RAWs, JPEGs, TIFFs or PNGs here, or choose files. Open several to edit them together.\nEvery grade can also be exported as a .cube LUT."),
                 &gettext("Open Photo…"),
                 || Msg::Open,
             ),
@@ -3896,7 +3897,7 @@ impl SimpleComponent for App {
                 .application_icon(APP_ID)
                 .version(env!("CARGO_PKG_VERSION"))
                 .comments(gettext(
-                    "Color grading from photos and 3D .cube LUT creation, GPU accelerated (Vulkan/Metal).",
+                    "RAW development, colour grading and 3D .cube LUT creation, GPU accelerated (Vulkan/Metal).",
                 ))
                 .license_type(gtk::License::Gpl30)
                 .developer_name("Nicolò Santamaria")
@@ -5753,9 +5754,14 @@ impl App {
 
 fn profile_hint(p: Profile) -> String {
     if p.is_log() {
-        gettext!("{} LUT → Rec.709. RAWs are encoded into this log; a JPEG/TIFF must already be in log.", p.name())
+        gettext!(
+            "The photo's signal: RAWs are developed into {}, a JPEG or TIFF must already be in it. The exported LUT goes from this log to Rec.709.",
+            p.name()
+        )
     } else {
-        gettext("Signal the LUT will be applied to (Photo Style Standard, Vivid…).")
+        gettext(
+            "The photo's signal and the exported LUT's input. Standard: a normal picture (Rec.709), like a camera's standard picture profile.",
+        )
     }
 }
 

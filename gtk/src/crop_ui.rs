@@ -12,9 +12,9 @@ use relm4::{ComponentSender, gtk};
 use crate::widgets::Slider;
 use crate::{App, CANVAS_MARGIN, Msg, eye_section};
 
-/// A drag in progress: the handle, the crop at its start, and the
-/// frame's logical pixels per normalised unit.
-type Grab = (Handle, Crop, f64, f64);
+/// A drag in progress: the handle (`None`: drawing a new crop from the press), the crop
+/// at its start, the frame's logical pixels per normalised unit, and the press point.
+type Grab = (Option<Handle>, Crop, f64, f64, [f32; 2]);
 
 /// Grab distance of the edges and corners, in logical pixels.
 const GRAB: f64 = 12.0;
@@ -189,10 +189,12 @@ impl CropUi {
                 let (ox, oy, sx, sy) = placement(o.width() as f64, o.height() as f64, sh.frame);
                 let p = [((x - ox) / sx) as f32, ((y - oy) / sy) as f32];
                 let tol = [(GRAB / sx) as f32, (GRAB / sy) as f32];
-                g.set(crop::hit(&sh.crop, p, tol).map(|h| (h, sh.crop, sx, sy)));
-                if g.get().is_none() {
-                    return;
-                }
+                // On the crop: a handle or a move. Elsewhere: a new crop drawn from here.
+                // A crop filling the photo cannot move: a drag on it draws one too.
+                let [w, h] = sh.frame.map(|v| v as u32);
+                let handle =
+                    crop::hit(&sh.crop, p, tol).filter(|&k| k != Handle::Move || crop::movable(&sh.crop, w, h));
+                g.set(Some((handle, sh.crop, sx, sy, p)));
             }
             // Ours: the canvas must not pan under a line or a handle.
             d.set_state(gtk::EventSequenceState::Claimed);
@@ -204,13 +206,19 @@ impl CropUi {
                 ln.set(Some([x0, y0, x0 + dx, y0 + dy]));
                 return o.queue_draw();
             }
-            let Some((handle, start, sx, sy)) = grab.get() else { return };
+            let Some((handle, start, sx, sy, p)) = grab.get() else { return };
+            let d = [(dx / sx) as f32, (dy / sy) as f32];
             let c = {
                 let sh = sh.borrow();
                 let [w, h] = sh.frame.map(|v| v as u32);
-                crop::drag(start, handle, [(dx / sx) as f32, (dy / sy) as f32], sh.aspect, w, h)
+                match handle {
+                    Some(handle) => Some(crop::drag(start, handle, d, sh.aspect, w, h)),
+                    None => crop::draw(start, p, [p[0] + d[0], p[1] + d[1]], sh.aspect, w, h),
+                }
             };
-            s.input(Msg::CropRect(c.rect));
+            if let Some(c) = c {
+                s.input(Msg::CropRect(c.rect));
+            }
         });
         let (lv, adj, o) = (level.clone(), angle.adj.clone(), overlay.clone());
         drag.connect_drag_end(move |_, dx, dy| {

@@ -5146,6 +5146,8 @@ impl SimpleComponent for App {
                     self.ratio = ratio;
                     self.fit_crop();
                     self.crop_changed(&sender);
+                    // A ratio chosen is a crop to place: its frame and handles come up.
+                    self.ui.crop.edit.set_active(true);
                 }
             }
             Msg::CropSwap => {

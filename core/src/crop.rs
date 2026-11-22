@@ -181,12 +181,13 @@ pub fn hit(c: &Crop, p: [f32; 2], tol: [f32; 2]) -> Option<Handle> {
     })
 }
 
+/// Smallest crop side, normalised.
+const MIN_SIDE: f32 = 0.02;
+
 /// `start` with `h` dragged by `d` (normalised frame units). With
 /// `aspect` (pixel w/h), resizing keeps it. Never leaves the image.
 pub fn drag(start: Crop, h: Handle, d: [f32; 2], aspect: Option<f32>, img_w: u32, img_h: u32) -> Crop {
     use Handle::*;
-    /// Smallest crop side, normalised.
-    const MIN: f32 = 0.02;
     // Pixel aspect of a normalised unit square.
     let px = img_w as f32 / img_h as f32;
     let resized = |t: f32| {
@@ -194,16 +195,16 @@ pub fn drag(start: Crop, h: Handle, d: [f32; 2], aspect: Option<f32>, img_w: u32
         let [x, y, w, hh] = start.rect;
         let (mut x0, mut y0, mut x1, mut y1) = (x, y, x + w, y + hh);
         if matches!(h, W | NW | SW) {
-            x0 = (x0 + dx).min(x1 - MIN);
+            x0 = (x0 + dx).min(x1 - MIN_SIDE);
         }
         if matches!(h, E | NE | SE) {
-            x1 = (x1 + dx).max(x0 + MIN);
+            x1 = (x1 + dx).max(x0 + MIN_SIDE);
         }
         if matches!(h, N | NW | NE) {
-            y0 = (y0 + dy).min(y1 - MIN);
+            y0 = (y0 + dy).min(y1 - MIN_SIDE);
         }
         if matches!(h, S | SW | SE) {
-            y1 = (y1 + dy).max(y0 + MIN);
+            y1 = (y1 + dy).max(y0 + MIN_SIDE);
         }
         if let Some(a) = aspect {
             // Normalised width for a normalised height at this pixel aspect, and back.
@@ -257,6 +258,46 @@ pub fn drag(start: Crop, h: Handle, d: [f32; 2], aspect: Option<f32>, img_w: u32
         return at(if miss(a) <= miss(b) { a } else { b });
     }
     if fits(&resized(1.0)) { resized(1.0) } else { resized(search(|t| fits(&resized(t)), true)) }
+}
+
+/// Whether `c` has room to move: one that fills the image cannot, and a drag on it draws a new crop.
+pub fn movable(c: &Crop, img_w: u32, img_h: u32) -> bool {
+    const STEP: f32 = 0.002;
+    [[STEP, 0.0], [-STEP, 0.0], [0.0, STEP], [0.0, -STEP]]
+        .into_iter()
+        // More than rounding slack: a full crop "moves" by a hair.
+        .any(|d| {
+            let m = drag(*c, Handle::Move, d, None, img_w, img_h).rect;
+            (m[0] - c.rect[0]).abs().max((m[1] - c.rect[1]).abs()) > STEP / 2.0
+        })
+}
+
+/// A crop drawn by dragging from `from` to `to` (normalised frame coordinates), at
+/// `start`'s angle: anchored at `from`, of `aspect` (pixel w/h) when given, shrunk
+/// towards `from` to stay inside the image. `None` for a click, or a press off the image.
+pub fn draw(start: Crop, from: [f32; 2], to: [f32; 2], aspect: Option<f32>, img_w: u32, img_h: u32) -> Option<Crop> {
+    let (mut w, mut h) = ((to[0] - from[0]).abs(), (to[1] - from[1]).abs());
+    if w.max(h) < MIN_SIDE {
+        return None;
+    }
+    // Anchored at `from`, growing the way the pointer went.
+    let at = |w: f32, h: f32| {
+        let x = if to[0] < from[0] { from[0] - w } else { from[0] };
+        let y = if to[1] < from[1] { from[1] - h } else { from[1] };
+        Crop { rect: [x, y, w, h], angle: start.angle }
+    };
+    if !fits(&at(MIN_SIDE, MIN_SIDE), img_w, img_h) {
+        return None;
+    }
+    if let Some(a) = aspect {
+        // The larger side in pixels sets the other (a normalised unit is img_w/img_h wide per tall).
+        let px = img_w as f32 / img_h as f32;
+        if w * px >= h * a { h = w * px / a } else { w = h * a / px }
+    }
+    let (w, h) = (w.max(MIN_SIDE), h.max(MIN_SIDE));
+    let ok = |t: f32| fits(&at(w * t, h * t), img_w, img_h);
+    let t = if ok(1.0) { 1.0 } else { search(ok, true) };
+    Some(at(w * t, h * t))
 }
 
 /// `c` at a new straighten `angle`: a crop as large as the image allows
@@ -337,6 +378,39 @@ mod tests {
         let start = Crop { rect: [0.3, 0.1, 0.3, 0.3], angle: 5.0 };
         let c = drag(start, Handle::Move, [0.0, 0.1], None, 6000, 4000);
         assert!(inside(&region(&c, 6000, 4000), 6000.0, 4000.0) && (c.rect[1] - 0.2).abs() < 1e-4, "{c:?}");
+    }
+
+    #[test]
+    fn draw_spans_the_drag() {
+        let c = draw(Crop::default(), [0.6, 0.5], [0.2, 0.3], None, 6000, 4000).unwrap();
+        let want = [0.2, 0.3, 0.4, 0.2];
+        assert!(c.rect.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-5), "{c:?}");
+    }
+
+    #[test]
+    fn draw_keeps_the_ratio_and_the_image() {
+        // XPan 65:24 from near the right edge, dragged left and down.
+        let c = draw(Crop::default(), [0.9, 0.2], [0.3, 0.3], Some(65.0 / 24.0), 6000, 4000).unwrap();
+        assert!((aspect(&c, 6000, 4000) - 65.0 / 24.0).abs() < 1e-3, "{c:?}");
+        assert!((c.rect[0] + c.rect[2] - 0.9).abs() < 1e-5 && (c.rect[1] - 0.2).abs() < 1e-5, "{c:?}");
+        // Too big for the image below the anchor: shrunk, still anchored, still inside.
+        let c = draw(Crop::default(), [0.1, 0.8], [0.9, 0.9], Some(1.0), 6000, 4000).unwrap();
+        assert!(fits(&c, 6000, 4000) && (c.rect[0] - 0.1).abs() < 1e-5 && (c.rect[1] - 0.8).abs() < 1e-5, "{c:?}");
+        assert!((aspect(&c, 6000, 4000) - 1.0).abs() < 1e-3, "{c:?}");
+    }
+
+    #[test]
+    fn a_full_crop_cannot_move() {
+        assert!(!movable(&Crop::default(), 6000, 4000));
+        assert!(!movable(&fit_ratio(Ratio::Original, 6000, 4000, 8.0), 6000, 4000));
+        // XPan across the full width still moves up and down.
+        assert!(movable(&fit_ratio(Ratio::Fixed(65.0, 24.0), 6000, 4000, 0.0), 6000, 4000));
+    }
+
+    #[test]
+    fn a_click_draws_nothing() {
+        assert_eq!(draw(Crop::default(), [0.5, 0.5], [0.501, 0.5], None, 6000, 4000), None);
+        assert_eq!(draw(Crop::default(), [1.2, 0.5], [0.5, 0.2], None, 6000, 4000), None);
     }
 
     #[test]

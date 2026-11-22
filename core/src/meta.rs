@@ -4,8 +4,9 @@
 use std::io::Cursor;
 use std::path::Path;
 
-use rawler::decoders::RawMetadata;
-use rawler::exif::Exif;
+pub use rawler::decoders::RawMetadata;
+pub use rawler::exif::Exif;
+pub use rawler::formats::tiff::{Rational, SRational};
 use rawler::formats::jfif::Jfif;
 use rawler::formats::tiff::reader::TiffReader;
 use rawler::formats::tiff::{DirectoryWriter, GenericTiffReader, IFD, TiffWriter};
@@ -255,7 +256,6 @@ fn write_exif(md: &RawMetadata, title: &str, size: Option<(u32, u32)>) -> rawler
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rawler::formats::tiff::Rational;
 
     pub(super) fn fixture() -> RawMetadata {
         let gps = rawler::exif::ExifGPS {

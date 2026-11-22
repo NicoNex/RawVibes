@@ -14,6 +14,7 @@ mod crop_ui;
 mod export_ui;
 mod filmstrip;
 mod lab_page;
+mod meta_ui;
 mod presets_ui;
 mod settings;
 mod widgets;
@@ -30,6 +31,7 @@ use crop_ui::CropUi;
 use export_ui::ExportUi;
 use filmstrip::{Filmstrip, MAX_ROLL, ROLL_PX};
 use lab_page::{LabAdd, LabKind, LabLayer, LabUi, Layers, caption};
+use meta_ui::{MetaField, MetaUi};
 use presets_ui::PresetsUi;
 use rawvibes_core::chart::test_chart;
 use rawvibes_core::crop::{self, Crop, PRESETS, Ratio};
@@ -43,6 +45,7 @@ use rawvibes_core::lab::{Blend, Layer, Source, Stack, oklch_to_srgb};
 use rawvibes_core::lut::{self, Format, Lut3d, LutEntry, MAX_LIBRARY};
 use rawvibes_core::makernote::CameraLut;
 use rawvibes_core::matching::{self, Match};
+use rawvibes_core::meta::{self, RawMetadata};
 use rawvibes_core::photo::{Decoded, PREVIEW_MAX, Photo, RASTER_EXTS, RAW_EXTS, is_photo, is_raw};
 use rawvibes_core::preset::{self, Preset};
 use rawvibes_core::profiles::Profile;
@@ -210,6 +213,10 @@ enum Msg {
     /// Undo of Reset all: every edit of the photo before it.
     /// Edits and the full look stack (path-less layers are not in the sidecar).
     RestoreEdits(Box<(Sidecar, Vec<LabLayer>)>),
+    /// A Metadata tab field typed into.
+    MetaEdit(MetaField, String),
+    /// The camera's metadata of the photo loading as `load_gen`.
+    SourceMeta(u64, Option<Arc<RawMetadata>>),
     /// Preferences: render the full-quality frame once development controls rest.
     Refine(bool),
     /// Filmstrip: add photos, a photo decoded small (already encoded for
@@ -475,6 +482,8 @@ struct App {
     off: Vec<Off>,
     /// The open photo's own metadata (title, keywords, rights…).
     meta: Meta,
+    /// What its camera recorded.
+    source_meta: Option<Arc<RawMetadata>>,
     /// The LUT browser is open (its thumbnails follow the grade).
     browsing: bool,
     /// Library LUT previewed after the looks (not part of them until
@@ -1163,6 +1172,7 @@ impl App {
             // One full-resolution decode at a time: each peaks above 1 GB on a 24 MP RAW.
             static FULL_DECODE: std::sync::Mutex<()> = std::sync::Mutex::new(());
             let _one = FULL_DECODE.lock().unwrap_or_else(|e| e.into_inner());
+            s.emit(Msg::SourceMeta(generation, meta::read(&path).map(Arc::new)));
             if is_raw(&path) {
                 // Developed on the GPU: the strip copy comes back with it (Done::RawLoaded).
                 return s.emit(Msg::RawRead(generation, path.clone(), read_raw(&path).map(Arc::new)));
@@ -1818,7 +1828,8 @@ fn section_tabs(stack: &adw::ViewStack, panes: &[&gtk::Box]) {
         for (name, icon, tip) in [
             ("photo", "camera-photo-symbolic", gettext("Photo: develop the RAW (Alt+1)")),
             ("grade", "color-select-symbolic", gettext("Grade: colour and looks (Alt+2)")),
-            ("lab", "view-list-symbolic", gettext("LUT Lab: combine and convert LUTs (Alt+3)")),
+            ("meta", "document-properties-symbolic", gettext("Metadata: title, keywords, rights (Alt+3)")),
+            ("lab", "view-list-symbolic", gettext("LUT Lab: combine and convert LUTs (Alt+4)")),
         ] {
             tabs.add(adw::Toggle::builder().name(name).icon_name(icon).tooltip(&tip).build());
         }
@@ -2164,6 +2175,8 @@ struct Sidebar {
     browse: gtk::Revealer,
     browse_btn: gtk::ToggleButton,
     develop: DevelopUi,
+    /// What the Metadata tab shows.
+    meta: MetaUi,
 }
 
 /// The Develop group (RAWs only).
@@ -2835,6 +2848,9 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     photo.append(&eye_section(&gettext("Vignette"), &vig, false, &[], sender, Off::Grade(Stage::Vignette)));
     panel.append(&photo);
     panel.append(&grade);
+    let meta = MetaUi::new(sender);
+    panel.append(&meta.root);
+    meta.root.set_visible(false);
 
     let reset = gtk::Button::builder()
         .label(gettext("Reset all"))
@@ -2898,6 +2914,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         develop,
         look_blend_toggle,
         profile_sel,
+        meta,
     }
 }
 
@@ -3177,10 +3194,13 @@ impl SimpleComponent for App {
         photo_tab.append(&grade_split);
         stack.add_titled_with_icon(&photo_tab, Some("photo"), &gettext("Photo"), "camera-photo-symbolic");
         stack.add_titled_with_icon(&grade_tab, Some("grade"), &gettext("Grade"), "color-select-symbolic");
+        let meta_tab = tab();
+        stack.add_titled_with_icon(&meta_tab, Some("meta"), &gettext("Metadata"), "document-properties-symbolic");
         let lab = lab_page::build(&sender, &export_menu("lab-export", false));
         stack.add_titled_with_icon(&lab.root, Some("lab"), &gettext("LUT Lab"), "view-list-symbolic");
         let snd = sender.clone();
-        let (split, photo, grade) = (grade_split.clone(), sidebar.photo.clone(), sidebar.grade.clone());
+        let (split, photo, grade, meta) =
+            (grade_split.clone(), sidebar.photo.clone(), sidebar.grade.clone(), sidebar.meta.root.clone());
         stack.connect_visible_child_name_notify(move |s| {
             let name = s.visible_child_name();
             if let Some(tab) = s.visible_child().and_downcast::<gtk::Box>().filter(|_| name.as_deref() != Some("lab"))
@@ -3191,6 +3211,7 @@ impl SimpleComponent for App {
             }
             photo.set_visible(name.as_deref() == Some("photo"));
             grade.set_visible(name.as_deref() == Some("grade"));
+            meta.set_visible(name.as_deref() == Some("meta"));
             let page = match name.as_deref() {
                 Some("lab") => Page::Lab,
                 _ => Page::Grade,
@@ -3564,7 +3585,9 @@ impl SimpleComponent for App {
         let s = stack.clone();
         shortcut("<Alt>2", Box::new(move || s.set_visible_child_name("grade")));
         let s = stack.clone();
-        shortcut("<Alt>3", Box::new(move || s.set_visible_child_name("lab")));
+        shortcut("<Alt>3", Box::new(move || s.set_visible_child_name("meta")));
+        let s = stack.clone();
+        shortcut("<Alt>4", Box::new(move || s.set_visible_child_name("lab")));
         let (s, b, e) = (stack.clone(), sidebar.browse_btn.clone(), search.clone());
         shortcut(
             "<Control>f",
@@ -3639,6 +3662,7 @@ impl SimpleComponent for App {
             looks: Vec::new(),
             off: Vec::new(),
             meta: Meta::default(),
+            source_meta: None,
             browsing: false,
             candidate: None,
             preview_req: None,
@@ -4046,6 +4070,7 @@ impl SimpleComponent for App {
                         self.toast(&gettext!("Cannot read the edits saved for {}: {}", file_label(&path), e))
                     }
                 }
+                self.ui.sidebar.meta.set(&self.meta, &Meta::default());
                 // Left earlier this session: that stack is newer than the sidecar's and keeps path-less layers.
                 if let Some(looks) =
                     self.roll.iter().find(|it| it.path == path).map(|it| it.looks.clone()).filter(|l| !l.is_empty())
@@ -4130,6 +4155,16 @@ impl SimpleComponent for App {
                 self.undo_toast(&gettext("All edits cleared"), move || Msg::RestoreEdits(Box::new(before.clone())));
             }
             Msg::RestoreEdits(edits) => self.restore_edits(*edits, &sender),
+            Msg::MetaEdit(f, text) => {
+                if self.path.is_some() && meta_ui::apply(&mut self.meta, f, &text) {
+                    self.schedule_save();
+                }
+            }
+            Msg::SourceMeta(generation, _) if generation != self.load_gen => {}
+            Msg::SourceMeta(_, m) => {
+                self.ui.sidebar.meta.show_camera(m.as_deref());
+                self.source_meta = m;
+            }
             Msg::Undo => self.step_history(true, &sender),
             Msg::Redo => self.step_history(false, &sender),
             Msg::Rate(..) | Msg::Mark(_) if self.path.is_none() => {}
@@ -5287,7 +5322,8 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
         (gettext("Save preset"), "<Control>s"),
         (gettext("Photo view"), "<Alt>1"),
         (gettext("Grade view"), "<Alt>2"),
-        (gettext("LUT Lab view"), "<Alt>3"),
+        (gettext("Metadata view"), "<Alt>3"),
+        (gettext("LUT Lab view"), "<Alt>4"),
         (gettext("Browse LUTs"), "b"),
         (gettext("Search LUTs"), "<Control>f"),
         (gettext("Reload LUTs"), "F5"),

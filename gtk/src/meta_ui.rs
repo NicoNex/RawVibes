@@ -76,7 +76,7 @@ impl MetaUi {
             if s.model.starts_with(&s.make) { s.model.clone() } else { format!("{} {}", s.make, s.model).trim().to_string() }
         });
         let lens = e.and_then(|e| e.lens_model.clone()).or_else(|| src.and_then(|s| s.lens.as_ref()).map(|l| format!("{} {}", l.lens_make, l.lens_model)));
-        let focal = e.and_then(|e| e.focal_length).filter(|r| r.d != 0).map(|r| format!("{} mm", trim(r.n as f64 / r.d as f64)));
+        let focal = e.and_then(|e| e.focal_length).filter(|r| r.d != 0).map(|r| format!("{} mm", trim(r.as_f32())));
         let taken = e.and_then(|e| e.date_time_original.as_deref()).map(taken_line);
         let location = e.map(|e| if e.gps.as_ref().is_some_and(|g| g.gps_latitude.is_some()) { gettext("Recorded") } else { gettext("None") });
         for (row, v) in self.camera.iter().zip([camera, lens, e.map(exposure_line), focal, taken, location]) {
@@ -87,10 +87,7 @@ impl MetaUi {
     /// Shows `m`; Creator and Copyright name the Preferences' default they fall back to.
     pub fn set(&self, m: &Meta, defaults: &Meta) {
         for (f, row, title) in &self.fields {
-            let text = match f {
-                MetaField::Keywords => m.keywords.join(", "),
-                _ => field(m, *f).clone(),
-            };
+            let text = slot(&mut m.clone(), *f).map_or_else(|| m.keywords.join(", "), |s| s.clone());
             if row.text() != text {
                 row.set_text(&text);
             }
@@ -104,40 +101,33 @@ impl MetaUi {
     }
 }
 
-fn field(m: &Meta, f: MetaField) -> &String {
-    match f {
-        MetaField::Title => &m.title,
-        MetaField::Caption => &m.caption,
-        MetaField::Creator => &m.creator,
-        MetaField::Copyright => &m.copyright,
-        MetaField::City => &m.city,
-        MetaField::Country => &m.country,
-        MetaField::Keywords => unreachable!("a list"),
-    }
-}
-
-/// Puts `text` in `f` of `m`; false when it already held it (an echo of `set`).
-pub fn apply(m: &mut Meta, f: MetaField, text: &str) -> bool {
-    if f == MetaField::Keywords {
-        let k = parse_keywords(text);
-        return k != m.keywords && {
-            m.keywords = k;
-            true
-        };
-    }
-    let s = match f {
+/// The text field `f` edits; `None` for the keyword list.
+fn slot(m: &mut Meta, f: MetaField) -> Option<&mut String> {
+    Some(match f {
         MetaField::Title => &mut m.title,
         MetaField::Caption => &mut m.caption,
         MetaField::Creator => &mut m.creator,
         MetaField::Copyright => &mut m.copyright,
         MetaField::City => &mut m.city,
         MetaField::Country => &mut m.country,
-        MetaField::Keywords => unreachable!("handled above"),
-    };
-    *s != text && {
-        *s = text.to_string();
-        true
+        MetaField::Keywords => return None,
+    })
+}
+
+/// Puts `text` in `f` of `m`; false when it already held it (an echo of `set`).
+pub fn apply(m: &mut Meta, f: MetaField, text: &str) -> bool {
+    match slot(m, f) {
+        Some(s) if s != text => *s = text.to_string(),
+        Some(_) => return false,
+        None => {
+            let k = parse_keywords(text);
+            if k == m.keywords {
+                return false;
+            }
+            m.keywords = k;
+        }
     }
+    true
 }
 
 /// Keywords typed comma-separated, trimmed, empty ones dropped.
@@ -146,7 +136,7 @@ pub fn parse_keywords(text: &str) -> Vec<String> {
 }
 
 /// `2.80` as `2.8`, `8.0` as `8`.
-fn trim(v: f64) -> String {
+fn trim(v: f32) -> String {
     let s = format!("{v:.1}");
     s.strip_suffix(".0").unwrap_or(&s).to_string()
 }
@@ -161,11 +151,11 @@ fn taken_line(d: &str) -> String {
 pub fn exposure_line(e: &Exif) -> String {
     let mut parts = Vec::new();
     if let Some(t) = e.exposure_time.filter(|t| t.n != 0 && t.d != 0) {
-        let secs = t.n as f64 / t.d as f64;
+        let secs = t.as_f32();
         parts.push(if secs < 1.0 { format!("1/{} s", (1.0 / secs).round()) } else { format!("{} s", trim(secs)) });
     }
     if let Some(f) = e.fnumber.filter(|f| f.d != 0) {
-        parts.push(format!("f/{}", trim(f.n as f64 / f.d as f64)));
+        parts.push(format!("f/{}", trim(f.as_f32())));
     }
     if let Some(iso) = e.iso_speed_ratings.map(u32::from).or(e.iso_speed) {
         parts.push(format!("ISO {iso}"));

@@ -1,7 +1,7 @@
 //! Photo metadata: read from the source (RAW, JPEG, TIFF), completed with the
 //! author's defaults, filtered by the export policy, written as EXIF and XMP.
 
-use std::io::Cursor;
+use std::io::{BufReader, Cursor, Read, Seek};
 use std::path::Path;
 
 pub use rawler::decoders::RawMetadata;
@@ -20,24 +20,31 @@ pub fn read(path: &Path) -> Option<RawMetadata> {
         let src = rawler::rawsource::RawSource::new(path).ok()?;
         return rawler::get_decoder(&src).ok()?.raw_metadata(&src, &Default::default()).ok();
     }
-    let bytes = std::fs::read(path).ok()?;
-    let (exif, make, model) = match bytes.get(..4)? {
-        [0xff, 0xd8, ..] => {
-            let jfif = Jfif::parse(Cursor::new(&bytes)).ok()?;
-            let root = jfif.exif_ifd()?;
-            (Exif::new(root).ok()?, ascii(root, TiffCommonTag::Make), ascii(root, TiffCommonTag::Model))
-        }
-        b"II*\0" | b"MM\0*" => read_tiff_exif(&bytes)?,
+    // Only the headers are read: the decode reads the pixels.
+    let mut file = BufReader::new(std::fs::File::open(path).ok()?);
+    let mut magic = [0; 4];
+    file.read_exact(&mut magic).ok()?;
+    file.rewind().ok()?;
+    let (exif, make, model) = match magic {
+        [0xff, 0xd8, ..] => from_ifd(Jfif::parse(file).ok()?.exif_ifd()?)?,
+        [b'I', b'I', b'*', 0] | [b'M', b'M', 0, b'*'] => read_tiff(&mut file)?,
         _ => return None,
     };
-    Some(RawMetadata { exif, make, model, lens: None, unique_image_id: None, rating: None })
+    Some(RawMetadata { exif, make, model, ..Default::default() })
 }
 
 /// EXIF, make and model of a TIFF stream (a TIFF file, or a JPEG's EXIF block).
 pub fn read_tiff_exif(tiff: &[u8]) -> Option<(Exif, String, String)> {
+    read_tiff(&mut Cursor::new(tiff))
+}
+
+fn read_tiff<R: Read + Seek>(tiff: &mut R) -> Option<(Exif, String, String)> {
     let subs = [TiffCommonTag::ExifIFDPointer.into(), ExifTag::GPSInfo.into()];
-    let reader = GenericTiffReader::new(&mut Cursor::new(tiff), 0, 0, Some(0), &subs).ok()?;
-    let root = reader.file().chain.first()?;
+    let reader = GenericTiffReader::new(tiff, 0, 0, Some(0), &subs).ok()?;
+    from_ifd(reader.file().chain.first()?)
+}
+
+fn from_ifd(root: &IFD) -> Option<(Exif, String, String)> {
     Some((Exif::new(root).ok()?, ascii(root, TiffCommonTag::Make), ascii(root, TiffCommonTag::Model)))
 }
 
@@ -188,14 +195,16 @@ pub fn tags(src: Option<&RawMetadata>, m: &Meta, policy: Policy, size: (u32, u32
     if policy == Policy::None {
         return Tags::default();
     }
-    let mut md = src.cloned().unwrap_or_else(|| RawMetadata {
-        exif: Exif::default(),
-        make: String::new(),
-        model: String::new(),
-        lens: None,
-        unique_image_id: None,
-        rating: None,
-    });
+    let mut md = src.cloned().unwrap_or_default();
+    // Copyright only: the author's own fields, nothing about the photo.
+    let narrowed;
+    let m = if policy == Policy::Copyright {
+        let (creator, copyright, email, website) = (m.creator.clone(), m.copyright.clone(), m.email.clone(), m.website.clone());
+        narrowed = Meta { creator, copyright, email, website, ..Default::default() };
+        &narrowed
+    } else {
+        m
+    };
     let e = &mut md.exif;
     match policy {
         Policy::Essential => {
@@ -217,16 +226,9 @@ pub fn tags(src: Option<&RawMetadata>, m: &Meta, policy: Policy, size: (u32, u32
             *field = Some(v.clone());
         }
     }
-    let xmp = if policy == Policy::Copyright {
-        let (creator, copyright, email, website) = (m.creator.clone(), m.copyright.clone(), m.email.clone(), m.website.clone());
-        self::xmp(&Meta { creator, copyright, email, website, ..Default::default() })
-    } else {
-        self::xmp(m)
-    };
-    let title = if policy == Policy::Copyright { "" } else { m.title.trim() };
     // A write failure only loses the EXIF block, never the export.
-    let exif = write_exif(&md, title, (policy != Policy::Copyright).then_some(size)).unwrap_or_default();
-    Tags { exif, xmp }
+    let exif = write_exif(&md, m.title.trim(), (policy != Policy::Copyright).then_some(size)).unwrap_or_default();
+    Tags { exif, xmp: xmp(m) }
 }
 
 /// `md` as a TIFF stream: IFD0, the Exif IFD (with `size` and sRGB when given) and the GPS IFD.
@@ -279,14 +281,7 @@ mod tests {
             gps: Some(gps),
             ..Default::default()
         };
-        RawMetadata {
-            exif,
-            make: "Fujifilm".into(),
-            model: "X-T5".into(),
-            lens: None,
-            unique_image_id: None,
-            rating: None,
-        }
+        RawMetadata { exif, make: "Fujifilm".into(), model: "X-T5".into(), ..Default::default() }
     }
 
     #[test]

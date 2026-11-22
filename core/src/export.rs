@@ -10,6 +10,8 @@ use image::codecs::png::PngEncoder;
 use image::codecs::tiff::TiffEncoder;
 use image::{ExtendedColorType, ImageEncoder};
 
+use rayon::prelude::*;
+
 use crate::meta::Tags;
 use crate::view::Region;
 
@@ -62,16 +64,15 @@ pub const SRGB_ICC: &[u8] = include_bytes!("srgb.icc");
 /// `v` as 8 bits with triangular (TPDF) dither of ±1 level, so smooth gradients do not band.
 /// The noise narrows towards black and white, where clipping would shift the mean.
 fn to_u8_dithered(v: u16, i: usize) -> u8 {
-    // SplitMix64: a well-mixed hash of the sample index, two uniforms in [0, 1).
-    let hash = |mut z: u64| {
-        z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        ((z ^ (z >> 31)) >> 40) as f32 / (1u64 << 24) as f32
-    };
+    // SplitMix64 of the sample index: its two 24-bit halves are two uniforms in [0, 1).
+    let mut z = (i as u64).wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^= z >> 31;
+    let unit = |bits: u64| (bits & 0xff_ffff) as f32 / (1 << 24) as f32;
     let x = v as f32 * 255.0 / 65535.0;
     let amp = x.min(255.0 - x).min(1.0);
-    let noise = hash(2 * i as u64) - hash(2 * i as u64 + 1);
+    let noise = unit(z >> 40) - unit(z >> 16);
     (x + amp * noise).round().clamp(0.0, 255.0) as u8
 }
 
@@ -101,12 +102,16 @@ pub fn save(
         let err = |e: image::ImageError| e.to_string();
         match format {
             PhotoFormat::Jpeg => {
-                let mut jpeg = Vec::new();
-                encode_jpeg(&mut jpeg, &rgb, w, h, quality, &tags.exif)?;
-                if let Some(x) = &tags.xmp {
-                    jpeg = insert_app1(jpeg, &[XMP_NS, x.as_bytes()].concat());
+                if let Some(xmp) = &tags.xmp {
+                    // XMP has no encoder hook: encoded in memory, the segment written in after the APPn ones.
+                    let mut jpeg = Vec::new();
+                    encode_jpeg(&mut jpeg, &rgb, w, h, quality, &tags.exif)?;
+                    let (head, tail) = jpeg.split_at(after_app_segments(&jpeg));
+                    let segment = app1(&[XMP_NS, xmp.as_bytes()].concat());
+                    [head, &segment, tail].iter().try_for_each(|b| file.write_all(b)).map_err(|e| e.to_string())?;
+                } else {
+                    encode_jpeg(&mut file, &rgb, w, h, quality, &tags.exif)?;
                 }
-                file.write_all(&jpeg).map_err(|e| e.to_string())?;
             }
             PhotoFormat::Png16 => {
                 let mut enc = PngEncoder::new(&mut file);
@@ -154,7 +159,7 @@ pub fn jpeg_size(rgb: &[u16], w: u32, h: u32, quality: u8) -> usize {
 }
 
 fn encode_jpeg(to: impl Write, rgb: &[u16], w: u32, h: u32, quality: u8, exif: &[u8]) -> Result<(), String> {
-    let px: Vec<u8> = rgb.iter().enumerate().map(|(i, &v)| to_u8_dithered(v, i)).collect();
+    let px: Vec<u8> = rgb.par_iter().enumerate().map(|(i, &v)| to_u8_dithered(v, i)).collect();
     let mut enc = JpegEncoder::new_with_quality(to, quality);
     let _ = enc.set_icc_profile(SRGB_ICC.to_vec());
     if !exif.is_empty() {
@@ -166,17 +171,21 @@ fn encode_jpeg(to: impl Write, rgb: &[u16], w: u32, h: u32, quality: u8, exif: &
 /// The namespace that opens a JPEG's XMP segment.
 const XMP_NS: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
 
-/// `jpeg` with an APP1 segment of `payload` after its other APPn segments; unchanged when too big for one.
-fn insert_app1(mut jpeg: Vec<u8>, payload: &[u8]) -> Vec<u8> {
-    let Ok(len) = u16::try_from(payload.len() + 2) else { return jpeg };
+/// Where the segments after a JPEG's APPn ones start: XMP goes there, after EXIF and ICC.
+fn after_app_segments(jpeg: &[u8]) -> usize {
     let mut at = 2;
-    while jpeg.get(at) == Some(&0xff) && jpeg.get(at + 1).is_some_and(|m| (0xe0..=0xef).contains(m)) {
-        let Some(&[a, b]) = jpeg.get(at + 2..at + 4).map(|s| <&[u8; 2]>::try_from(s).expect("2 bytes")) else { break };
+    while let (Some(0xff), Some(0xe0..=0xef), Some(&a), Some(&b)) =
+        (jpeg.get(at), jpeg.get(at + 1), jpeg.get(at + 2), jpeg.get(at + 3))
+    {
         at += 2 + u16::from_be_bytes([a, b]) as usize;
     }
-    let segment = [&[0xff, 0xe1][..], &len.to_be_bytes(), payload].concat();
-    jpeg.splice(at..at, segment);
-    jpeg
+    at.min(jpeg.len())
+}
+
+/// An APP1 segment of `payload`; empty when too big for one (the export goes without it).
+fn app1(payload: &[u8]) -> Vec<u8> {
+    let Ok(len) = u16::try_from(payload.len() + 2) else { return Vec::new() };
+    [&[0xff, 0xe1][..], &len.to_be_bytes(), payload].concat()
 }
 
 /// A PNG chunk: length, type, data, CRC-32 of type and data.
@@ -250,9 +259,7 @@ mod tests {
             exif: rawler::exif::Exif { iso_speed_ratings: Some(400), ..Default::default() },
             make: "Fujifilm".into(),
             model: "X-T5".into(),
-            lens: None,
-            unique_image_id: None,
-            rating: None,
+            ..Default::default()
         };
         let m = crate::sidecar::Meta { creator: "Ada".into(), title: "Alba".into(), ..Default::default() };
         crate::meta::tags(Some(&src), &m, crate::meta::Policy::Essential, (w, h))

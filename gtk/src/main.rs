@@ -890,8 +890,7 @@ impl App {
     fn export_tags(&self, crop: &Region) -> meta::Tags {
         let src = self.camera_meta();
         let m = meta::with_defaults(&self.meta, &author_defaults(), src.and_then(meta::capture_year));
-        let policy = settings::value(settings::METADATA_POLICY).and_then(|t| meta::Policy::from_tag(&t)).unwrap_or_default();
-        meta::tags(src, &m, policy, Decoded::fit_size(crop, u32::MAX))
+        meta::tags(src, &m, export_policy(), Decoded::fit_size(crop, u32::MAX))
     }
 
     /// Starts exporting the open photo to `path`; false if there is none.
@@ -1187,10 +1186,11 @@ impl App {
         self.load_gen += 1;
         let (s, generation, profile) = (sender.input_sender().clone(), self.load_gen, self.profile);
         std::thread::spawn(move || {
+            // Headers only, before queuing behind another decode.
+            s.emit(Msg::SourceMeta(generation, path.clone(), meta::read(&path).map(Arc::new)));
             // One full-resolution decode at a time: each peaks above 1 GB on a 24 MP RAW.
             static FULL_DECODE: std::sync::Mutex<()> = std::sync::Mutex::new(());
             let _one = FULL_DECODE.lock().unwrap_or_else(|e| e.into_inner());
-            s.emit(Msg::SourceMeta(generation, path.clone(), meta::read(&path).map(Arc::new)));
             if is_raw(&path) {
                 // Developed on the GPU: the strip copy comes back with it (Done::RawLoaded).
                 return s.emit(Msg::RawRead(generation, path.clone(), read_raw(&path).map(Arc::new)));
@@ -1767,6 +1767,11 @@ fn edit_name(stem: &str, ext: &str, suffix: &str) -> String {
     format!("{stem}{suffix}.{ext}")
 }
 
+/// How much metadata exports carry, from Preferences.
+fn export_policy() -> meta::Policy {
+    settings::value(settings::METADATA_POLICY).and_then(|t| meta::Policy::from_tag(&t)).unwrap_or_default()
+}
+
 /// The export file name suffix from Preferences.
 fn export_suffix() -> String {
     settings::value(settings::EXPORT_SUFFIX).unwrap_or_default()
@@ -1786,7 +1791,7 @@ fn policy_hint(p: meta::Policy) -> String {
 fn metadata_prefs(sender: &ComponentSender<App>) -> adw::PreferencesPage {
     let labels = [gettext("All"), gettext("Essential"), gettext("Copyright only"), gettext("None")];
     let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
-    let stored = settings::value(settings::METADATA_POLICY).and_then(|t| meta::Policy::from_tag(&t)).unwrap_or_default();
+    let stored = export_policy();
     let policy = adw::ComboRow::builder()
         .title(gettext("Metadata in exported photos"))
         .subtitle(policy_hint(stored))
@@ -1815,10 +1820,9 @@ fn metadata_prefs(sender: &ComponentSender<App>) -> adw::PreferencesPage {
         ))
         .build();
     let d = author_defaults();
-    let copyright = settings::value(settings::COPYRIGHT).unwrap_or_else(|| COPYRIGHT_TEMPLATE.into());
     for (key, title, text) in [
         (settings::AUTHOR, gettext("Creator"), d.creator),
-        (settings::COPYRIGHT, gettext("Copyright"), copyright),
+        (settings::COPYRIGHT, gettext("Copyright"), d.copyright),
         (settings::AUTHOR_EMAIL, gettext("Email"), d.email),
         (settings::AUTHOR_WEBSITE, gettext("Website"), d.website),
     ] {
@@ -3163,17 +3167,20 @@ impl SimpleComponent for App {
         grade_stack.add_named(&image_page, Some("image"));
 
         let sidebar = build_sidebar(&sender, &crop_ui.section);
-        // Crop editing ends (keeping the crop) once a click lands outside the Crop section: the grid
-        // never stays over the rest of the edit. The click still reaches what it was on.
+        // Crop editing ends (keeping the crop) once you move on: a click outside the Crop section,
+        // or the section leaving the screen (another tab). The click still reaches what it was on.
         let finish = gtk::GestureClick::builder().button(0).propagation_phase(gtk::PropagationPhase::Capture).build();
         let (pane, section, edit) = (sidebar.pane.clone(), crop_ui.section.clone(), crop_ui.edit.clone());
         finish.connect_pressed(move |_, _, x, y| {
-            let inside = pane.pick(x, y, gtk::PickFlags::DEFAULT).is_some_and(|w| w == section || w.is_ancestor(&section));
-            if edit.is_active() && !inside {
+            if edit.is_active()
+                && !pane.pick(x, y, gtk::PickFlags::DEFAULT).is_some_and(|w| w == section || w.is_ancestor(&section))
+            {
                 edit.set_active(false);
             }
         });
         sidebar.pane.add_controller(finish);
+        let edit = crop_ui.edit.clone();
+        crop_ui.section.connect_unmap(move |_| edit.set_active(false));
         let grade_split = adw::OverlaySplitView::builder()
             .sidebar_position(gtk::PackType::End)
             .min_sidebar_width(340.0)
@@ -3317,9 +3324,7 @@ impl SimpleComponent for App {
         let snd = sender.clone();
         let (split, photo, grade, meta) =
             (grade_split.clone(), sidebar.photo.clone(), sidebar.grade.clone(), sidebar.meta.root.clone());
-        let crop_edit = crop_ui.edit.clone();
         stack.connect_visible_child_name_notify(move |s| {
-            crop_edit.set_active(false);
             let name = s.visible_child_name();
             if let Some(tab) = s.visible_child().and_downcast::<gtk::Box>().filter(|_| name.as_deref() != Some("lab"))
                 && split.parent().as_ref() != Some(tab.upcast_ref())

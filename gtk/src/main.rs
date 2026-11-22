@@ -1853,6 +1853,11 @@ fn metadata_prefs(sender: &ComponentSender<App>) -> adw::PreferencesPage {
     page
 }
 
+/// A sidebar width the editor keeps usable: sliders fit, the photo keeps most of the window.
+fn clamp_sidebar(w: f64) -> f64 {
+    w.clamp(300.0, 720.0)
+}
+
 /// The copyright Preferences start from.
 const COPYRIGHT_TEMPLATE: &str = "© {year} {creator}";
 
@@ -2138,6 +2143,7 @@ const CSS: &str = r#"
 .sidebar-pane { background-color: var(--sidebar-bg-color); }
 .section { padding: 4px 8px 10px 8px; }
 .section.collapsed { padding-bottom: 4px; }
+.sidebar-handle:hover { background: alpha(currentColor, 0.15); }
 .section-header { padding: 6px 6px; margin-bottom: 2px; border-radius: 8px; }
 .slider-row { margin: 2px 4px 0 4px; }
 .slider-value { opacity: 0.8; padding: 0 5px; border-radius: 6px; transition: background-color 120ms ease; }
@@ -3195,14 +3201,39 @@ impl SimpleComponent for App {
         sidebar.pane.add_controller(finish);
         let edit = crop_ui.edit.clone();
         crop_ui.section.connect_unmap(move |_| edit.set_active(false));
+        // The sidebar's left edge drags to resize it; the width is remembered.
+        let handle = gtk::Box::builder().width_request(6).css_classes(["sidebar-handle"]).build();
+        handle.set_cursor_from_name(Some("col-resize"));
+        handle.update_property(&[gtk::accessible::Property::Label(&gettext("Resize the sidebar"))]);
+        let side = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        side.append(&handle);
+        side.append(&sidebar.pane);
+        sidebar.pane.set_hexpand(true);
+        let width = settings::value(settings::SIDEBAR_WIDTH).and_then(|w| w.parse().ok()).map(clamp_sidebar);
         let grade_split = adw::OverlaySplitView::builder()
             .sidebar_position(gtk::PackType::End)
-            .min_sidebar_width(340.0)
-            .max_sidebar_width(420.0)
+            .min_sidebar_width(width.unwrap_or(340.0))
+            .max_sidebar_width(width.unwrap_or(420.0))
             .sidebar_width_fraction(0.28)
             .content(&grade_stack)
-            .sidebar(&sidebar.pane)
+            .sidebar(&side)
             .build();
+        let drag = gtk::GestureDrag::new();
+        let (split, start) = (grade_split.clone(), Rc::new(Cell::new(0.0)));
+        let s = start.clone();
+        let sd = side.clone();
+        drag.connect_drag_begin(move |_, _, _| s.set(sd.width() as f64));
+        let sp = split.clone();
+        drag.connect_drag_update(move |_, dx, _| {
+            // The sidebar is on the right: dragging its edge left widens it.
+            let w = clamp_sidebar(start.get() - dx);
+            sp.set_min_sidebar_width(w);
+            sp.set_max_sidebar_width(w);
+        });
+        drag.connect_drag_end(move |_, _, _| {
+            let _ = settings::set_value(settings::SIDEBAR_WIDTH, &format!("{:.0}", split.max_sidebar_width()));
+        });
+        handle.add_controller(drag);
 
         // ---------------- LUT browser
         let flow = gtk::FlowBox::builder()

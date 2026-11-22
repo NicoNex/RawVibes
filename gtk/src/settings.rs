@@ -79,3 +79,6 @@ pub const AUTHOR: &str = "author";
 pub const COPYRIGHT: &str = "copyright";
 pub const AUTHOR_EMAIL: &str = "author-email";
 pub const AUTHOR_WEBSITE: &str = "author-website";
+
+/// Width of the editor's sidebar, in pixels, as last dragged.
+pub const SIDEBAR_WIDTH: &str = "sidebar-width";

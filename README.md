@@ -9,8 +9,9 @@
 RawVibes is a free, open-source RAW photo editor with a colorist's grading tools
 built in. Develop RAW files from Panasonic, Canon, Nikon, Sony, Fujifilm and most
 other cameras on the GPU, grade them with colour wheels, curves and your LUT
-library, and export the photo at full resolution. Then export the same grade as a
-3D LUT, `.cube` or `.vlt`, and load it on your camera as a Real Time LUT.
+library, and export the photo at full resolution, in SDR or in HDR with the
+highlights your sensor caught. Then export the same grade as a 3D LUT, `.cube` or
+`.vlt`, and load it on your camera as a Real Time LUT.
 
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/NicoNex/RawVibes?include_prereleases&label=release)](https://github.com/NicoNex/RawVibes/releases/latest)
@@ -49,6 +50,10 @@ with you.
 - **Published algorithms.** RCD demosaicing, inpaint-opposed highlight
   reconstruction, Richardson–Lucy capture sharpening, lensfun's lens models and the
   RawNIND neural denoiser: ports of the methods darktable and RawTherapee ship.
+- **HDR from the RAW you already shot.** A RAW holds stops of highlight that an
+  SDR JPEG throws away. RawVibes keeps them for HDR screens: an Ultra HDR JPEG with
+  an ISO 21496-1 gain map (the format Android, iOS and Chrome read), or JPEG XL,
+  AVIF and PNG in Rec.2100 PQ. Your grade and LUTs look the same in both.
 - **On the GPU from the first pixel.** RAW decoding, demosaicing, development, lens
   corrections, grade and AI denoise run on the GPU through wgpu (Vulkan on Linux,
   Metal on macOS). Sliders draw a fast draft while you drag and the full-quality
@@ -309,6 +314,16 @@ and the others as well as on V-Log.
 - **Exact LUT bake.** The grade is evaluated directly at every lattice point. The
   GPU preview and the CPU reference are tested against each other, and a 65³ bake
   is checked against the direct grade.
+- **HDR without a second grade.** The HDR rendition is the SDR view transform's
+  extended Reinhard shoulder with its peak raised to the headroom; at 0 stops it is
+  the SDR curve bit for bit. Its ratio to the SDR curve, taken on the scene before
+  the grade, is one gain per pixel applied over the graded SDR, so hue and look
+  hold. PQ files place SDR white at 203 cd/m² (ITU-R BT.2408) and carry their
+  content light level; the GTK preview goes to the compositor as Rec.2100 linear.
+- **Bracket merge in the RAW domain:** exposure ratios measured from the data,
+  coarse-to-fine alignment, inverse-variance weights from each sensor's
+  Poisson–Gaussian noise (Granados et al. 2010) and per-block ghost rejection, to
+  a float DNG.
 - **Tetrahedral interpolation** wherever a LUT is applied, on the GPU and the CPU.
 - **CAT16** white balance, **OKLab / OKLCh** colour work, a C¹-continuous gamut fit
   and **Fritsch–Carlson** monotone curves.
@@ -429,6 +444,13 @@ reproduce.
 Yes. LUT Lab converts a LUT from the log profile it was made for (F-Log2 C, for
 example) to the one your camera records (V-Log, S-Log3, C-Log3 and the others in
 the table above).
+
+**Can I export HDR photos?**
+Yes. With an HDR export format, the highlights of a RAW or log photo go up to 3
+stops above SDR white. Choose *JPEG HDR* for phones and browsers: SDR screens show
+the normal JPEG. Choose *JPEG XL*, *AVIF* or *PNG HDR* for Rec.2100 PQ. On Linux,
+with HDR switched on in the system settings, the preview shows the HDR rendition
+too.
 
 **Does the AI denoise send my photos anywhere?**
 No. The model ships with the app and runs on your GPU.

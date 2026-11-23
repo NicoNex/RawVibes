@@ -108,6 +108,12 @@ pub struct Params {
     pub vignette_view: [f32; 4],
     #[serde(skip)]
     pub vignette_aspect: f32,
+    /// HDR rendition headroom in stops over SDR white (0 = SDR only): the gain `export16` writes.
+    #[serde(skip)]
+    pub hdr_stops: f32,
+    /// 1 = the source's alpha holds the exposed scene's max channel (a RAW developed to Standard).
+    #[serde(skip)]
+    pub scene: u32,
 }
 
 impl Params {
@@ -340,8 +346,8 @@ mod tests {
     fn params_layout_matches_wgsl() {
         // 12 scalars + 4×4 wheels + 3×8 hue + mixer 9+1+3+1 + film 2 + match 1+6
         // + soft light + vignette 4 + input + 3×3 gamut + split,width,height,lut_size,overlay
-        // + vignette view 4 + aspect
-        assert_eq!(std::mem::size_of::<Params>(), (12 + 16 + 24 + 14 + 2 + 7 + 1 + 4 + 1 + 9 + 5 + 5) * 4);
+        // + vignette view 4 + aspect + hdr stops, scene
+        assert_eq!(std::mem::size_of::<Params>(), (12 + 16 + 24 + 14 + 2 + 7 + 1 + 4 + 1 + 9 + 5 + 5 + 2) * 4);
     }
 
     #[test]

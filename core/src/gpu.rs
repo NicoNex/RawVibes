@@ -8,7 +8,7 @@ use std::sync::{Arc, mpsc};
 use wgpu::util::DeviceExt;
 
 use crate::develop::Develop;
-use crate::export::{self, PhotoFormat};
+use crate::export::{self, Exported, PhotoFormat};
 use crate::grade::{CURVE_RES, CURVES, Grade, Params};
 use crate::lab::{self, Blend, Layer, Source, Stack};
 use crate::lut::{Format, Lut3d};
@@ -225,15 +225,25 @@ impl Gpu {
     }
 
     /// The graded photo for export, appended to `into` as 16-bit RGB: as
-    /// [`Gpu::render`] without overlay or split.
-    pub fn render16(&self, photo: &GpuPhoto, grade: &Grade, look: Option<&GpuLut>, into: &mut Vec<u16>) {
+    /// [`Gpu::render`] without overlay or split. With `grade.params.hdr_stops`
+    /// set, each pixel's HDR gain (log2 over the stops, 16-bit) goes to `gains`.
+    pub fn render16(
+        &self,
+        photo: &GpuPhoto,
+        grade: &Grade,
+        look: Option<&GpuLut>,
+        into: &mut Vec<u16>,
+        gains: &mut Vec<u16>,
+    ) {
         // shortcut: new output buffers per strip; keep them per export if allocation shows in profiles.
         let (out, staging) = self.output(photo.width as u64 * photo.height as u64 * 8);
         let rgba = self.grade_pass(&self.export16, photo, grade, look, 0.0, &out, &staging);
         // A Vec<u8> may be unaligned for a u16 cast: read the little-endian pairs.
-        into.extend(
-            rgba.as_chunks::<8>().0.iter().flat_map(|p| [0, 2, 4].map(|i| u16::from_le_bytes([p[i], p[i + 1]]))),
-        );
+        let px = rgba.as_chunks::<8>().0;
+        into.extend(px.iter().flat_map(|p| [0, 2, 4].map(|i| u16::from_le_bytes([p[i], p[i + 1]]))));
+        if grade.params.hdr_stops > 0.0 {
+            gains.extend(px.iter().map(|p| u16::from_le_bytes([p[6], p[7]])));
+        }
     }
 
     /// `photo` through the grade and `look` with `pipeline`, read back from `out`.
@@ -416,6 +426,8 @@ pub struct PhotoExport {
     pub look: Stack,
     pub format: PhotoFormat,
     pub quality: u8,
+    /// HDR headroom in stops over SDR white, for [`PhotoFormat::UltraHdr`].
+    pub headroom: f32,
     pub path: PathBuf,
     /// Set by the UI to stop between strips.
     pub cancel: Arc<AtomicBool>,
@@ -721,7 +733,7 @@ impl Worker {
         e: &PhotoExport,
         strip_bytes: u64,
         notify: &impl Fn(Done),
-    ) -> Result<Option<(u32, u32, Vec<u16>)>, String> {
+    ) -> Result<Option<Exported>, String> {
         let cancelled = || e.cancel.load(Ordering::Relaxed);
         let raw = e.decoded.is_raw();
         // The AI result the preview shows, finished first if still running: the first half of the bar.
@@ -752,6 +764,7 @@ impl Worker {
         let rows = (budget / ((w as u64 + 2 * margin) * 16)).saturating_sub(2 * margin);
         let rows = (rows as u32).clamp(16, h.max(16));
         let mut out = Vec::with_capacity(w as usize * h as usize * 3);
+        let mut gains = Vec::new();
         let mut slot = None;
         for y0 in (0..h).step_by(rows as usize) {
             if cancelled() {
@@ -771,10 +784,14 @@ impl Worker {
             }
             let mut grade = e.grade.clone();
             grade.params.frame(&strip, &e.crop);
-            gpu.render16(slot.as_ref().expect("developed above"), &grade, look.as_ref(), &mut out);
+            if e.format == PhotoFormat::UltraHdr {
+                grade.params.hdr_stops = e.headroom;
+                grade.params.scene = (raw && e.profile == Profile::Standard) as u32;
+            }
+            gpu.render16(slot.as_ref().expect("developed above"), &grade, look.as_ref(), &mut out, &mut gains);
             notify(Done::ExportProgress(start + (1.0 - start) * y1 as f32 / h as f32));
         }
-        Ok(Some((w, h, out)))
+        Ok(Some(Exported { w, h, rgb: out, gains, headroom: e.headroom }))
     }
 
     fn handle(&mut self, gpu: &Gpu, job: Job, notify: &impl Fn(Done)) {
@@ -938,7 +955,7 @@ impl Worker {
             Job::ExportPhoto(e) => {
                 let cancelled = || e.cancel.load(Ordering::Relaxed);
                 let r = self.export_photo(gpu, &e, EXPORT_ROWS_BYTES, notify).and_then(|done| match done {
-                    Some((w, h, rgb)) => export::save(&e.path, w, h, rgb, e.format, e.quality, &e.tags, cancelled)
+                    Some(img) => export::save(&e.path, img, e.format, e.quality, &e.tags, cancelled)
                         .map(|saved| saved.then_some(e.path.clone())),
                     None => Ok(None),
                 });
@@ -947,7 +964,7 @@ impl Worker {
             Job::ExportFrame(grade) => {
                 let Some(ph) = self.whole() else { return };
                 let mut rgb = Vec::new();
-                gpu.render16(ph, &grade, self.look.as_ref(), &mut rgb);
+                gpu.render16(ph, &grade, self.look.as_ref(), &mut rgb, &mut Vec::new());
                 notify(Done::ExportFrame(ph.width, ph.height, rgb));
             }
             Job::Export { grade, look, size, format, title, path } => {
@@ -1217,20 +1234,26 @@ mod tests {
             look: Stack { input: Profile::Standard, layers: Vec::new(), blend: Blend::Chain },
             format: PhotoFormat::Tiff16,
             quality: 90,
+            headroom: 0.0,
             path: PathBuf::new(),
             cancel: Arc::default(),
             tags: Default::default(),
         };
-        let (_, _, one) = worker.export_photo(&gpu, &e, u64::MAX, &notify).unwrap().unwrap();
+        let one = worker.export_photo(&gpu, &e, u64::MAX, &notify).unwrap().unwrap().rgb;
         // 37 rows per strip (plus the margin all round): 5 strips, the last one short.
         let m = e.develop.detail.support().ceil() as u64;
         let budget = (240 + 2 * m) * 16 * (37 + 2 * m);
-        let (ew, eh, many) = worker.export_photo(&gpu, &e, budget, &notify).unwrap().unwrap();
+        let Exported { w: ew, h: eh, rgb: many, .. } = worker.export_photo(&gpu, &e, budget, &notify).unwrap().unwrap();
         assert_eq!((ew, eh, one.len()), (240, 160, many.len()));
         let worst = one.iter().zip(&many).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
         assert!(worst <= 64, "strip seams differ by {worst}/65535");
-        e.cancel.store(true, Ordering::Relaxed);
-        assert!(worker.export_photo(&gpu, &e, u64::MAX, &notify).unwrap().is_none());
+        // HDR: the developed RAW hands its scene to the gain, one per pixel, above 1 (log2 > 0).
+        let hdr = PhotoExport { format: PhotoFormat::UltraHdr, headroom: 2.0, ..e };
+        let img = worker.export_photo(&gpu, &hdr, budget, &notify).unwrap().unwrap();
+        assert_eq!(img.gains.len(), 240 * 160);
+        assert!(img.gains.iter().all(|&g| g > 0 && g < 65535), "{:?}", &img.gains[..8]);
+        hdr.cancel.store(true, Ordering::Relaxed);
+        assert!(worker.export_photo(&gpu, &hdr, u64::MAX, &notify).unwrap().is_none());
     }
 
     /// Full export of a real RAW with AI on, timed:
@@ -1259,6 +1282,7 @@ mod tests {
                 look: Stack { input: Profile::Standard, layers: Vec::new(), blend: Blend::Chain },
                 format,
                 quality: 90,
+                headroom: export::HDR_HEADROOM,
                 path: PathBuf::from(&out).join(format!("export.{}", format.ext())),
                 cancel: Arc::default(),
                 tags: crate::meta::tags(
@@ -1273,9 +1297,9 @@ mod tests {
                 ),
             };
             let t = std::time::Instant::now();
-            let (w, h, rgb) = worker.export_photo(&gpu, &e, EXPORT_ROWS_BYTES, &notify).unwrap().unwrap();
-            let dev = t.elapsed();
-            export::save(&e.path, w, h, rgb, format, 90, &e.tags, || false).unwrap();
+            let img = worker.export_photo(&gpu, &e, EXPORT_ROWS_BYTES, &notify).unwrap().unwrap();
+            let (w, h, dev) = (img.w, img.h, t.elapsed());
+            export::save(&e.path, img, format, 90, &e.tags, || false).unwrap();
             let size = std::fs::metadata(&e.path).unwrap().len();
             eprintln!("{format:?} {w}x{h}: develop {dev:.2?}, total {:.2?}, {} MB", t.elapsed(), size / 1_000_000);
         }
@@ -1605,6 +1629,60 @@ mod tests {
                 let ok = (0..3).all(|k| (got[k] - want[k]).abs() <= 2);
                 assert!(ok, "{profile:?} {c:?}: gpu {got:?} cpu {want:?}");
             }
+        }
+    }
+
+    /// The HDR rendition's gain (grade.wgsl `hdr_gain`): 1 at black and at 0 stops,
+    /// the peak where SDR reaches white, monotone in the scene and in the headroom;
+    /// the same from a log signal as from a developed RAW's scene channel.
+    #[test]
+    fn hdr_gain_extends_only_the_highlights() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        // Exposed scene max channel (×1.25 of linear), up to past VIEW_WHITE = 6.
+        let ms = [0.0f32, 0.01, 0.225, 1.0, 3.0, 6.0, 20.0];
+        let gain = |stops: f32, input: Option<Profile>| -> Vec<f32> {
+            let pixels = ms
+                .iter()
+                .map(|&m| match input {
+                    Some(p) => {
+                        let [r, g, b] = [m / 1.25; 3].map(|v| p.encode(v));
+                        [r, g, b, 1.0]
+                    }
+                    None => [0.5, 0.5, 0.5, m],
+                })
+                .collect();
+            let photo = Photo { width: ms.len() as u32, height: 1, pixels };
+            let mut grade = Grade::default();
+            if let Some(p) = input {
+                grade.params.set_input(p);
+            }
+            (grade.params.hdr_stops, grade.params.scene) = (stops, input.is_none() as u32);
+            let (mut rgb, mut gains) = (Vec::new(), Vec::new());
+            gpu.render16(&gpu.upload(&photo), &grade, None, &mut rgb, &mut gains);
+            if stops == 0.0 {
+                assert!(gains.is_empty());
+                return vec![1.0; ms.len()];
+            }
+            gains.iter().map(|&g| (g as f32 / 65535.0 * stops).exp2()).collect()
+        };
+        let reference = |m: f32, peak: f32| (m * (1.0 + m * peak / 36.0) / (1.0 + m / peak)).min(peak);
+        let mut last = vec![1.0; ms.len()];
+        for stops in [0.0, 1.0, 2.0, 3.0] {
+            let g = gain(stops, None);
+            let peak = 2f32.powf(stops);
+            for (i, &m) in ms.iter().enumerate() {
+                let want = if m == 0.0 { 1.0 } else { reference(m, peak) / reference(m, 1.0) };
+                assert!((g[i] - want).abs() < 2e-3 * want, "{stops} stops, m {m}: {} want {want}", g[i]);
+                assert!(g[i] >= last[i] - 1e-4, "not monotone in the headroom at m {m}");
+            }
+            assert!(g.windows(2).all(|w| w[1] >= w[0] - 1e-4), "not monotone in the scene: {g:?}");
+            assert!((g[0] - 1.0).abs() < 1e-4 && (g[5] - peak).abs() < 2e-3 * peak, "{g:?}");
+            last = g;
+        }
+        // A V-Log photo carries the same scene: the same gain.
+        let (raw, vlog) = (gain(2.0, None), gain(2.0, Some(Profile::VLog)));
+        for (a, b) in raw.iter().zip(&vlog).take(6) {
+            assert!((a - b).abs() < 0.01 * a, "{raw:?} vs {vlog:?}");
         }
     }
 }

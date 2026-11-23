@@ -2,7 +2,7 @@
 //! then a file chooser; progress and Stop while the worker exports.
 
 use crate::gettext;
-use rawvibes_core::export::{JPEG_QUALITY, PhotoFormat};
+use rawvibes_core::export::{HDR_HEADROOM, JPEG_QUALITY, PhotoFormat};
 use relm4::adw::prelude::*;
 use relm4::{ComponentSender, adw, gtk};
 
@@ -12,6 +12,7 @@ pub struct ExportUi {
     pub dialog: adw::Dialog,
     format: adw::ComboRow,
     quality: adw::SpinRow,
+    headroom: adw::SpinRow,
     size: adw::ActionRow,
     estimate: adw::ActionRow,
     /// Every photo the filmstrip shows, each with its own edits, into a folder.
@@ -23,6 +24,7 @@ pub struct ExportUi {
 pub fn format_label(f: PhotoFormat) -> String {
     match f {
         PhotoFormat::Jpeg => gettext("JPEG · 8-bit, for sharing"),
+        PhotoFormat::UltraHdr => gettext("JPEG HDR · gain map, brighter highlights on HDR screens"),
         PhotoFormat::Png16 => gettext("PNG · 16-bit, lossless"),
         PhotoFormat::Tiff16 => gettext("TIFF · 16-bit, for print and editing"),
     }
@@ -48,6 +50,13 @@ pub fn build(sender: &ComponentSender<App>) -> ExportUi {
         .build();
     let snd = sender.clone();
     quality_row.connect_value_notify(move |_| snd.input(Msg::ExportSettings));
+    let headroom = settings::value(settings::HDR_HEADROOM).and_then(|q| q.parse().ok()).unwrap_or(HDR_HEADROOM);
+    let headroom_row = adw::SpinRow::builder()
+        .title(gettext("HDR headroom"))
+        .subtitle(gettext("Stops of highlights above SDR white, from RAW and log photos"))
+        .digits(1)
+        .adjustment(&gtk::Adjustment::new(headroom.clamp(1.0, 3.0) as f64, 1.0, 3.0, 0.5, 0.5, 0.0))
+        .build();
     let size = adw::ActionRow::builder().title(gettext("Size")).css_classes(["property"]).build();
     let estimate = adw::ActionRow::builder().title(gettext("File size")).css_classes(["property"]).build();
     let all = adw::SwitchRow::builder().title(gettext("All photos in the filmstrip")).visible(false).build();
@@ -62,6 +71,7 @@ pub fn build(sender: &ComponentSender<App>) -> ExportUi {
     for row in [
         format_row.upcast_ref::<gtk::Widget>(),
         quality_row.upcast_ref(),
+        headroom_row.upcast_ref(),
         all.upcast_ref(),
         size.upcast_ref(),
         estimate.upcast_ref(),
@@ -97,7 +107,17 @@ pub fn build(sender: &ComponentSender<App>) -> ExportUi {
         .build();
     let snd = sender.clone();
     dialog.connect_closed(move |_| snd.input(Msg::ExportClosed));
-    let ui = ExportUi { dialog, format: format_row, quality: quality_row, size, estimate, all, bar, go };
+    let ui = ExportUi {
+        dialog,
+        format: format_row,
+        quality: quality_row,
+        headroom: headroom_row,
+        size,
+        estimate,
+        all,
+        bar,
+        go,
+    };
     ui.set_format(format);
     ui
 }
@@ -111,11 +131,17 @@ impl ExportUi {
         self.quality.value().round() as u8
     }
 
-    /// Shows `f`'s controls (quality is JPEG only) and selects it.
+    /// HDR headroom in stops over SDR white.
+    pub fn headroom(&self) -> f32 {
+        self.headroom.value() as f32
+    }
+
+    /// Shows `f`'s controls (quality is JPEG only, headroom HDR only) and selects it.
     pub fn set_format(&self, f: PhotoFormat) {
         let i = PhotoFormat::ALL.iter().position(|&x| x == f).unwrap_or(0) as u32;
         self.format.set_selected(i);
-        self.quality.set_visible(f == PhotoFormat::Jpeg);
+        self.quality.set_visible(f.is_jpeg());
+        self.headroom.set_visible(f == PhotoFormat::UltraHdr);
     }
 
     /// Offers exporting all `n` photos the filmstrip shows, when there are several.
@@ -147,7 +173,12 @@ impl ExportUi {
         self.bar.set_visible(busy);
         self.bar.set_fraction(0.0);
         self.bar.set_text(Some(&gettext("Developing…")));
-        for w in [self.format.upcast_ref::<gtk::Widget>(), self.quality.upcast_ref(), self.all.upcast_ref()] {
+        for w in [
+            self.format.upcast_ref::<gtk::Widget>(),
+            self.quality.upcast_ref(),
+            self.headroom.upcast_ref(),
+            self.all.upcast_ref(),
+        ] {
             w.set_sensitive(!busy);
         }
         self.go.set_label(&if busy { gettext("Stop") } else { gettext("Export…") });

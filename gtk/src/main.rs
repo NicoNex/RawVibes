@@ -1030,9 +1030,10 @@ impl App {
         // Remembered as used, not per spin tick.
         let _ = settings::set_value(settings::EXPORT_FORMAT, ui.format().tag());
         let _ = settings::set_value(settings::JPEG_QUALITY, &ui.quality().to_string());
-        let (format, quality) = (ui.format(), ui.quality());
+        let _ = settings::set_value(settings::HDR_HEADROOM, &ui.headroom().to_string());
+        let (format, quality, headroom) = (ui.format(), ui.quality(), ui.headroom());
         let tags = self.export_tags(&crop);
-        if format == PhotoFormat::Jpeg && tags.xmp.as_deref().is_some_and(|x| !export::xmp_fits_jpeg(x)) {
+        if format.is_jpeg() && tags.xmp.as_deref().is_some_and(|x| !export::xmp_fits_jpeg(x)) {
             self.toast(&gettext("Title, keywords and rights are too long for a JPEG: exported without them"));
         }
         self.send(Job::ExportPhoto(Box::new(PhotoExport {
@@ -1044,6 +1045,7 @@ impl App {
             look: self.look_stack(self.look_layers()),
             format,
             quality,
+            headroom,
             path,
             cancel,
             tags,
@@ -1879,7 +1881,8 @@ impl App {
         match ui.format() {
             PhotoFormat::Tiff16 => ui.set_estimate(Some(glib::format_size(raw).into())),
             PhotoFormat::Png16 => ui.set_estimate(Some(gettext!("up to {}", glib::format_size(raw)))),
-            PhotoFormat::Jpeg => {
+            // shortcut: an HDR JPEG's gain map (a quarter of the pixels, grey) is left out of the estimate.
+            PhotoFormat::Jpeg | PhotoFormat::UltraHdr => {
                 ui.set_estimate(None);
                 let (generation, s) = (self.export_gen, sender.input_sender().clone());
                 // A spin held down sends a value per tick: encode only the one it stops on.
@@ -5690,7 +5693,7 @@ impl App {
             }
             Done::ExportFrame(w, h, rgb) => {
                 self.export_frame = Some((w, h, Arc::new(rgb)));
-                if self.ui.export_photo.format() == PhotoFormat::Jpeg {
+                if self.ui.export_photo.format().is_jpeg() {
                     self.export_estimate(sender);
                 }
             }

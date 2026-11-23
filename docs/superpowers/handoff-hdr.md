@@ -2,7 +2,44 @@
 
 Goal (user, 2026-11-23): full HDR support built with state-of-the-art
 algorithms, formats and libraries. This note records what was researched and
-what each part would mean for RawVibes. Nothing in it has been built yet.
+what each part would mean for RawVibes.
+
+## Status
+
+Step 1 is built (2026-11-23): the HDR rendition and the Ultra HDR export.
+- Rendition, `grade.wgsl` `hdr_gain`. The view transform's extended Reinhard
+  shoulder with its output white raised to the peak P = 2^headroom:
+  hdr(m) = m (1 + m P / W²) / (1 + m / P).
+  - P = 1 is the SDR curve exactly. Both reach white at the same scene value W.
+  - The gain hdr/sdr of the exposed scene's max channel is one factor per
+    pixel, so it keeps hue. It is applied over the graded SDR.
+  - The scene comes from the log decode (log inputs) or from the developed
+    RAW's alpha (`raw.wgsl` `develop_encode` writes it; grade param `scene`).
+    A Standard JPEG or TIFF has no scene: gain 1.
+  - We chose the Reinhard family over porting ACES 2.0 or sigmoid, because
+    the SDR rendition must stay exactly today's.
+- Export, `export.rs` `ultra_hdr`.
+  - The gain map is half resolution, single channel, gamma 1, offsets 0.
+  - Metadata is ISO 21496-1 plus Ultra HDR v1 XMP, built with `ultrahdr-rs`'s
+    metadata builders.
+  - The container is assembled here, so the photo's XMP (IPTC) stays in one
+    packet with the container directory.
+  - The UI adds the format "JPEG HDR" and an HDR headroom setting (1–3 stops,
+    default 2) in the export dialog.
+- Tests:
+  - `hdr_gain_extends_only_the_highlights` (GPU): gain against the reference;
+    1 at black and at 0 stops; the peak at W; monotone in the scene and the
+    headroom; RAW equals V-Log.
+  - `ultra_hdr_carries_its_gain_map`: the file read back by ultrahdr-rs's
+    decoder.
+  - The export strips test now checks the RAW scene plumbing.
+- Checked on a real RW2: exiftool reads the MPF, the hdrgm fields and the
+  container directory.
+- Not done yet:
+  - The headroom lives in the export dialog. It moves to the Photo tab with
+    the HDR preview (step 2).
+  - The decoded file has not been viewed on an HDR screen in Chrome or on
+    Android.
 
 HDR covers three separate jobs, plus bracket merge (roadmap phase 9).
 
@@ -120,8 +157,7 @@ Recommended approach, the Adobe and Apple model:
 
 ## Proposed order
 
-1. HDR rendition and Ultra HDR / ISO 21496-1 JPEG export: the highest value,
-   visible on phones and browsers.
+1. Done: HDR rendition and Ultra HDR / ISO 21496-1 JPEG export.
 2. HDR preview on Linux (float16 + `GdkColorState`, `GDK_DEBUG=color-mgmt`),
    tested on the user's HDR monitor.
 3. AVIF, JPEG XL, PNG PQ.

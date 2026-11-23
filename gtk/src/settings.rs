@@ -68,6 +68,9 @@ pub const EXPORT_FORMAT: &str = "export-format";
 /// Last JPEG export quality, 1–100.
 pub const JPEG_QUALITY: &str = "jpeg-quality";
 
+/// Last HDR export headroom, in stops.
+pub const HDR_HEADROOM: &str = "hdr-headroom";
+
 /// What exported photos carry (`rawvibes_core::meta::Policy::tag`).
 pub const METADATA_POLICY: &str = "metadata-policy";
 

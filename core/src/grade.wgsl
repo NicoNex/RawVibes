@@ -14,6 +14,7 @@ struct Params {
     vignette: f32, vignette_mid: f32, vignette_round: f32, vignette_feather: f32,
     input: u32, gamut: array<f32, 9>, split: f32, width: u32, height: u32, lut_size: u32, overlay: u32,
     vignette_view: array<f32, 4>, vignette_aspect: f32,
+    hdr_stops: f32, scene: u32,
 }
 
 @group(0) @binding(0) var<storage, read> p: Params;
@@ -120,11 +121,42 @@ fn view_transform(lin: vec3<f32>) -> vec3<f32> {
     return lin_to_srgb(min(c * k, vec3(1.0)));
 }
 
+// ------------------------------------------------------------ HDR rendition
+// The view transform's extended Reinhard shoulder (Reinhard et al. 2002) with
+// its output white raised to the peak P = 2^hdr_stops over SDR white, the scene
+// white kept: hdr(m) = m (1 + m P / W²) / (1 + m / P). P = 1 is the SDR curve
+// exactly; both reach their white at m = W. The gain hdr / sdr of the exposed
+// scene's max channel m is one factor per pixel, so it keeps hue, and it is
+// applied over the graded SDR (the grade and LUTs stay SDR): what the gain map holds.
+
+fn shoulder(m: f32, peak: f32) -> f32 {
+    return min(m * (1.0 + m * peak / (VIEW_WHITE * VIEW_WHITE)) / (1.0 + m / peak), peak);
+}
+
+fn hdr_gain(m: f32) -> f32 {
+    let sdr = shoulder(m, 1.0);
+    if p.hdr_stops <= 0.0 || sdr <= 0.0 { return 1.0; }
+    return shoulder(m, exp2(p.hdr_stops)) / sdr;
+}
+
+// The exposed scene's max channel behind input `c`: decoded from a log
+// signal, or `w` where the source carries it (`scene`, a developed RAW); else 0.
+fn scene_max(c: vec3<f32>, w: f32) -> f32 {
+    if p.input != 0u {
+        let s = max(gamut_709() * decode(p.input, c), vec3(0.0)) * VIEW_EXPOSURE;
+        return max(s.r, max(s.g, s.b));
+    }
+    return select(0.0, w, p.scene == 1u);
+}
+
+fn gamut_709() -> mat3x3<f32> {
+    let g = p.gamut; // row-major
+    return mat3x3<f32>(vec3(g[0], g[3], g[6]), vec3(g[1], g[4], g[7]), vec3(g[2], g[5], g[8]));
+}
+
 fn to_display(c: vec3<f32>) -> vec3<f32> {
     if p.input == 0u { return c; }
-    let g = p.gamut; // row-major
-    let to709 = mat3x3<f32>(vec3(g[0], g[3], g[6]), vec3(g[1], g[4], g[7]), vec3(g[2], g[5], g[8]));
-    return view_transform(to709 * decode(p.input, c));
+    return view_transform(gamut_709() * decode(p.input, c));
 }
 
 // ---------------------------------------------------------- white balance
@@ -539,12 +571,15 @@ fn bake(@builtin(global_invocation_id) id: vec3<u32>) {
     dst_lut[idx] = vec4(grade(rgb), 1.0);
 }
 
-// Photo export: preview without overlay or split, as RGBA16 (two u32 per pixel).
+// Photo export: preview without overlay or split, as RGBA16 (two u32 per pixel);
+// alpha is log2 of the HDR gain over hdr_stops (0 without HDR).
 @compute @workgroup_size(256)
 fn export16(@builtin(global_invocation_id) id: vec3<u32>) {
     let idx = id.x;
     if idx >= p.width * p.height { return; }
-    let g = clamp(look_graded(idx, src[idx].rgb), vec3(0.0), vec3(1.0));
+    let s = src[idx];
+    let g = clamp(look_graded(idx, s.rgb), vec3(0.0), vec3(1.0));
+    let a = select(0.0, log2(hdr_gain(scene_max(s.rgb, s.w))) / p.hdr_stops, p.hdr_stops > 0.0);
     dst_px[2u * idx] = pack2x16unorm(g.rg);
-    dst_px[2u * idx + 1u] = pack2x16unorm(vec2(g.b, 1.0));
+    dst_px[2u * idx + 1u] = pack2x16unorm(vec2(g.b, a));
 }

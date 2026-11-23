@@ -54,6 +54,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "archmage"
+version = "0.9.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2261f8722a6b01db495cddca47194ddcb293747025192ae189ab5412e724e358"
+dependencies = [
+ "archmage-macros",
+ "safe_unaligned_simd",
+ "winarm-cpufeatures",
+]
+
+[[package]]
+name = "archmage-macros"
+version = "0.9.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cbd5e93a65bd3c08bc1f8fdddc1eff1f42a39bf2b4395f11281eb939d097ba8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
+]
+
+[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -335,6 +357,12 @@ name = "endi"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
+
+[[package]]
+name = "enough"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "877362cb7b70d1c617f0cd3c67708bd58d894a86af5104018e2c10ebaee3c02f"
 
 [[package]]
 name = "enumn"
@@ -924,6 +952,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "imgref"
+version = "1.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e44b0a4eaa4c82f441d50a963f2d5f05a787240aeee097597033e72accfd22f"
+
+[[package]]
 name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1220,6 +1254,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
+name = "linear-srgb"
+version = "0.6.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe0e61c33d85bc56dcaf27cdf48ca32b8e34af7236584eb1d8a47316c49e0be1"
+dependencies = [
+ "archmage",
+ "bytemuck",
+ "magetypes",
+ "num-traits",
+]
+
+[[package]]
 name = "litrs"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1239,6 +1285,16 @@ name = "log"
 version = "0.4.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
+
+[[package]]
+name = "magetypes"
+version = "0.9.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c97530899f0a93eebffd5e8a9ce8e733e35236e7349ada63ad4126142014bf45"
+dependencies = [
+ "archmage",
+ "rustversion",
+]
 
 [[package]]
 name = "md5"
@@ -1826,6 +1882,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "ultrahdr-rs",
  "wgpu",
 ]
 
@@ -1912,6 +1969,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
+name = "rgb"
+version = "0.8.53"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47b34b781b31e5d73e9fbc8689c70551fd1ade9a19e3e28cfec8580a79290cc4"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "rle-decode-fast"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1943,6 +2009,21 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "safe_arch"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42c6efa15875e6ecb39ca61fb0b0c1a40b84fac5a5ffe71eef7d1000c8eb3f5f"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
+name = "safe_unaligned_simd"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9c874fb993656d484725d58fbfddb39dfcf98ebcadc1a1d09568aa6b39bafba"
 
 [[package]]
 name = "same-file"
@@ -2307,6 +2388,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "ultrahdr-core"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "964a038e0f75524ef9bd01ee6bda6d2457a3b6c1ca8df22478b9bb94b3547669"
+dependencies = [
+ "archmage",
+ "bytemuck",
+ "enough",
+ "half",
+ "linear-srgb",
+ "magetypes",
+ "thiserror",
+ "wide",
+]
+
+[[package]]
+name = "ultrahdr-rs"
+version = "0.3.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04d23de1da522be7d8abe8e7ebba3b99f08ac9ed0fcb1b16d01c60cfa96addbe"
+dependencies = [
+ "bytemuck",
+ "enough",
+ "half",
+ "imgref",
+ "moxcms 0.8.1",
+ "rgb",
+ "thiserror",
+ "ultrahdr-core",
+ "wide",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2571,6 +2685,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "wide"
+version = "1.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d920ac99c3c8edce110cb8d07dbb324d6d026011dce85b1e9355b70f0adacc4f"
+dependencies = [
+ "bytemuck",
+ "safe_arch",
+]
+
+[[package]]
 name = "winapi-util"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2578,6 +2702,12 @@ checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
  "windows-sys",
 ]
+
+[[package]]
+name = "winarm-cpufeatures"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d107c80dd656e1a2c254dfb1d57ece73b7f515b8a8684c270c23cab68f4a440d"
 
 [[package]]
 name = "windows"

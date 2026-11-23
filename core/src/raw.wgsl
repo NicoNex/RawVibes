@@ -766,11 +766,16 @@ fn develop_encode(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups)
     if i >= d.out_w * d.out_h { return; }
     let wide = lin[(i / d.out_w + d.margin) * d.lin_w + i % d.out_w + d.margin].xyz;
     var out: vec3<f32>;
+    var scene = 1.0;
     if d.log == 1u {
         let c = wide * d.to_out;
         out = vec3<f32>(encode_log(c.x), encode_log(c.y), encode_log(c.z));
     } else {
-        out = view_transform(gamut_compress(wide * d.to_out));
+        let c = gamut_compress(wide * d.to_out);
+        out = view_transform(c);
+        // The exposed scene's max channel: what the HDR rendition starts from (grade.wgsl).
+        let e = max(c, vec3<f32>(0.0)) * VIEW_EXPOSURE;
+        scene = max(e.x, max(e.y, e.z));
     }
-    photo[i] = vec4<f32>(out, 1.0);
+    photo[i] = vec4<f32>(out, scene);
 }

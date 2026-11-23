@@ -556,7 +556,7 @@ struct App {
     /// The running photo export's stop flag.
     exporting: Option<Arc<AtomicBool>>,
     /// The frame the JPEG size estimate encodes (`Done::ExportFrame`), and its generation.
-    export_frame: Option<(u32, u32, Arc<Vec<u16>>)>,
+    export_frame: Option<Arc<export::Exported>>,
     export_gen: u64,
     /// Last preview request; identical requests (e.g. echoes of programmatic
     /// widget resets) are not re-rendered.
@@ -1033,7 +1033,7 @@ impl App {
         let _ = settings::set_value(settings::HDR_HEADROOM, &ui.headroom().to_string());
         let (format, quality, headroom) = (ui.format(), ui.quality(), ui.headroom());
         let tags = self.export_tags(&crop);
-        if format.is_jpeg() && tags.xmp.as_deref().is_some_and(|x| !export::xmp_fits_jpeg(x)) {
+        if format.ext() == "jpg" && tags.xmp.as_deref().is_some_and(|x| !export::xmp_fits_jpeg(x)) {
             self.toast(&gettext("Title, keywords and rights are too long for a JPEG: exported without them"));
         }
         self.send(Job::ExportPhoto(Box::new(PhotoExport {
@@ -1870,27 +1870,31 @@ impl App {
         self.render_lab();
     }
 
-    /// The export dialog's file size: JPEG estimated from the photo graded at
-    /// preview size (encoded off the main thread once the quality settles,
-    /// scaled by the pixel count), 16-bit exact or bounded.
+    /// Renders the frame the size estimate encodes (`Done::ExportFrame`): the photo
+    /// graded at preview size, with its HDR gains when the format carries them.
+    fn export_frame_request(&mut self) {
+        self.export_frame = None;
+        self.export_gen += 1;
+        self.ui.export_photo.set_estimate(None);
+        let ui = &self.ui.export_photo;
+        let mut grade = self.graded();
+        if ui.format().hdr() {
+            grade.params.hdr_stops = ui.headroom();
+        }
+        self.send(Job::ExportFrame(grade));
+    }
+
+    /// The export dialog's file size: the preview-size frame encoded as exported
+    /// (off the main thread once the settings settle), scaled by the pixel count.
     fn export_estimate(&mut self, sender: &ComponentSender<Self>) {
         let Some((w, h)) = self.crop_region().map(|c| Decoded::fit_size(&c, u32::MAX)) else { return };
-        let ui = &self.ui.export_photo;
-        let raw = w as u64 * h as u64 * 6;
         self.export_gen += 1;
-        match ui.format() {
-            PhotoFormat::Tiff16 => ui.set_estimate(Some(glib::format_size(raw).into())),
-            PhotoFormat::Png16 => ui.set_estimate(Some(gettext!("up to {}", glib::format_size(raw)))),
-            // shortcut: an HDR JPEG's gain map (a quarter of the pixels, grey) is left out of the estimate.
-            PhotoFormat::Jpeg | PhotoFormat::UltraHdr => {
-                ui.set_estimate(None);
-                let (generation, s) = (self.export_gen, sender.input_sender().clone());
-                // A spin held down sends a value per tick: encode only the one it stops on.
-                glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
-                    s.emit(Msg::ExportEstimateRun(generation, w, h))
-                });
-            }
-        }
+        self.ui.export_photo.set_estimate(None);
+        let (generation, s) = (self.export_gen, sender.input_sender().clone());
+        // A spin held down sends a value per tick: encode only the one it stops on.
+        glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
+            s.emit(Msg::ExportEstimateRun(generation, w, h))
+        });
     }
 
     fn toast(&self, text: &str) {
@@ -4984,23 +4988,21 @@ impl SimpleComponent for App {
                 ui.set_roll(shown);
                 let (w, h) = Decoded::fit_size(&crop, u32::MAX);
                 ui.set_size(w, h);
-                // The JPEG estimate waits for the frame (Done::ExportFrame).
-                self.export_frame = None;
-                let grade = self.graded();
-                self.send(Job::ExportFrame(grade));
                 ui.dialog.present(Some(&self.ui.window));
-                self.export_estimate(&sender);
+                self.export_frame_request();
             }
             Msg::ExportSettings => {
                 let ui = &self.ui.export_photo;
                 ui.set_format(ui.format());
-                self.export_estimate(&sender);
+                self.export_frame_request();
             }
             Msg::ExportEstimateRun(generation, w, h) if generation == self.export_gen => {
-                let Some((fw, fh, px)) = self.export_frame.clone() else { return };
-                let (quality, s) = (self.ui.export_photo.quality(), sender.input_sender().clone());
+                let Some(frame) = self.export_frame.clone() else { return };
+                let ui = &self.ui.export_photo;
+                let (format, quality, s) = (ui.format(), ui.quality(), sender.input_sender().clone());
                 std::thread::spawn(move || {
-                    let n = export::jpeg_size(&px, fw, fh, quality) as f64 * (w as f64 * h as f64) / (fw * fh) as f64;
+                    let scale = (w as f64 * h as f64) / (frame.w as f64 * frame.h as f64);
+                    let n = export::encoded_size(&frame, format, quality) as f64 * scale;
                     s.emit(Msg::ExportEstimate(generation, n as u64));
                 });
             }
@@ -5691,11 +5693,9 @@ impl App {
                 let f = self.batch.as_ref().map_or(f, |b| ((b.total - b.left.len() - 1) as f32 + f) / b.total as f32);
                 self.ui.export_photo.set_progress(f);
             }
-            Done::ExportFrame(w, h, rgb) => {
-                self.export_frame = Some((w, h, Arc::new(rgb)));
-                if self.ui.export_photo.format().is_jpeg() {
-                    self.export_estimate(sender);
-                }
+            Done::ExportFrame(frame) => {
+                self.export_frame = Some(Arc::new(frame));
+                self.export_estimate(sender);
             }
             Done::PhotoExported(r) if self.batch.is_some() => {
                 self.exporting = None;

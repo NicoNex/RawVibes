@@ -25,6 +25,9 @@ pub fn format_label(f: PhotoFormat) -> String {
     match f {
         PhotoFormat::Jpeg => gettext("JPEG · 8-bit, for sharing"),
         PhotoFormat::UltraHdr => gettext("JPEG HDR · gain map, brighter highlights on HDR screens"),
+        PhotoFormat::JxlHdr => gettext("JPEG XL HDR · Rec.2100 PQ, small files"),
+        PhotoFormat::AvifHdr => gettext("AVIF HDR · Rec.2100 PQ, for the web"),
+        PhotoFormat::PngHdr => gettext("PNG HDR · 16-bit Rec.2100 PQ, lossless"),
         PhotoFormat::Png16 => gettext("PNG · 16-bit, lossless"),
         PhotoFormat::Tiff16 => gettext("TIFF · 16-bit, for print and editing"),
     }
@@ -57,6 +60,8 @@ pub fn build(sender: &ComponentSender<App>) -> ExportUi {
         .digits(1)
         .adjustment(&gtk::Adjustment::new(headroom.clamp(1.0, 3.0) as f64, 1.0, 3.0, 0.5, 0.5, 0.0))
         .build();
+    let snd = sender.clone();
+    headroom_row.connect_value_notify(move |_| snd.input(Msg::ExportSettings));
     let size = adw::ActionRow::builder().title(gettext("Size")).css_classes(["property"]).build();
     let estimate = adw::ActionRow::builder().title(gettext("File size")).css_classes(["property"]).build();
     let all = adw::SwitchRow::builder().title(gettext("All photos in the filmstrip")).visible(false).build();
@@ -136,12 +141,12 @@ impl ExportUi {
         self.headroom.value() as f32
     }
 
-    /// Shows `f`'s controls (quality is JPEG only, headroom HDR only) and selects it.
+    /// Shows `f`'s controls (quality for lossy formats, headroom for HDR ones) and selects it.
     pub fn set_format(&self, f: PhotoFormat) {
         let i = PhotoFormat::ALL.iter().position(|&x| x == f).unwrap_or(0) as u32;
         self.format.set_selected(i);
-        self.quality.set_visible(f.is_jpeg());
-        self.headroom.set_visible(f == PhotoFormat::UltraHdr);
+        self.quality.set_visible(f.lossy());
+        self.headroom.set_visible(f.hdr());
     }
 
     /// Offers exporting all `n` photos the filmstrip shows, when there are several.

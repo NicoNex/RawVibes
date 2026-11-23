@@ -413,6 +413,11 @@ pub fn rec2020_to_rec709() -> [[f32; 3]; 3] {
     f32m(mul(&inverse(&npm(REC709, D65)), &npm(REC2020, D65)))
 }
 
+/// Row-major linear Rec.709 → linear Rec.2020.
+pub fn rec709_to_rec2020() -> [[f32; 3]; 3] {
+    f32m(mul(&inverse(&npm(REC2020, D65)), &npm(REC709, D65)))
+}
+
 /// LogC4 linear-toe slope and offset (s, t) from the ARRI spec.
 fn logc4_toe() -> (f64, f64) {
     let (a, b, c) = LOGC4;

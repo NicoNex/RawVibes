@@ -491,8 +491,8 @@ pub enum Done {
     /// Photo export: fraction done, then the file written (`None`: cancelled).
     ExportProgress(f32),
     PhotoExported(Result<Option<PathBuf>, String>),
-    /// `Job::ExportFrame`: width, height, 16-bit RGB.
-    ExportFrame(u32, u32, Vec<u16>),
+    /// `Job::ExportFrame`: the frame as exported (HDR gains with `hdr_stops` set).
+    ExportFrame(Exported),
     RollFrame {
         generation: u64,
         index: usize,
@@ -784,9 +784,8 @@ impl Worker {
             }
             let mut grade = e.grade.clone();
             grade.params.frame(&strip, &e.crop);
-            if e.format == PhotoFormat::UltraHdr {
-                grade.params.hdr_stops = e.headroom;
-                grade.params.scene = (raw && e.profile == Profile::Standard) as u32;
+            if e.format.hdr() {
+                (grade.params.hdr_stops, grade.params.scene) = (e.headroom, raw as u32);
             }
             gpu.render16(slot.as_ref().expect("developed above"), &grade, look.as_ref(), &mut out, &mut gains);
             notify(Done::ExportProgress(start + (1.0 - start) * y1 as f32 / h as f32));
@@ -961,11 +960,13 @@ impl Worker {
                 });
                 notify(Done::PhotoExported(r));
             }
-            Job::ExportFrame(grade) => {
+            Job::ExportFrame(mut grade) => {
                 let Some(ph) = self.whole() else { return };
-                let mut rgb = Vec::new();
-                gpu.render16(ph, &grade, self.look.as_ref(), &mut rgb, &mut Vec::new());
-                notify(Done::ExportFrame(ph.width, ph.height, rgb));
+                grade.params.scene = self.show_raw as u32;
+                let (mut rgb, mut gains) = (Vec::new(), Vec::new());
+                gpu.render16(ph, &grade, self.look.as_ref(), &mut rgb, &mut gains);
+                let headroom = grade.params.hdr_stops;
+                notify(Done::ExportFrame(Exported { w: ph.width, h: ph.height, rgb, gains, headroom }));
             }
             Job::Export { grade, look, size, format, title, path } => {
                 let size = format.fixed_size().unwrap_or(size);
@@ -1283,7 +1284,7 @@ mod tests {
                 format,
                 quality: 90,
                 headroom: export::HDR_HEADROOM,
-                path: PathBuf::from(&out).join(format!("export.{}", format.ext())),
+                path: PathBuf::from(&out).join(format!("export-{}.{}", format.tag(), format.ext())),
                 cancel: Arc::default(),
                 tags: crate::meta::tags(
                     crate::meta::read(&path).as_ref(),

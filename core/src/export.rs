@@ -1,13 +1,13 @@
 //! Photo export: the crop at full resolution, developed and graded in
 //! horizontal strips (so any photo fits the GPU's buffer limits), then
-//! encoded as JPEG, 16-bit PNG or 16-bit TIFF (display sRGB), or as an Ultra HDR
-//! JPEG: the SDR JPEG plus an ISO 21496-1 gain map to its HDR rendition.
+//! encoded as JPEG, 16-bit PNG or 16-bit TIFF (display sRGB), or with its HDR
+//! rendition: an Ultra HDR JPEG (the SDR JPEG plus an ISO 21496-1 gain map), or
+//! JPEG XL, AVIF and 16-bit PNG in Rec.2100 PQ.
 
-use std::io::{BufWriter, Cursor, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Cursor, Seek, Write};
 use std::path::Path;
 
 use image::codecs::jpeg::JpegEncoder;
-use image::codecs::png::PngEncoder;
 use image::codecs::tiff::TiffEncoder;
 use image::{ExtendedColorType, ImageEncoder};
 
@@ -21,23 +21,43 @@ pub enum PhotoFormat {
     Jpeg,
     /// JPEG with a gain map (Ultra HDR v1 XMP and ISO 21496-1): SDR where HDR is not shown.
     UltraHdr,
+    /// JPEG XL in Rec.2100 PQ (libjxl); decoders tone-map it for SDR screens.
+    JxlHdr,
+    /// AVIF in Rec.2100 PQ, 10-bit 4:4:4 (libavif with libaom).
+    AvifHdr,
+    /// 16-bit PNG in Rec.2100 PQ (cICP), lossless.
+    PngHdr,
     Png16,
     Tiff16,
 }
 
 impl PhotoFormat {
-    pub const ALL: [PhotoFormat; 4] =
-        [PhotoFormat::Jpeg, PhotoFormat::UltraHdr, PhotoFormat::Png16, PhotoFormat::Tiff16];
+    pub const ALL: [PhotoFormat; 7] = [
+        PhotoFormat::Jpeg,
+        PhotoFormat::UltraHdr,
+        PhotoFormat::JxlHdr,
+        PhotoFormat::AvifHdr,
+        PhotoFormat::PngHdr,
+        PhotoFormat::Png16,
+        PhotoFormat::Tiff16,
+    ];
 
-    /// Whether the JPEG quality applies.
-    pub fn is_jpeg(self) -> bool {
-        matches!(self, PhotoFormat::Jpeg | PhotoFormat::UltraHdr)
+    /// Whether the quality setting applies (lossy).
+    pub fn lossy(self) -> bool {
+        matches!(self, PhotoFormat::Jpeg | PhotoFormat::UltraHdr | PhotoFormat::JxlHdr | PhotoFormat::AvifHdr)
+    }
+
+    /// Whether it carries the HDR rendition (and its headroom applies).
+    pub fn hdr(self) -> bool {
+        matches!(self, PhotoFormat::UltraHdr | PhotoFormat::JxlHdr | PhotoFormat::AvifHdr | PhotoFormat::PngHdr)
     }
 
     pub fn ext(self) -> &'static str {
         match self {
             PhotoFormat::Jpeg | PhotoFormat::UltraHdr => "jpg",
-            PhotoFormat::Png16 => "png",
+            PhotoFormat::JxlHdr => "jxl",
+            PhotoFormat::AvifHdr => "avif",
+            PhotoFormat::PngHdr | PhotoFormat::Png16 => "png",
             PhotoFormat::Tiff16 => "tif",
         }
     }
@@ -47,6 +67,9 @@ impl PhotoFormat {
         match self {
             PhotoFormat::Jpeg => "jpeg",
             PhotoFormat::UltraHdr => "ultrahdr",
+            PhotoFormat::JxlHdr => "jxl-hdr",
+            PhotoFormat::AvifHdr => "avif-hdr",
+            PhotoFormat::PngHdr => "png-hdr",
             PhotoFormat::Png16 => "png16",
             PhotoFormat::Tiff16 => "tiff16",
         }
@@ -62,6 +85,7 @@ pub const HDR_HEADROOM: f32 = 2.0;
 
 /// An exported photo: `w` × `h` 16-bit RGB, and for an HDR export each pixel's
 /// gain (log2 over `headroom` stops, 16-bit; else empty).
+#[derive(Debug)]
 pub struct Exported {
     pub w: u32,
     pub h: u32,
@@ -102,7 +126,6 @@ fn to_u8_dithered(v: u16, i: usize) -> u8 {
 /// Writes `img` to `path`. Through a `.part` file
 /// renamed at the end, so a failed export never destroys the file it
 /// replaces; not renamed (`Ok(false)`) once `cancelled` says so.
-#[allow(clippy::too_many_arguments)]
 pub fn save(
     path: &Path,
     img: Exported,
@@ -115,53 +138,8 @@ pub fn save(
     part.push(".part");
     let part = std::path::PathBuf::from(part);
     let write = || -> Result<(), String> {
-        let Exported { w, h, ref rgb, .. } = img;
         let mut file = BufWriter::new(std::fs::File::create(&part).map_err(|e| e.to_string())?);
-        if rgb.len() != w as usize * h as usize * 3 {
-            return Err("export buffer size mismatch".into());
-        }
-        let px: &[u8] = bytemuck::cast_slice(rgb);
-        let err = |e: image::ImageError| e.to_string();
-        match format {
-            PhotoFormat::Jpeg => {
-                if let Some(xmp) = &tags.xmp {
-                    // XMP has no encoder hook: encoded in memory, the segment written in after the APPn ones.
-                    let mut jpeg = Vec::new();
-                    encode_jpeg(&mut jpeg, rgb, w, h, quality, &tags.exif)?;
-                    let (head, tail) = jpeg.split_at(after_app_segments(&jpeg));
-                    let segment = app1(&[XMP_NS, xmp.as_bytes()].concat());
-                    [head, &segment, tail].iter().try_for_each(|b| file.write_all(b)).map_err(|e| e.to_string())?;
-                } else {
-                    encode_jpeg(&mut file, rgb, w, h, quality, &tags.exif)?;
-                }
-            }
-            PhotoFormat::UltraHdr => {
-                let mut base = Vec::new();
-                encode_jpeg(&mut base, rgb, w, h, quality, &tags.exif)?;
-                file.write_all(&ultra_hdr(&base, &img, quality, tags.xmp.as_deref())?).map_err(|e| e.to_string())?;
-            }
-            PhotoFormat::Png16 => {
-                let mut enc = PngEncoder::new(&mut file);
-                let _ = enc.set_icc_profile(SRGB_ICC.to_vec());
-                if !tags.exif.is_empty() {
-                    let _ = enc.set_exif_metadata(tags.exif.clone());
-                }
-                enc.write_image(px, w, h, ExtendedColorType::Rgb16).map_err(err)?;
-                if let Some(x) = &tags.xmp {
-                    // iTXt may follow the image data: written over IEND (the last 12 bytes), then IEND again.
-                    file.seek(SeekFrom::End(-12)).map_err(|e| e.to_string())?;
-                    let itxt = [&b"XML:com.adobe.xmp\0\0\0\0\0"[..], x.as_bytes()].concat();
-                    file.write_all(&png_chunk(b"iTXt", &itxt)).map_err(|e| e.to_string())?;
-                    file.write_all(&png_chunk(b"IEND", &[])).map_err(|e| e.to_string())?;
-                }
-            }
-            PhotoFormat::Tiff16 => {
-                // shortcut: TIFF gets the ICC profile only, no EXIF/XMP; add them as custom tags when asked.
-                let mut enc = TiffEncoder::new(&mut file);
-                let _ = enc.set_icc_profile(SRGB_ICC.to_vec());
-                enc.write_image(px, w, h, ExtendedColorType::Rgb16).map_err(err)?;
-            }
-        }
+        encode(&mut file, &img, format, quality, tags)?;
         // The last buffered bytes and the disk sync can fail too (disk full): before the rename.
         file.into_inner().map_err(|e| e.error().to_string())?.sync_all().map_err(|e| e.to_string())
     };
@@ -177,12 +155,92 @@ pub fn save(
     r
 }
 
-/// Bytes of a 16-bit RGB image (`w` × `h`) as a JPEG at `quality`: what the
+/// Bytes of `img` encoded as `format` at `quality`, gain map included: what the
 /// export dialog scales by the pixel-count ratio to estimate the file size.
-pub fn jpeg_size(rgb: &[u16], w: u32, h: u32, quality: u8) -> usize {
+pub fn encoded_size(img: &Exported, format: PhotoFormat, quality: u8) -> usize {
     let mut out = Cursor::new(Vec::new());
-    let _ = encode_jpeg(&mut out, rgb, w, h, quality, &[]);
+    let _ = encode(&mut out, img, format, quality, &Tags::default());
     out.into_inner().len()
+}
+
+/// `img` encoded as `format` into `to`.
+fn encode(
+    to: &mut (impl Write + Seek),
+    img: &Exported,
+    format: PhotoFormat,
+    quality: u8,
+    tags: &Tags,
+) -> Result<(), String> {
+    let Exported { w, h, ref rgb, .. } = *img;
+    if rgb.len() != w as usize * h as usize * 3 {
+        return Err("export buffer size mismatch".into());
+    }
+    if format.hdr() && img.gains.len() != w as usize * h as usize {
+        return Err("HDR gain buffer size mismatch".into());
+    }
+    let io = |e: std::io::Error| e.to_string();
+    match format {
+        PhotoFormat::Jpeg => {
+            if let Some(xmp) = &tags.xmp {
+                // XMP has no encoder hook: encoded in memory, the segment written in after the APPn ones.
+                let mut jpeg = Vec::new();
+                encode_jpeg(&mut jpeg, rgb, w, h, quality, &tags.exif)?;
+                let (head, tail) = jpeg.split_at(after_app_segments(&jpeg));
+                let segment = app1(&[XMP_NS, xmp.as_bytes()].concat());
+                [head, &segment, tail].iter().try_for_each(|b| to.write_all(b)).map_err(io)
+            } else {
+                encode_jpeg(to, rgb, w, h, quality, &tags.exif)
+            }
+        }
+        PhotoFormat::UltraHdr => {
+            let mut base = Vec::new();
+            encode_jpeg(&mut base, rgb, w, h, quality, &tags.exif)?;
+            to.write_all(&ultra_hdr(&base, img, quality, tags.xmp.as_deref())?).map_err(io)
+        }
+        PhotoFormat::JxlHdr => to.write_all(&hdr::jxl(img, quality, tags)?).map_err(io),
+        PhotoFormat::AvifHdr => to.write_all(&hdr::avif(img, quality, tags)?).map_err(io),
+        PhotoFormat::PngHdr => {
+            let pq = hdr::pq_rec2100(img);
+            write_png(to, w, h, &pq.samples, Some(pq.light), tags)
+        }
+        PhotoFormat::Png16 => write_png(to, w, h, rgb, None, tags),
+        PhotoFormat::Tiff16 => {
+            // shortcut: TIFF gets the ICC profile only, no EXIF/XMP; add them as custom tags when asked.
+            let mut enc = TiffEncoder::new(to);
+            let _ = enc.set_icc_profile(SRGB_ICC.to_vec());
+            enc.write_image(bytemuck::cast_slice(rgb), w, h, ExtendedColorType::Rgb16).map_err(|e| e.to_string())
+        }
+    }
+}
+
+/// A 16-bit RGB PNG with EXIF and XMP: sRGB (ICC), or Rec.2100 PQ (cICP, with
+/// its content light level) when `pq` gives the light level.
+fn write_png(to: impl Write, w: u32, h: u32, px: &[u16], pq: Option<hdr::Light>, tags: &Tags) -> Result<(), String> {
+    let err = |e: png::EncodingError| e.to_string();
+    let mut info = png::Info::with_size(w, h);
+    (info.color_type, info.bit_depth) = (png::ColorType::Rgb, png::BitDepth::Sixteen);
+    if pq.is_none() {
+        info.icc_profile = Some(SRGB_ICC.into());
+    }
+    if !tags.exif.is_empty() {
+        info.exif_metadata = Some(tags.exif.as_slice().into());
+    }
+    let mut enc = png::Encoder::with_info(to, info).map_err(err)?;
+    // As fast as the image crate's default: 16-bit photos barely gain from slower deflate.
+    enc.set_compression(png::Compression::Fast);
+    if let Some(x) = &tags.xmp {
+        enc.add_itxt_chunk("XML:com.adobe.xmp".into(), x.clone()).map_err(err)?;
+    }
+    let mut writer = enc.write_header().map_err(err)?;
+    if let Some(light) = pq {
+        // The png crate reads but does not write these: Rec.2100 PQ, full range; light in 0.0001 cd/m².
+        writer.write_chunk(png::chunk::ChunkType(*b"cICP"), &[9, 16, 0, 1]).map_err(err)?;
+        let clli = [light.max_cll, light.max_fall].map(|n| ((n * 10_000.0) as u32).to_be_bytes()).concat();
+        writer.write_chunk(png::chunk::ChunkType(*b"cLLI"), &clli).map_err(err)?;
+    }
+    let be: Vec<u8> = px.par_iter().flat_map_iter(|v| v.to_be_bytes()).collect();
+    writer.write_image_data(&be).map_err(err)?;
+    writer.finish().map_err(err)
 }
 
 fn encode_jpeg(to: impl Write, rgb: &[u16], w: u32, h: u32, quality: u8, exif: &[u8]) -> Result<(), String> {
@@ -287,17 +345,7 @@ fn app1(payload: &[u8]) -> Vec<u8> {
     [&[0xff, 0xe1][..], &len.to_be_bytes(), payload].concat()
 }
 
-/// A PNG chunk: length, type, data, CRC-32 of type and data.
-fn png_chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
-    let mut crc = !0u32;
-    for &byte in kind.iter().chain(data) {
-        crc ^= byte as u32;
-        for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
-        }
-    }
-    [&(data.len() as u32).to_be_bytes()[..], kind, data, &(!crc).to_be_bytes()].concat()
-}
+mod hdr;
 
 #[cfg(test)]
 mod tests {
@@ -321,12 +369,13 @@ mod tests {
         let rgb: Vec<u16> = (0..w * h * 3).map(|i| (i * 2000) as u16).collect();
         let dir = std::env::temp_dir().join(format!("rawvibes-export-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        for f in PhotoFormat::ALL {
+        // The image crate reads back the SDR ones; the HDR ones have their own tests.
+        for f in PhotoFormat::ALL.into_iter().filter(|f| !f.hdr() || *f == PhotoFormat::UltraHdr) {
             let p = dir.join(format!("x.{}", f.ext()));
             assert!(save(&p, img(w, h, rgb.clone()), f, JPEG_QUALITY, &Tags::default(), || false).unwrap());
             let back = image::open(&p).unwrap();
             assert_eq!((back.width(), back.height()), (w, h));
-            if !f.is_jpeg() {
+            if !f.lossy() {
                 assert_eq!(back.into_rgb16().into_raw(), rgb, "{f:?} is lossless 16-bit");
             }
             assert!(!dir.join(format!("x.{}.part", f.ext())).exists());
@@ -462,8 +511,68 @@ mod tests {
     }
 
     #[test]
-    fn jpeg_size_grows_with_quality() {
+    fn size_grows_with_quality() {
         let rgb: Vec<u16> = (0..64 * 64 * 3).map(|i| (i * 37 % 251 * 257) as u16).collect();
-        assert!(jpeg_size(&rgb, 64, 64, 50) < jpeg_size(&rgb, 64, 64, 95));
+        let gains = (0..64 * 64).map(|i| (i * 13 % 64 * 1000) as u16).collect();
+        let e = Exported { w: 64, h: 64, rgb, gains, headroom: 2.0 };
+        for f in PhotoFormat::ALL.into_iter().filter(|f| f.lossy()) {
+            assert!(encoded_size(&e, f, 50) < encoded_size(&e, f, 95), "{f:?}");
+        }
+        // The gain map counts.
+        assert!(encoded_size(&e, PhotoFormat::UltraHdr, 90) > encoded_size(&e, PhotoFormat::Jpeg, 90) + 500);
+    }
+
+    /// A 64×32 HDR export: a grey ramp, the gain rising to the full headroom on the right.
+    fn hdr_sample() -> Exported {
+        let (w, h) = (64u32, 32u32);
+        let rgb = (0..w * h * 3).map(|i| ((i / 3 % w) * 1000) as u16).collect();
+        let gains = (0..w * h).map(|i| (i % w * 65535 / (w - 1)) as u16).collect();
+        Exported { w, h, rgb, gains, headroom: 2.0 }
+    }
+
+    #[test]
+    fn png_pq_is_tagged_rec2100() {
+        let mut out = Cursor::new(Vec::new());
+        encode(&mut out, &hdr_sample(), PhotoFormat::PngHdr, 90, &sample_tags(64, 32)).unwrap();
+        let bytes = out.into_inner();
+        let mut reader = png::Decoder::new(Cursor::new(&bytes)).read_info().unwrap();
+        let info = reader.info();
+        let cicp = info.coding_independent_code_points.expect("cICP");
+        assert_eq!((cicp.color_primaries, cicp.transfer_function, cicp.matrix_coefficients), (9, 16, 0));
+        assert!(info.icc_profile.is_none() && info.exif_metadata.is_some());
+        let peak = info.content_light_level.expect("cLLI").max_content_light_level as f32 / 10_000.0;
+        assert!((peak - 4.0 * hdr::SDR_WHITE * hdr_peak_fraction()).abs() < 2.0, "{peak}");
+        let mut px = vec![0; reader.output_buffer_size().unwrap()];
+        reader.next_frame(&mut px).unwrap();
+        assert!(contains(&bytes, b"Alba"));
+    }
+
+    /// The brightest pixel of `hdr_sample` (last column, SDR 63000/65535) in display-linear terms.
+    fn hdr_peak_fraction() -> f32 {
+        crate::photo::srgb_invert_gamma(63000.0 / 65535.0)
+    }
+
+    #[test]
+    fn jxl_is_rec2100_pq() {
+        let bytes = hdr::jxl(&hdr_sample(), 90, &sample_tags(64, 32)).unwrap();
+        let dec = jpegxl_rs::decoder_builder().build().unwrap();
+        let (meta, px) = dec.decode_with::<u16>(&bytes).unwrap();
+        assert_eq!((meta.width, meta.height, px.len()), (64, 32, 64 * 32 * 3));
+        // Decoded in the signalled space: PQ, the ramp's top-right pixel near its encoded value.
+        let want = hdr::pq_rec2100(&hdr_sample()).samples;
+        let at = (31 * 64 + 63) * 3 + 1;
+        assert!((px[at] as i32 - want[at] as i32).abs() < 1500, "{} vs {}", px[at], want[at]);
+        // libjxl's intensity target for a PQ signal: its 10000 cd/m² scale.
+        assert_eq!(meta.intensity_target, 10_000.0);
+        assert!(contains(&bytes, b"Exif") && contains(&bytes, b"Alba"));
+    }
+
+    #[test]
+    fn avif_is_rec2100_pq() {
+        let bytes = hdr::avif(&hdr_sample(), 90, &sample_tags(64, 32)).unwrap();
+        assert!(contains(&bytes, b"ftypavif"));
+        // colr nclx: primaries 9, transfer 16, matrix 9, full range.
+        assert!(contains(&bytes, &[b'n', b'c', b'l', b'x', 0, 9, 0, 16, 0, 9, 0x80]));
+        assert!(contains(&bytes, b"clli") && contains(&bytes, b"Exif") && contains(&bytes, b"Alba"));
     }
 }

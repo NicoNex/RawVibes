@@ -111,7 +111,8 @@ pub struct Params {
     /// HDR rendition headroom in stops over SDR white (0 = SDR only): the gain `export16` writes.
     #[serde(skip)]
     pub hdr_stops: f32,
-    /// 1 = the source's alpha holds the exposed scene's max channel (a RAW developed to Standard).
+    /// 1 = the source is a developed RAW: with the Standard profile its alpha holds the
+    /// exposed scene's max channel (a log input decodes the scene instead).
     #[serde(skip)]
     pub scene: u32,
 }

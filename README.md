@@ -182,17 +182,24 @@ much metadata an export carries:
 
 <img src="docs/screenshots/export.jpg" alt="Export Photo dialog of RawVibes: JPEG at quality 90, 6000 × 4000 px, about 5.8 MB, with batch export of every photo in the filmstrip" width="100%">
 
-`Ctrl+E` exports the full resolution of the crop with every edit, in sRGB with an
-embedded ICC profile:
+`Ctrl+E` exports the full resolution of the crop with every edit. The SDR formats are
+sRGB with an embedded ICC profile. The HDR formats carry an HDR rendition of the same
+look: the highlights a RAW or log photo holds go up to the *HDR headroom* (1–3 stops)
+above SDR white, while the grade and LUTs stay as you see them.
 
 | Format | For |
 |---|---|
-| JPEG, 8-bit | Sharing. Dithered, so skies don't band. The dialog shows the expected file size as you change the quality. |
+| JPEG, 8-bit | Sharing. Dithered, so skies don't band. |
+| JPEG HDR | Phones and browsers. An Ultra HDR JPEG with an ISO 21496-1 gain map: HDR screens show the brighter highlights, every other viewer shows the normal JPEG. |
+| JPEG XL HDR | Small HDR files, Rec.2100 PQ (libjxl). Viewers tone-map it for SDR screens. |
+| AVIF HDR | HDR on the web, Rec.2100 PQ, 10-bit (libavif with libaom). |
+| PNG HDR, 16-bit | Lossless HDR, Rec.2100 PQ (cICP). |
 | PNG, 16-bit | Lossless archive. |
 | TIFF, 16-bit | Print, or more editing in another app. |
 
-JPEG and PNG carry EXIF and XMP metadata (title, keywords, rights), so Lightroom,
-digiKam and photo sites read them. The file is written to a temporary copy first,
+The dialog shows the expected file size as you change the format, quality or headroom
+(the gain map included). Every format except TIFF carries EXIF and XMP metadata (title,
+keywords, rights), so Lightroom, digiKam and photo sites read them. The file is written to a temporary copy first,
 so stopping an export leaves the old file untouched.
 
 **Batch export:** switch on *All photos in the filmstrip* and choose a folder.

@@ -123,7 +123,7 @@ arch:
 
 # Self-contained .app: dylibbundler copies the linked dylibs, and the GTK runtime data
 # (schemas, icon themes, pixbuf loaders) comes from Homebrew into the bundle; the
-# launcher points GTK at it. Needs Homebrew gtk4, libadwaita, adwaita-icon-theme,
+# launcher points GTK at it. Needs Homebrew gtk4, libadwaita, adwaita-icon-theme, jpeg-xl, cmake, nasm,
 # librsvg and dylibbundler.
 APP  := target/RawVibes.app
 BREW  = $(shell brew --prefix)

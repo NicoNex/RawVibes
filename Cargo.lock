@@ -151,6 +151,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "bon"
+version = "3.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a05442cd7005532d0cfedec676b5b9333d2b4c7c3afabe2b1a9ce2742fbe2ee6"
+dependencies = [
+ "bon-macros",
+]
+
+[[package]]
+name = "bon-macros"
+version = "3.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93833e97ac7c46ba97045afcf247238c27057538fcf2f06344662ddd5f567be6"
+dependencies = [
+ "darling",
+ "ident_case",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
+]
+
+[[package]]
 name = "brotli-decompressor"
 version = "5.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -267,6 +290,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmake"
+version = "0.1.58"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "codespan-reporting"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -320,6 +352,40 @@ name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
+
+[[package]]
+name = "darling"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed17f5901b6630b993ca003def43f2f8ef4014fc13b047b57aad617ff32bc2ec"
+dependencies = [
+ "darling_core",
+ "darling_macro",
+]
+
+[[package]]
+name = "darling_core"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6837e2cf7485aaae18f86181d2f0e9a7ed297a025e220aeabf63fdebd3a2ddff"
+dependencies = [
+ "ident_case",
+ "proc-macro2",
+ "quote",
+ "strsim",
+ "syn 3.0.10",
+]
+
+[[package]]
+name = "darling_macro"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ac7135c3ef02b2f7833bbeb1be5ba7f966dcde8a87c6b87f65a778d71a02785"
+dependencies = [
+ "darling_core",
+ "quote",
+ "syn 3.0.10",
+]
 
 [[package]]
 name = "dary_heap"
@@ -925,6 +991,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ident_case"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
+
+[[package]]
 name = "image"
 version = "0.25.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -981,6 +1053,28 @@ name = "itoa"
 version = "1.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
+
+[[package]]
+name = "jpegxl-rs"
+version = "0.17.0+libjxl-0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c774d4b8f5804fb23344e7153413789458f735b33bc75f143d9f8a875416cc03"
+dependencies = [
+ "bon",
+ "byteorder",
+ "half",
+ "jpegxl-sys",
+ "thiserror",
+]
+
+[[package]]
+name = "jpegxl-sys"
+version = "0.14.0+libjxl-0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19920e882934050e2c5e215405ae38611762c7cef3ad24a0847653cfd734bdef"
+dependencies = [
+ "pkg-config",
+]
 
 [[package]]
 name = "js-sys"
@@ -1205,6 +1299,26 @@ dependencies = [
  "libc",
  "pango-sys",
  "system-deps 7.0.8",
+]
+
+[[package]]
+name = "libaom-sys"
+version = "0.18.1+libaom.3.15.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fb571e6ba72de3f95bf11a86724aecb2e21a7aa396a205c84e65fb7ac1c842b"
+dependencies = [
+ "cmake",
+]
+
+[[package]]
+name = "libavif-sys"
+version = "0.18.0+libavif.1.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3147ece4edd43fce03ab0b2f465a9c3f852c90adfa205aea4125315e8fb564f"
+dependencies = [
+ "cmake",
+ "libaom-sys",
+ "libc",
 ]
 
 [[package]]
@@ -1740,6 +1854,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa"
 
 [[package]]
+name = "prettyplease"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bfe0f4c752e450fc2faf62654f1c134747922825d5b04ca717b8874f41a40c0"
+dependencies = [
+ "proc-macro2",
+ "syn 3.0.10",
+]
+
+[[package]]
 name = "proc-macro-crate"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1877,6 +2001,10 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "image",
+ "jpegxl-rs",
+ "jpegxl-sys",
+ "libavif-sys",
+ "png",
  "pollster",
  "rawler",
  "rayon",
@@ -2154,6 +2282,12 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "strsim"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "syn"

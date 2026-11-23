@@ -5,8 +5,8 @@ pkgrel=1
 pkgdesc="RAW photo editor with color grading and 3D LUT export, GPU accelerated"
 arch=('x86_64' 'aarch64')
 license=('GPL-3.0-or-later')
-depends=('gtk4' 'libadwaita' 'vulkan-icd-loader')
-makedepends=('cargo' 'gettext' 'unzip' 'python-onnx' 'python-numpy' 'lensfun')
+depends=('gtk4' 'libadwaita' 'vulkan-icd-loader' 'libjxl')
+makedepends=('cargo' 'cmake' 'nasm' 'gettext' 'unzip' 'python-onnx' 'python-numpy' 'lensfun')
 options=('!lto' '!debug')
 # Tarball produced by `make arch` from the committed HEAD.
 # The AI denoise weights darktable ships, converted at build time (models/README.md).

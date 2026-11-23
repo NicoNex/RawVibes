@@ -981,6 +981,7 @@ impl Gpu {
         }
         let table = &oetf.as_ref().expect("set above").1;
         let photo = self.photo_slot(slot, w, h);
+        photo.scene.set(true);
         let mut work = photo.work.borrow_mut();
         if work.as_ref().is_none_or(|x| x.size != (lw, lh)) {
             let usage = wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;

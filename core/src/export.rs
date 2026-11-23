@@ -310,8 +310,10 @@ fn ultra_hdr(base: &[u8], img: &Exported, quality: u8, xmp: Option<&str>) -> Res
             let (a, b) = d.ok_or("Ultra HDR XMP without a description")?;
             x.replacen("</rdf:RDF>", &format!("{}</rdf:RDF>", &hdr_xmp[a..b + "</rdf:Description>".len()]), 1)
         }
-        _ => hdr_xmp,
+        _ => hdr_xmp.clone(),
     };
+    // Too big for one APP1 segment: the container alone, as a plain JPEG drops the packet.
+    let xmp = if xmp_fits_jpeg(&xmp) { xmp } else { hdr_xmp };
     let (head, tail) = base.split_at(after_app_segments(base));
     let before_mpf = [head, &create_version_only_iso_app2(), &create_xmp_app1_marker(&xmp)].concat();
     let mpf_len = create_mpf_header(0, 0, Some(before_mpf.len())).len();
@@ -429,6 +431,22 @@ mod tests {
         assert_eq!(image::load_from_memory(&bytes).unwrap().width(), w);
         assert_eq!(crate::meta::read(&p).expect("EXIF").make, "Fujifilm");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Metadata too long for a JPEG segment: the Ultra HDR file stays valid, the container kept.
+    #[test]
+    fn ultra_hdr_drops_xmp_too_long_for_a_segment() {
+        let tags = Tags {
+            exif: Vec::new(),
+            xmp: Some(format!("<x:xmpmeta><rdf:RDF>{}</rdf:RDF></x:xmpmeta>", "x".repeat(70_000))),
+        };
+        let mut out = Cursor::new(Vec::new());
+        encode(&mut out, &img(16, 16, vec![30_000; 16 * 16 * 3]), PhotoFormat::UltraHdr, 90, &tags).unwrap();
+        let bytes = out.into_inner();
+        let d = ultrahdr_rs::Decoder::new(&bytes).unwrap();
+        assert!(d.is_ultrahdr() && d.gainmap_jpeg().is_some());
+        assert!(!contains(&bytes, b"xxxxxxxx"));
+        assert_eq!(image::load_from_memory(&bytes).unwrap().width(), 16);
     }
 
     #[test]

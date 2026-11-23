@@ -47,6 +47,8 @@ pub struct GpuPhoto {
     pub(crate) work: std::cell::RefCell<Option<crate::raw::Work>>,
     /// The HDR preview's RGBA16F output and its staging, made on first use.
     hdr: std::cell::OnceCell<(wgpu::Buffer, wgpu::Buffer)>,
+    /// A developed RAW: its alpha holds the exposed scene (Standard profile) for the HDR gain.
+    pub(crate) scene: std::cell::Cell<bool>,
     pub(crate) width: u32,
     pub(crate) height: u32,
 }
@@ -178,6 +180,7 @@ impl Gpu {
     /// and drag frames allocate nothing.
     pub(crate) fn upload_into(&self, slot: &mut Option<GpuPhoto>, photo: &Photo) {
         let p = self.photo_slot(slot, photo.width, photo.height);
+        p.scene.set(false);
         self.queue.write_buffer(&p.src, 0, bytemuck::cast_slice(&photo.pixels));
     }
 
@@ -193,6 +196,7 @@ impl Gpu {
                 staging,
                 work: Default::default(),
                 hdr: Default::default(),
+                scene: Default::default(),
                 width: w,
                 height: h,
             });
@@ -208,6 +212,14 @@ impl Gpu {
     fn write_params(&self, mut p: Params, w: u32, h: u32, lut_size: u32, split: f32) {
         (p.width, p.height, p.lut_size, p.split) = (w, h, lut_size, split);
         self.queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&p));
+    }
+
+    /// `grade` (its curves too) for rendering `photo`, which says whether its alpha holds the scene.
+    fn write_photo_params(&self, grade: &Grade, photo: &GpuPhoto, look: Option<&GpuLut>, split: f32) {
+        let mut params = grade.params;
+        params.scene |= photo.scene.get() as u32;
+        self.write_params(params, photo.width, photo.height, look.map_or(0, |l| l.size), split);
+        self.queue.write_buffer(&self.curves, 0, bytemuck::cast_slice(&grade.curve_samples()));
     }
 
     /// Dispatches over `count` items, then copies `out` back through `staging`.
@@ -265,8 +277,7 @@ impl Gpu {
     pub fn render_hdr(&self, photo: &GpuPhoto, grade: &Grade, look: Option<&GpuLut>, split: f32) -> (Vec<u8>, Vec<u8>) {
         let n = photo.width as u64 * photo.height as u64;
         let (hdr, hdr_staging) = photo.hdr.get_or_init(|| self.output(n * 8));
-        self.write_params(grade.params, photo.width, photo.height, look.map_or(0, |l| l.size), split);
-        self.queue.write_buffer(&self.curves, 0, bytemuck::cast_slice(&grade.curve_samples()));
+        self.write_photo_params(grade, photo, look, split);
         let lut = look.map_or(&self.no_lut, |l| &l.buf);
         let entries = [(0, &self.params), (1, &self.curves), (2, &photo.src), (3, &photo.out), (5, lut), (6, hdr)];
         let bind = self.bind(&self.preview_hdr, &entries);
@@ -314,8 +325,7 @@ impl Gpu {
         out: &wgpu::Buffer,
         staging: &wgpu::Buffer,
     ) -> Vec<u8> {
-        self.write_params(grade.params, photo.width, photo.height, look.map_or(0, |l| l.size), split);
-        self.queue.write_buffer(&self.curves, 0, bytemuck::cast_slice(&grade.curve_samples()));
+        self.write_photo_params(grade, photo, look, split);
         let lut = look.map_or(&self.no_lut, |l| &l.buf);
         let bind = self.bind(pipeline, &[(0, &self.params), (1, &self.curves), (2, &photo.src), (3, out), (5, lut)]);
         self.run(pipeline, &bind, photo.width * photo.height, out, staging)
@@ -843,7 +853,7 @@ impl Worker {
             let mut grade = e.grade.clone();
             grade.params.frame(&strip, &e.crop);
             if e.format.hdr() {
-                (grade.params.hdr_stops, grade.params.scene) = (e.headroom, raw as u32);
+                grade.params.hdr_stops = e.headroom;
             }
             gpu.render16(slot.as_ref().expect("developed above"), &grade, look.as_ref(), &mut out, &mut gains);
             notify(Done::ExportProgress(start + (1.0 - start) * y1 as f32 / h as f32));
@@ -953,11 +963,10 @@ impl Worker {
                     b.compose(33, &bake)
                 });
             }
-            Job::Render(mut grade, split) => {
+            Job::Render(grade, split) => {
                 let Some(ph) = self.shown() else { return };
                 // shortcut: the scopes read the SDR rendition; give them a stops scale above SDR white for HDR.
                 let (rgba, hdr) = if grade.params.hdr_stops > 0.0 {
-                    grade.params.scene = self.show_raw as u32;
                     let (rgba, hdr) = gpu.render_hdr(ph, &grade, self.look.as_ref(), split);
                     (rgba, Some(hdr))
                 } else {
@@ -1025,9 +1034,8 @@ impl Worker {
                 });
                 notify(Done::PhotoExported(r));
             }
-            Job::ExportFrame(mut grade) => {
+            Job::ExportFrame(grade) => {
                 let Some(ph) = self.whole() else { return };
-                grade.params.scene = self.show_raw as u32;
                 let (mut rgb, mut gains) = (Vec::new(), Vec::new());
                 gpu.render16(ph, &grade, self.look.as_ref(), &mut rgb, &mut gains);
                 let headroom = grade.params.hdr_stops;

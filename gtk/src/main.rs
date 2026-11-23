@@ -5088,7 +5088,11 @@ impl SimpleComponent for App {
             Msg::ExportSettings => {
                 let ui = &self.ui.export_photo;
                 ui.set_format(ui.format());
-                self.export_frame_request();
+                // The frame holds HDR gains or not: rendered again only when that changes.
+                match &self.export_frame {
+                    Some(f) if (f.headroom > 0.0) == ui.format().hdr() => self.export_estimate(&sender),
+                    _ => self.export_frame_request(),
+                }
             }
             Msg::HdrPreview(on) => {
                 self.hdr_preview = on;
@@ -5101,8 +5105,11 @@ impl SimpleComponent for App {
                 self.render();
             }
             Msg::ExportEstimateRun(generation, w, h) if generation == self.export_gen => {
-                let Some(frame) = self.export_frame.clone() else { return };
                 let ui = &self.ui.export_photo;
+                // A frame for the other kind (SDR or HDR) is stale: the right one is on its way.
+                let Some(frame) = self.export_frame.clone().filter(|f| (f.headroom > 0.0) == ui.format().hdr()) else {
+                    return;
+                };
                 let (format, quality, s) = (ui.format(), ui.quality(), sender.input_sender().clone());
                 std::thread::spawn(move || {
                     let scale = (w as f64 * h as f64) / (frame.w as f64 * frame.h as f64);
@@ -6127,7 +6134,6 @@ fn main() {
     RelmApp::from_app(app).with_args(std::env::args().collect()).run::<App>(());
 }
 
-/// File dialog for photos and RAWs, starting where the last photo was opened.
 /// Where an HDR merge starting at `first` goes: `<stem>-HDR.dng` beside it, never over a file.
 fn merged_name(first: &std::path::Path) -> PathBuf {
     let stem = first.file_stem().unwrap_or_default().to_string_lossy();
@@ -6138,6 +6144,7 @@ fn merged_name(first: &std::path::Path) -> PathBuf {
         .expect("some name is free")
 }
 
+/// File dialog for photos and RAWs, starting where the last photo was opened.
 fn photo_dialog(title: &str) -> gtk::FileDialog {
     // add_suffix matches case-insensitively.
     let pats: Vec<&str> = RASTER_EXTS.iter().chain(RAW_EXTS).copied().collect();

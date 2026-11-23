@@ -84,35 +84,49 @@ impl Blocks {
     }
 }
 
-/// Exposure of `b` over `a` (frame b's value per unit of frame a's), `b` shifted by `d` blocks:
-/// the median ratio of blocks well exposed in both. `None` with too few of them.
+/// Exposure of `b` over `a` (frame b's value per unit of frame a's), `b` shifted by `d` blocks,
+/// from the blocks well exposed in both: Σb / Σa over those within 1.5× of the median
+/// ratio. The median drops what moved or is misaligned; the sums avoid the 1/a noise bias
+/// a median of ratios has. `None` with too few blocks.
 fn ratio(a: &Blocks, b: &Blocks, d: [i32; 2]) -> Option<f32> {
-    let mut r: Vec<f32> = (0..a.h)
-        .flat_map(|y| (0..a.w).map(move |x| (x, y)))
-        .filter_map(|(x, y)| {
-            let (i, j) = (y * a.w + x, b.at(x, y, d)?);
-            let ok = |bl: &Blocks, k: usize| !bl.clipped[k] && bl.mean[k] > DARK && bl.mean[k] < 0.8;
-            (ok(a, i) && ok(b, j)).then(|| b.mean[j] / a.mean[i])
+    let ok = |bl: &Blocks, k: usize| !bl.clipped[k] && bl.mean[k] > DARK && bl.mean[k] < 0.8;
+    let pairs: Vec<(f32, f32)> = (0..a.h * a.w)
+        .filter_map(|i| {
+            let j = b.at(i % a.w, i / a.w, d)?;
+            (ok(a, i) && ok(b, j)).then(|| (a.mean[i], b.mean[j]))
         })
         .collect();
-    if r.len() < 64 {
+    if pairs.len() < 64 {
         return None;
     }
+    let mut r: Vec<f32> = pairs.iter().map(|(x, y)| y / x).collect();
     let mid = r.len() / 2;
-    Some(*r.select_nth_unstable_by(mid, f32::total_cmp).1)
+    let median = *r.select_nth_unstable_by(mid, f32::total_cmp).1;
+    let (sa, sb) = pairs
+        .iter()
+        .filter(|(x, y)| (y / x / median - 1.0).abs() < 0.5)
+        .fold((0.0f64, 0.0f64), |(sa, sb), (x, y)| (sa + *x as f64, sb + *y as f64));
+    Some((sb / sa) as f32)
 }
 
 /// The shift (blocks) that best lays `b` on `a`, given `b`'s exposure `e` relative to `a`:
-/// least absolute difference of the square roots (variance-stabilised) of both, each
-/// limited to what neither clips, searched coarse to fine on a 2× pyramid.
+/// mean absolute difference of the square roots (variance-stabilised) of both, over the
+/// blocks neither clips (NaN marks the others), searched coarse to fine on a 2× pyramid.
 fn align(a: &Blocks, b: &Blocks, e: f32) -> [i32; 2] {
-    // Values in a's units, capped where either frame would clip.
+    // In a's units; what either frame clips tells nothing.
     let cap = CLIP.min(CLIP / e) * 0.95;
-    let level0 = |bl: &Blocks, k: f32| bl.mean.iter().map(|&v| (v * k).min(cap).max(0.0).sqrt()).collect::<Vec<_>>();
+    let level0 = |bl: &Blocks, k: f32| -> Vec<f32> {
+        bl.mean
+            .iter()
+            .zip(&bl.clipped)
+            .map(|(&v, &c)| if c || v * k >= cap { f32::NAN } else { (v * k).max(0.0).sqrt() })
+            .collect()
+    };
     let mut pyr = vec![((level0(a, 1.0), level0(b, 1.0 / e)), a.w, a.h)];
     while pyr.last().is_some_and(|(_, w, h)| (*w).min(*h) >= 128) {
         let ((pa, pb), w, h) = pyr.last().expect("non-empty");
         let (nw, nh) = (w / 2, h / 2);
+        // A NaN in a 2×2 group makes the coarse block NaN too.
         let half = |p: &Vec<f32>| {
             (0..nw * nh)
                 .map(|i| {
@@ -123,31 +137,34 @@ fn align(a: &Blocks, b: &Blocks, e: f32) -> [i32; 2] {
         };
         pyr.push(((half(pa), half(pb)), nw, nh));
     }
-    let cost = |pa: &[f32], pb: &[f32], w: usize, h: usize, d: [i32; 2]| {
-        let (dx, dy) = (d[0] as isize, d[1] as isize);
-        let ys = (dy.min(0).unsigned_abs())..(h - dy.max(0) as usize);
-        let xs = (dx.min(0).unsigned_abs())..(w - dx.max(0) as usize);
-        let n = (ys.len() * xs.len()).max(1) as f32;
-        let s: f32 = ys
+    // One window of `a` for every candidate of a level (its margin the largest shift tried):
+    // a mean over varying overlaps would favour shifts onto quieter areas.
+    let cost = |pa: &[f32], pb: &[f32], w: usize, m: usize, ys: std::ops::Range<usize>, d: [i32; 2]| {
+        let (s, n) = ys
             .into_par_iter()
             .map(|y| {
-                let yb = (y as isize + dy) as usize;
-                xs.clone().map(|x| (pa[y * w + x] - pb[yb * w + (x as isize + dx) as usize]).abs()).sum::<f32>()
+                let yb = (y as isize + d[1] as isize) as usize;
+                (m..w - m)
+                    .map(|x| (pa[y * w + x] - pb[yb * w + (x as isize + d[0] as isize) as usize]).abs())
+                    .filter(|v| !v.is_nan())
+                    .fold((0.0f32, 0usize), |(s, n), v| (s + v, n + 1))
             })
-            .sum();
-        s / n
+            .reduce(|| (0.0, 0), |x, y| (x.0 + y.0, x.1 + y.1));
+        // Too little in common to judge: never the best.
+        if n < 64 { f32::INFINITY } else { s / n as f32 }
     };
     let top = pyr.len() - 1;
-    let reach = (MAX_SHIFT >> top).max(2);
-    let mut d = [0, 0];
+    let mut d = [0i32, 0];
     for (level, ((pa, pb), w, h)) in pyr.iter().enumerate().rev() {
-        let r = if level == top { reach } else { 1 };
         let base = if level == top { [0, 0] } else { [d[0] * 2, d[1] * 2] };
+        let r = if level == top { (MAX_SHIFT >> top).max(2).min((*w.min(h) as i32) / 4) } else { 1 };
+        let m = (base[0].abs().max(base[1].abs()) + r) as usize;
+        if 2 * m + 8 > (*w).min(*h) {
+            break;
+        }
         let candidates = (-r..=r).flat_map(|dy| (-r..=r).map(move |dx| [base[0] + dx, base[1] + dy]));
-        let fits = |c: &[i32; 2]| (c[0].unsigned_abs() as usize) < w / 2 && (c[1].unsigned_abs() as usize) < h / 2;
         d = candidates
-            .filter(fits)
-            .map(|c| (cost(pa, pb, *w, *h, c), c))
+            .map(|c| (cost(pa, pb, *w, m, m..h - m, c), c))
             .min_by(|x, y| x.0.total_cmp(&y.0))
             .map_or(base, |(_, c)| c);
     }
@@ -166,14 +183,21 @@ pub fn merge(frames: &[Frame], w: usize, h: usize, period: usize) -> Result<Merg
     order.sort_by(|&i, &j| level(&blocks[i]).total_cmp(&level(&blocks[j])));
     let reference = order[order.len() / 2];
     let r = &blocks[reference];
-    // Exposure relative to the reference (unaligned estimate, then aligned, then re-estimated).
+    // Exposure and shift relative to the reference, chained through neighbours in exposure
+    // order (each pair overlaps well even across a wide bracket): unaligned estimate,
+    // alignment, then the estimate again on the aligned blocks.
     let mut rel = vec![1.0f32; frames.len()];
     let mut shift = vec![[0i32; 2]; frames.len()];
-    for i in (0..frames.len()).filter(|&i| i != reference) {
-        let e0 = ratio(r, &blocks[i], [0, 0]).ok_or("The photos have too little in common to merge")?;
-        let d = align(r, &blocks[i], e0);
-        rel[i] = ratio(r, &blocks[i], d).unwrap_or(e0);
-        shift[i] = d;
+    let mid = order.len() / 2;
+    let chain = (mid + 1..order.len())
+        .map(|k| (order[k - 1], order[k]))
+        .chain((0..mid).rev().map(|k| (order[k + 1], order[k])));
+    for (prev, cur) in chain {
+        let (a, b) = (&blocks[prev], &blocks[cur]);
+        let e0 = ratio(a, b, [0, 0]).ok_or("The photos have too little in common to merge")?;
+        let d = align(a, b, e0);
+        rel[cur] = rel[prev] * ratio(a, b, d).unwrap_or(e0);
+        shift[cur] = [shift[prev][0] + d[0], shift[prev][1] + d[1]];
     }
     let darkest = rel.iter().copied().fold(f32::INFINITY, f32::min);
     let exposure: Vec<f32> = rel.iter().map(|&e| e / darkest).collect();
@@ -194,28 +218,28 @@ pub fn merge(frames: &[Frame], w: usize, h: usize, period: usize) -> Result<Merg
     let n = (period * period) as f32;
     let var = |v: f32, e: f32| (a * v + b) / (e * e);
 
-    // Per block, the frames that agree with the reference (or, where it clips, with
-    // the brightest unclipped frame darker than it).
-    let agree: Vec<Vec<bool>> = (0..r.h * r.w)
+    // Per block (`nf` flags each), the frames that agree with the reference (or, where
+    // it clips, with the brightest unclipped frame darker than it).
+    let nf = frames.len();
+    let agree: Vec<bool> = (0..r.h * r.w)
         .into_par_iter()
-        .map(|k| {
+        .flat_map_iter(|k| {
+            let (blocks, shift, order, exposure) = (&blocks, &shift, &order, &exposure);
             let (x, y) = (k % r.w, k / r.w);
-            let at = |i: usize| blocks[i].at(x, y, shift[i]);
+            let at = move |i: usize| blocks[i].at(x, y, shift[i]);
             let anchor =
                 order[..=order.len() / 2].iter().rev().copied().find(|&i| at(i).is_some_and(|j| !blocks[i].clipped[j]));
-            (0..frames.len())
-                .map(|i| {
-                    let (Some(c), Some(j)) = (anchor, at(i)) else { return true };
-                    let Some(jc) = at(c) else { return true };
-                    if i == c || blocks[i].clipped[j] {
-                        return true;
-                    }
-                    let (vi, vc) = (blocks[i].mean[j], blocks[c].mean[jc]);
-                    let (xi, xc) = (vi / exposure[i], vc / exposure[c]);
-                    let sigma = ((var(vi, exposure[i]) + var(vc, exposure[c])) / n).sqrt();
-                    (xi - xc).abs() <= GHOST_SIGMAS * sigma + GHOST_REL * xc
-                })
-                .collect()
+            (0..nf).map(move |i| {
+                let (Some(c), Some(j)) = (anchor, at(i)) else { return true };
+                let Some(jc) = at(c) else { return true };
+                if i == c || blocks[i].clipped[j] {
+                    return true;
+                }
+                let (vi, vc) = (blocks[i].mean[j], blocks[c].mean[jc]);
+                let (xi, xc) = (vi / exposure[i], vc / exposure[c]);
+                let sigma = ((var(vi, exposure[i]) + var(vc, exposure[c])) / n).sqrt();
+                (xi - xc).abs() <= GHOST_SIGMAS * sigma + GHOST_REL * xc
+            })
         })
         .collect();
 
@@ -227,7 +251,7 @@ pub fn merge(frames: &[Frame], w: usize, h: usize, period: usize) -> Result<Merg
             let (agree, frames, shift, exposure) = (&agree, frames, &shift, &exposure);
             (0..w).map(move |x| {
                 let (bx, by) = ((x / period).min(r.w.saturating_sub(1)), (y / period).min(r.h.saturating_sub(1)));
-                let ok = &agree[by * r.w + bx];
+                let ok = &agree[(by * r.w + bx) * nf..][..nf];
                 let (mut sum, mut wsum) = (0.0f32, 0.0f32);
                 for (i, f) in frames.iter().enumerate() {
                     let (sx, sy) = (x as i32 + shift[i][0] * p, y as i32 + shift[i][1] * p);
@@ -291,7 +315,14 @@ pub fn merge_files(paths: &[&Path], out: &Path) -> Result<Merged, String> {
     let RawPhotometricInterpretation::Cfa(cfa) = &first.photometric else { unreachable!("checked above") };
     let period = cfa.cfa.width.max(cfa.cfa.height);
     let (w, h) = (first.width, first.height);
-    let frames: Vec<Frame> = decoded.iter().map(|(r, _)| Frame { pixels: r.data.as_f32().into_owned() }).collect();
+    // The mosaics move into the frames (no second copy); the reference's comes back merged.
+    let frames: Vec<Frame> = decoded
+        .iter_mut()
+        .map(|(r, _)| match std::mem::replace(&mut r.data, RawImageData::Float(Vec::new())) {
+            RawImageData::Float(pixels) => Frame { pixels },
+            other => Frame { pixels: other.as_f32().into_owned() },
+        })
+        .collect();
     let merged = merge(&frames, w, h, period)?;
     drop(frames);
 
@@ -301,10 +332,11 @@ pub fn merge_files(paths: &[&Path], out: &Path) -> Result<Merged, String> {
     let src = rawler::rawsource::RawSource::new(paths[merged.reference]).map_err(|e| e.to_string())?;
     let params = RawDecodeParams::default();
     let metadata = rawler::get_decoder(&src).and_then(|d| d.raw_metadata(&src, &params)).map_err(|e| e.to_string())?;
+    // The source's own BaselineExposure (a DNG's) stays on top of the merge's.
+    let source_ev = raw.dng_tags.get(&(DngTag::BaselineExposure as u16)).map_or(0.0, |v| v.force_f32(0));
     let write = || -> rawler::dng::writer::Result<()> {
-        let mut part = out.as_os_str().to_owned();
-        part.push(".part");
-        let file = std::io::BufWriter::new(std::fs::File::create(&part)?);
+        // Never over an existing file: two merges racing for one name, the second fails.
+        let file = std::io::BufWriter::new(std::fs::File::create_new(out)?);
         let mut dng = DngWriter::new(file, DNG_VERSION_V1_4)?;
         let mut frame = dng.subframe_on_root(0);
         frame.raw_image(&raw, CropMode::Best, DngCompression::Uncompressed, DngPhotometricConversion::Original, 1)?;
@@ -313,13 +345,18 @@ pub fn merge_files(paths: &[&Path], out: &Path) -> Result<Merged, String> {
         dng.load_metadata(&metadata)?;
         dng.root_ifd_mut().add_tag(ExifTag::Orientation, orientation);
         // The merge is in the darkest frame's units: open it as the reference was exposed.
-        let ev = merged.exposure[merged.reference].log2();
+        let ev = merged.exposure[merged.reference].log2() + source_ev;
         dng.root_ifd_mut().add_tag(DngTag::BaselineExposure, SRational::new((ev * 10_000.0).round() as i32, 10_000));
         dng.close()?;
-        std::fs::rename(&part, out)?;
         Ok(())
     };
-    write().map_err(|e| format!("Writing the HDR DNG failed: {e}"))?;
+    if let Err(e) = write() {
+        // A partial DNG is useless; an existing file (create_new failed) is not ours to remove.
+        if !matches!(&e, rawler::dng::writer::DngError::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists) {
+            let _ = std::fs::remove_file(out);
+        }
+        return Err(format!("Writing the HDR DNG failed: {e}"));
+    }
     Ok(merged)
 }
 
@@ -414,6 +451,24 @@ mod tests {
         let (dark, alone) = ((dark / count).sqrt(), (alone / count).sqrt());
         assert!(dark < 0.5 * alone && dark < 0.05, "shadows {dark} vs the reference alone {alone}");
         assert!(ghost < 0.2, "ghost {ghost}");
+    }
+
+    /// A wide bracket (6 EV): ratios and shifts chain through neighbours, so the ends need
+    /// not overlap the reference.
+    #[test]
+    fn wide_brackets_chain() {
+        let (w, h) = (384, 256);
+        let s = scene(w, h);
+        let shots = [(1.0, [2, 0]), (4.0, [0, 0]), (16.0, [4, -2]), (64.0, [-6, 6])];
+        let frames: Vec<Frame> =
+            shots.iter().enumerate().map(|(k, &(e, d))| shoot(&s, w, h, e, d, k as u64 + 7)).collect();
+        let m = merge(&frames, w, h, 2).unwrap();
+        assert_eq!(m.reference, 2);
+        for (e, want) in m.exposure.iter().zip([1.0, 4.0, 16.0, 64.0]) {
+            assert!((e / want - 1.0).abs() < 0.03, "{:?}", m.exposure);
+        }
+        // Frame k at (x + d_k − d_ref) shows what the reference shows at x.
+        assert_eq!(m.shift, [[-2, 2], [-4, 2], [0, 0], [-10, 8]]);
     }
 
     /// The same RAW three times is a no-op merge that reopens as a float DNG.

@@ -23,6 +23,7 @@ pub struct Gpu {
     pub(crate) device: wgpu::Device,
     pub(crate) queue: wgpu::Queue,
     preview: wgpu::ComputePipeline,
+    preview_hdr: wgpu::ComputePipeline,
     apply: wgpu::ComputePipeline,
     bake: wgpu::ComputePipeline,
     export16: wgpu::ComputePipeline,
@@ -44,6 +45,8 @@ pub struct GpuPhoto {
     pub(crate) staging: wgpu::Buffer,
     /// A developed RAW's linear working buffers (detail stages and their caches).
     pub(crate) work: std::cell::RefCell<Option<crate::raw::Work>>,
+    /// The HDR preview's RGBA16F output and its staging, made on first use.
+    hdr: std::cell::OnceCell<(wgpu::Buffer, wgpu::Buffer)>,
     pub(crate) width: u32,
     pub(crate) height: u32,
 }
@@ -98,8 +101,13 @@ impl Gpu {
         }))
         .map_err(|e| e.to_string())?;
         let pipeline = shader(&device, "grade.wgsl", include_str!("grade.wgsl"));
-        let (preview, apply, bake, export16) =
-            (pipeline("preview"), pipeline("apply_lut"), pipeline("bake"), pipeline("export16"));
+        let (preview, preview_hdr, apply, bake, export16) = (
+            pipeline("preview"),
+            pipeline("preview_hdr"),
+            pipeline("apply_lut"),
+            pipeline("bake"),
+            pipeline("export16"),
+        );
         drop(pipeline); // it borrows `device`, which moves into Self below
         let uniform = |size: usize| {
             device.create_buffer(&wgpu::BufferDescriptor {
@@ -111,6 +119,7 @@ impl Gpu {
         };
         Ok(Self {
             preview,
+            preview_hdr,
             apply,
             bake,
             export16,
@@ -178,7 +187,15 @@ impl Gpu {
             let n = w as u64 * h as u64;
             let src = self.buffer(n * 16, wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC);
             let (out, staging) = self.output(n * 4);
-            *slot = Some(GpuPhoto { src, out, staging, work: Default::default(), width: w, height: h });
+            *slot = Some(GpuPhoto {
+                src,
+                out,
+                staging,
+                work: Default::default(),
+                hdr: Default::default(),
+                width: w,
+                height: h,
+            });
         }
         slot.as_ref().expect("set above")
     }
@@ -202,6 +219,17 @@ impl Gpu {
         out: &wgpu::Buffer,
         staging: &wgpu::Buffer,
     ) -> Vec<u8> {
+        self.run_all(pipeline, bind, count, &[(out, staging)]).swap_remove(0)
+    }
+
+    /// Dispatches over `count` items, then copies each output back through its staging buffer.
+    fn run_all(
+        &self,
+        pipeline: &wgpu::ComputePipeline,
+        bind: &wgpu::BindGroup,
+        count: u32,
+        outputs: &[(&wgpu::Buffer, &wgpu::Buffer)],
+    ) -> Vec<Vec<u8>> {
         let mut enc = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = enc.begin_compute_pass(&Default::default());
@@ -209,19 +237,47 @@ impl Gpu {
             pass.set_bind_group(0, bind, &[]);
             pass.dispatch_workgroups(count.div_ceil(WORKGROUP), 1, 1);
         }
-        enc.copy_buffer_to_buffer(out, 0, staging, 0, out.size());
+        for (out, staging) in outputs {
+            enc.copy_buffer_to_buffer(out, 0, staging, 0, out.size());
+        }
         self.queue.submit([enc.finish()]);
-        let slice = staging.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |r| r.expect("GPU readback failed"));
+        for (_, staging) in outputs {
+            staging.slice(..).map_async(wgpu::MapMode::Read, |r| r.expect("GPU readback failed"));
+        }
         self.device.poll(wgpu::PollType::wait_indefinitely()).expect("GPU device lost");
-        let bytes = slice.get_mapped_range().expect("map GPU readback").to_vec();
-        staging.unmap();
-        bytes
+        outputs
+            .iter()
+            .map(|(_, staging)| {
+                let bytes = staging.slice(..).get_mapped_range().expect("map GPU readback").to_vec();
+                staging.unmap();
+                bytes
+            })
+            .collect()
     }
 
     /// Graded preview as RGBA8, optionally seen through a look LUT.
     pub fn render(&self, photo: &GpuPhoto, grade: &Grade, look: Option<&GpuLut>, split: f32) -> Vec<u8> {
         self.grade_pass(&self.preview, photo, grade, look, split, &photo.out, &photo.staging)
+    }
+
+    /// The graded preview with its HDR rendition (`grade.params.hdr_stops` > 0):
+    /// RGBA8 sRGB as [`Gpu::render`], and RGBA16F in GTK's rec2100-linear.
+    pub fn render_hdr(&self, photo: &GpuPhoto, grade: &Grade, look: Option<&GpuLut>, split: f32) -> (Vec<u8>, Vec<u8>) {
+        let n = photo.width as u64 * photo.height as u64;
+        let (hdr, hdr_staging) = photo.hdr.get_or_init(|| self.output(n * 8));
+        self.write_params(grade.params, photo.width, photo.height, look.map_or(0, |l| l.size), split);
+        self.queue.write_buffer(&self.curves, 0, bytemuck::cast_slice(&grade.curve_samples()));
+        let lut = look.map_or(&self.no_lut, |l| &l.buf);
+        let entries = [(0, &self.params), (1, &self.curves), (2, &photo.src), (3, &photo.out), (5, lut), (6, hdr)];
+        let bind = self.bind(&self.preview_hdr, &entries);
+        let mut out = self.run_all(
+            &self.preview_hdr,
+            &bind,
+            photo.width * photo.height,
+            &[(&photo.out, &photo.staging), (hdr, hdr_staging)],
+        );
+        let hdr = out.pop().expect("two outputs");
+        (out.pop().expect("two outputs"), hdr)
     }
 
     /// The graded photo for export, appended to `into` as 16-bit RGB: as
@@ -473,6 +529,8 @@ pub enum Done {
         width: u32,
         height: u32,
         rgba: Vec<u8>,
+        /// The HDR rendition (RGBA16F, GTK's rec2100-linear) when the preview asked for it.
+        hdr: Option<Vec<u8>>,
         scopes: Scopes,
     },
     Lab {
@@ -895,11 +953,18 @@ impl Worker {
                     b.compose(33, &bake)
                 });
             }
-            Job::Render(grade, split) => {
+            Job::Render(mut grade, split) => {
                 let Some(ph) = self.shown() else { return };
-                let rgba = gpu.render(ph, &grade, self.look.as_ref(), split);
+                // shortcut: the scopes read the SDR rendition; give them a stops scale above SDR white for HDR.
+                let (rgba, hdr) = if grade.params.hdr_stops > 0.0 {
+                    grade.params.scene = self.show_raw as u32;
+                    let (rgba, hdr) = gpu.render_hdr(ph, &grade, self.look.as_ref(), split);
+                    (rgba, Some(hdr))
+                } else {
+                    (gpu.render(ph, &grade, self.look.as_ref(), split), None)
+                };
                 let scopes = Scopes::compute(&rgba, ph.width, ph.height, split);
-                notify(Done::Graded { width: ph.width, height: ph.height, rgba, scopes });
+                notify(Done::Graded { width: ph.width, height: ph.height, rgba, hdr, scopes });
             }
             Job::SetRoll(generation, photos) => {
                 let (old_gen, mut old) = std::mem::take(&mut self.roll);
@@ -1685,5 +1750,44 @@ mod tests {
         for (a, b) in raw.iter().zip(&vlog).take(6) {
             assert!((a - b).abs() < 0.01 * a, "{raw:?} vs {vlog:?}");
         }
+    }
+
+    /// The HDR preview: its SDR half is the plain preview; its HDR half, read as
+    /// f16, is the SDR in linear Rec.2020 times the gain (export's), 1 = SDR white;
+    /// the split's untouched side and divider get no gain.
+    #[test]
+    fn hdr_preview_is_the_sdr_times_the_gain() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        let f16 = |b: &[u8]| {
+            let h = u16::from_le_bytes([b[0], b[1]]) as u32;
+            let (e, m) = ((h >> 10) & 31, (h & 1023) as f32);
+            let v = if e == 0 { m / 1024.0 * 2f32.powi(-14) } else { (1.0 + m / 1024.0) * 2f32.powi(e as i32 - 15) };
+            if h >> 15 == 1 { -v } else { v }
+        };
+        let ms = [0.0f32, 0.3, 1.0, 3.0, 6.0, 9.0, 0.6, 2.0];
+        let pixels = ms.iter().map(|&m| [0.9, 0.6, 0.3, m]).collect();
+        let photo = gpu.upload(&Photo { width: ms.len() as u32, height: 1, pixels });
+        let mut grade = Grade::default();
+        (grade.params.hdr_stops, grade.params.scene) = (2.0, 1);
+        let (sdr, hdr) = gpu.render_hdr(&photo, &grade, None, 0.0);
+        assert_eq!(sdr, gpu.render(&photo, &grade, None, 0.0));
+        let (mut rgb, mut gains) = (Vec::new(), Vec::new());
+        gpu.render16(&photo, &grade, None, &mut rgb, &mut gains);
+        let to2020 = crate::profiles::rec709_to_rec2020();
+        for (i, &m) in ms.iter().enumerate() {
+            let gain = (gains[i] as f32 / 65535.0 * 2.0).exp2();
+            let lin = [0, 1, 2].map(|c| crate::photo::srgb_invert_gamma(rgb[3 * i + c] as f32 / 65535.0));
+            let want = crate::photo::multiply_row1(&to2020, &lin).map(|v| v * gain);
+            let got = [0, 1, 2].map(|c| f16(&hdr[8 * i + 2 * c..]));
+            for c in 0..3 {
+                assert!((got[c] - want[c]).abs() < 4e-3 * want[c].max(1.0), "m {m}: {got:?} want {want:?}");
+            }
+            assert_eq!(f16(&hdr[8 * i + 6..]), 1.0);
+        }
+        // Split at the middle: the left half is untouched, SDR.
+        let (_, hdr) = gpu.render_hdr(&photo, &grade, None, 0.5);
+        let srgb = |v: f32| crate::photo::srgb_invert_gamma(v);
+        let want = crate::photo::multiply_row1(&to2020, &[srgb(0.9), srgb(0.6), srgb(0.3)]);
+        assert!((f16(&hdr[8..]) - want[0]).abs() < 4e-3, "{} vs {}", f16(&hdr[8..]), want[0]);
     }
 }

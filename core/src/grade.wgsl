@@ -23,6 +23,7 @@ struct Params {
 @group(0) @binding(3) var<storage, read_write> dst_px: array<u32>;
 @group(0) @binding(4) var<storage, read_write> dst_lut: array<vec4<f32>>;
 @group(0) @binding(5) var<storage, read> ext_lut: array<vec4<f32>>;
+@group(0) @binding(6) var<storage, read_write> dst_hdr: array<u32>;
 
 const CURVE_RES: u32 = 1024u;
 // Curve channels (grade.rs): 0 master, 1-3 R G B, then these.
@@ -481,14 +482,25 @@ fn tetrahedral(c: vec3<f32>) -> vec3<f32> {
 
 fn pack(c: vec3<f32>) -> u32 { return pack4x8unorm(vec4(c, 1.0)); }
 
-// Before/after split: left of the divider shows the untouched photo.
-fn finish(idx: u32, after: vec3<f32>, before: vec3<f32>) -> u32 {
-    if p.split > 0.0 {
-        let x = f32(idx % p.width) - p.split * f32(p.width);
-        if abs(x) < 1.0 { return pack(vec3(1.0)); }
-        if x < 0.0 { return pack(before); }
+// Before/after split: 0 = the graded side, 1 = the divider, 2 = the untouched side.
+fn split_side(idx: u32) -> u32 {
+    if p.split <= 0.0 { return 0u; }
+    let x = f32(idx % p.width) - p.split * f32(p.width);
+    if abs(x) < 1.0 { return 1u; }
+    return select(0u, 2u, x < 0.0);
+}
+
+// Left of the divider shows the untouched photo.
+fn split_view(idx: u32, after: vec3<f32>, before: vec3<f32>) -> vec3<f32> {
+    switch split_side(idx) {
+        case 1u: { return vec3(1.0); }
+        case 2u: { return before; }
+        default: { return after; }
     }
-    return pack(after);
+}
+
+fn finish(idx: u32, after: vec3<f32>, before: vec3<f32>) -> u32 {
+    return pack(split_view(idx, after, before));
 }
 
 // Clipping overlay: diagonal stripes over the pixels the output loses.
@@ -552,6 +564,36 @@ fn preview(@builtin(global_invocation_id) id: vec3<u32>) {
     var g = look_graded(idx, c);
     if p.overlay == 1u { g = mark_clipping(idx, g); }
     dst_px[idx] = finish(idx, clamp(g, vec3(0.0), vec3(1.0)), c);
+}
+
+// Linear Rec.709 → Rec.2020 (column-major).
+const REC709_TO_2020 = mat3x3<f32>(
+    vec3(0.627404, 0.069097, 0.016391),
+    vec3(0.329283, 0.919540, 0.088013),
+    vec3(0.043313, 0.011362, 0.895595));
+
+// HDR preview: the SDR preview in `dst_px` (what the scopes read) and the HDR
+// rendition in `dst_hdr` as GTK's rec2100-linear (linear Rec.2020, 1 = SDR white
+// at 203 cd/m²), RGBA16F. Clipping stripes, the divider and the untouched side stay SDR.
+@compute @workgroup_size(256)
+fn preview_hdr(@builtin(global_invocation_id) id: vec3<u32>) {
+    let idx = id.x;
+    if idx >= p.width * p.height { return; }
+    let s = src[idx];
+    let graded = look_graded(idx, s.rgb);
+    var g = clamp(graded, vec3(0.0), vec3(1.0));
+    var gain = hdr_gain(scene_max(s.rgb, s.w));
+    if p.overlay == 1u {
+        let marked = mark_clipping(idx, graded);
+        if any(marked != g) { gain = 1.0; }
+        g = marked;
+    }
+    if split_side(idx) != 0u { gain = 1.0; }
+    let sdr = split_view(idx, g, s.rgb);
+    dst_px[idx] = pack(sdr);
+    let hdr = REC709_TO_2020 * (srgb_to_lin(sdr) * gain);
+    dst_hdr[2u * idx] = pack2x16float(hdr.rg);
+    dst_hdr[2u * idx + 1u] = pack2x16float(vec2(hdr.b, 1.0));
 }
 
 @compute @workgroup_size(256)

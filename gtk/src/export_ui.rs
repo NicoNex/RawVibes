@@ -12,7 +12,7 @@ pub struct ExportUi {
     pub dialog: adw::Dialog,
     format: adw::ComboRow,
     quality: adw::SpinRow,
-    headroom: adw::SpinRow,
+    headroom: adw::ActionRow,
     size: adw::ActionRow,
     estimate: adw::ActionRow,
     /// Every photo the filmstrip shows, each with its own edits, into a folder.
@@ -31,6 +31,11 @@ pub fn format_label(f: PhotoFormat) -> String {
         PhotoFormat::Png16 => gettext("PNG · 16-bit, lossless"),
         PhotoFormat::Tiff16 => gettext("TIFF · 16-bit, for print and editing"),
     }
+}
+
+/// The HDR headroom in stops (1–3), as last set.
+pub fn headroom() -> f32 {
+    settings::value(settings::HDR_HEADROOM).and_then(|q| q.parse().ok()).unwrap_or(HDR_HEADROOM).clamp(1.0, 3.0)
 }
 
 /// The last format and JPEG quality used.
@@ -53,15 +58,7 @@ pub fn build(sender: &ComponentSender<App>) -> ExportUi {
         .build();
     let snd = sender.clone();
     quality_row.connect_value_notify(move |_| snd.input(Msg::ExportSettings));
-    let headroom = settings::value(settings::HDR_HEADROOM).and_then(|q| q.parse().ok()).unwrap_or(HDR_HEADROOM);
-    let headroom_row = adw::SpinRow::builder()
-        .title(gettext("HDR headroom"))
-        .subtitle(gettext("Stops of highlights above SDR white, from RAW and log photos"))
-        .digits(1)
-        .adjustment(&gtk::Adjustment::new(headroom.clamp(1.0, 3.0) as f64, 1.0, 3.0, 0.5, 0.5, 0.0))
-        .build();
-    let snd = sender.clone();
-    headroom_row.connect_value_notify(move |_| snd.input(Msg::ExportSettings));
+    let headroom_row = adw::ActionRow::builder().title(gettext("HDR headroom")).css_classes(["property"]).build();
     let size = adw::ActionRow::builder().title(gettext("Size")).css_classes(["property"]).build();
     let estimate = adw::ActionRow::builder().title(gettext("File size")).css_classes(["property"]).build();
     let all = adw::SwitchRow::builder().title(gettext("All photos in the filmstrip")).visible(false).build();
@@ -136,9 +133,9 @@ impl ExportUi {
         self.quality.value().round() as u8
     }
 
-    /// HDR headroom in stops over SDR white.
-    pub fn headroom(&self) -> f32 {
-        self.headroom.value() as f32
+    /// Shows the HDR headroom the HDR formats get (set in the Photo tab).
+    pub fn set_headroom(&self, stops: f32) {
+        self.headroom.set_subtitle(&gettext!("{} stops above SDR white · set in the Photo tab", format!("{stops:.1}")));
     }
 
     /// Shows `f`'s controls (quality for lossy formats, headroom for HDR ones) and selects it.
@@ -178,12 +175,7 @@ impl ExportUi {
         self.bar.set_visible(busy);
         self.bar.set_fraction(0.0);
         self.bar.set_text(Some(&gettext("Developing…")));
-        for w in [
-            self.format.upcast_ref::<gtk::Widget>(),
-            self.quality.upcast_ref(),
-            self.headroom.upcast_ref(),
-            self.all.upcast_ref(),
-        ] {
+        for w in [self.format.upcast_ref::<gtk::Widget>(), self.quality.upcast_ref(), self.all.upcast_ref()] {
             w.set_sensitive(!busy);
         }
         self.go.set_label(&if busy { gettext("Stop") } else { gettext("Export…") });

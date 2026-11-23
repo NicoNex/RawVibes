@@ -210,6 +210,10 @@ enum Msg {
     ExportPhoto(Option<PhotoFormat>),
     /// The dialog's format or quality changed.
     ExportSettings,
+    /// The preview shows the HDR rendition.
+    HdrPreview(bool),
+    /// HDR headroom in stops above SDR white.
+    Headroom(f32),
     /// Encodes the JPEG size estimate of this generation (for `w` × `h`), if still current.
     ExportEstimateRun(u64, u32, u32),
     /// A JPEG size estimate (estimate generation, bytes).
@@ -558,6 +562,9 @@ struct App {
     /// The frame the JPEG size estimate encodes (`Done::ExportFrame`), and its generation.
     export_frame: Option<Arc<export::Exported>>,
     export_gen: u64,
+    /// The preview shows the HDR rendition, `headroom` stops above SDR white (also the HDR exports').
+    hdr_preview: bool,
+    headroom: f32,
     /// Last preview request; identical requests (e.g. echoes of programmatic
     /// widget resets) are not re-rendered.
     sent: Option<(Grade, f32)>,
@@ -705,6 +712,9 @@ impl App {
     fn render(&mut self) {
         let mut grade = self.graded();
         grade.params.overlay = self.overlay as u32;
+        if self.hdr_preview {
+            grade.params.hdr_stops = self.headroom;
+        }
         // Where the shown image sits in the crop, for the creative vignette.
         if let (Some(shown), Some(crop)) = (self.shown_region(), self.crop_region()) {
             let visible = self.view_zoom().map_or(shown, |z| z.view(&shown, self.canvas).0);
@@ -1030,8 +1040,7 @@ impl App {
         // Remembered as used, not per spin tick.
         let _ = settings::set_value(settings::EXPORT_FORMAT, ui.format().tag());
         let _ = settings::set_value(settings::JPEG_QUALITY, &ui.quality().to_string());
-        let _ = settings::set_value(settings::HDR_HEADROOM, &ui.headroom().to_string());
-        let (format, quality, headroom) = (ui.format(), ui.quality(), ui.headroom());
+        let (format, quality, headroom) = (ui.format(), ui.quality(), self.headroom);
         let tags = self.export_tags(&crop);
         if format.ext() == "jpg" && tags.xmp.as_deref().is_some_and(|x| !export::xmp_fits_jpeg(x)) {
             self.toast(&gettext("Title, keywords and rights are too long for a JPEG: exported without them"));
@@ -1879,7 +1888,7 @@ impl App {
         let ui = &self.ui.export_photo;
         let mut grade = self.graded();
         if ui.format().hdr() {
-            grade.params.hdr_stops = ui.headroom();
+            grade.params.hdr_stops = self.headroom;
         }
         self.send(Job::ExportFrame(grade));
     }
@@ -1906,6 +1915,24 @@ impl App {
 fn texture(width: u32, height: u32, rgba: Vec<u8>) -> gdk::MemoryTexture {
     let bytes = glib::Bytes::from_owned(rgba);
     gdk::MemoryTexture::new(width as i32, height as i32, gdk::MemoryFormat::R8g8b8a8, &bytes, width as usize * 4)
+}
+
+/// An RGBA16F texture in GTK's rec2100-linear (linear Rec.2020, 1 = SDR white): the
+/// HDR preview. GTK hands it to the compositor as HDR where colour management is on.
+fn hdr_texture(width: u32, height: u32, rgba16f: Vec<u8>) -> gdk::Texture {
+    gdk::MemoryTextureBuilder::new()
+        .set_width(width as i32)
+        .set_height(height as i32)
+        .set_format(gdk::MemoryFormat::R16g16b16a16Float)
+        .set_bytes(Some(&glib::Bytes::from_owned(rgba16f)))
+        .set_stride(width as usize * 8)
+        .set_color_state(&gdk::ColorState::rec2100_linear())
+        .build()
+}
+
+/// Whether the preview shows the HDR rendition: on Linux only (GTK's macOS backend has no HDR).
+fn hdr_preview_setting() -> bool {
+    cfg!(target_os = "linux") && settings::value(settings::HDR_PREVIEW).as_deref() == Some("1")
 }
 
 /// Name of an exported photo: never the original's own.
@@ -2873,6 +2900,31 @@ fn build_match(sender: &ComponentSender<App>) -> MatchUi {
 const SCOPES_MIN: i32 = 50;
 const SCOPES_MAX: i32 = 320;
 
+/// The HDR section: the headroom of the HDR rendition and, on Linux, the HDR preview.
+fn build_hdr(sender: &ComponentSender<App>) -> gtk::Box {
+    let bx = vbox(6);
+    let preview = adw::SwitchRow::builder()
+        .title(gettext("HDR preview"))
+        .subtitle(gettext("On an HDR screen, the brighter highlights the HDR exports carry"))
+        .active(hdr_preview_setting())
+        .build();
+    let snd = sender.clone();
+    preview.connect_active_notify(move |r| snd.input(Msg::HdrPreview(r.is_active())));
+    let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
+    list.append(&preview);
+    list.set_visible(cfg!(target_os = "linux"));
+    bx.append(&list);
+    let headroom = Slider::new(&gettext("Headroom"), 1.0, 3.0, export::HDR_HEADROOM as f64, 1, None);
+    headroom.adj.set_value(export_ui::headroom() as f64);
+    let snd = sender.clone();
+    headroom.connect(move |v| snd.input(Msg::Headroom(v as f32)));
+    bx.append(&headroom.root);
+    bx.append(&caption(&gettext(
+        "Stops above SDR white the highlights of a RAW or log photo reach in the HDR exports (JPEG HDR, JPEG XL, AVIF, PNG HDR). The SDR photo, the grade and the LUT stay as they are.",
+    )));
+    bx
+}
+
 fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     let panel = vbox(12);
     panel.set_margin_top(12);
@@ -2987,6 +3039,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     // The Photo and Grade tabs show one of these each (`App::init` swaps them).
     let photo = vbox(12);
     photo.append(&section(&gettext("Input profile"), &profile_box));
+    photo.append(&section(&gettext("HDR"), &build_hdr(sender)));
     photo.append(&group_heading(&gettext("Not in the exported LUT")));
     let develop = build_develop(sender);
     // Geometry (lens, crop), light and colour, detail, then the vignette effect.
@@ -4167,6 +4220,8 @@ impl SimpleComponent for App {
             exporting: None,
             export_frame: None,
             export_gen: 0,
+            hdr_preview: hdr_preview_setting(),
+            headroom: export_ui::headroom(),
             sent: None,
             load_gen: 0,
             gallery_gen: 0,
@@ -4988,6 +5043,7 @@ impl SimpleComponent for App {
                 ui.set_roll(shown);
                 let (w, h) = Decoded::fit_size(&crop, u32::MAX);
                 ui.set_size(w, h);
+                ui.set_headroom(self.headroom);
                 ui.dialog.present(Some(&self.ui.window));
                 self.export_frame_request();
             }
@@ -4995,6 +5051,16 @@ impl SimpleComponent for App {
                 let ui = &self.ui.export_photo;
                 ui.set_format(ui.format());
                 self.export_frame_request();
+            }
+            Msg::HdrPreview(on) => {
+                self.hdr_preview = on;
+                let _ = settings::set_value(settings::HDR_PREVIEW, if on { "1" } else { "0" });
+                self.render();
+            }
+            Msg::Headroom(stops) => {
+                self.headroom = stops;
+                let _ = settings::set_value(settings::HDR_HEADROOM, &format!("{stops:.2}"));
+                self.render();
             }
             Msg::ExportEstimateRun(generation, w, h) if generation == self.export_gen => {
                 let Some(frame) = self.export_frame.clone() else { return };
@@ -5668,8 +5734,12 @@ impl App {
                 }
                 self.toast(&gettext!("GPU unavailable: {}", e))
             }
-            Done::Graded { width, height, rgba, scopes: Scopes { histogram, waveform, vectorscope } } => {
-                self.ui.grade_pic.set_paintable(Some(&texture(width, height, rgba)));
+            Done::Graded { width, height, rgba, hdr, scopes: Scopes { histogram, waveform, vectorscope } } => {
+                let shown = match hdr {
+                    Some(hdr) => hdr_texture(width, height, hdr),
+                    None => texture(width, height, rgba).upcast(),
+                };
+                self.ui.grade_pic.set_paintable(Some(&shown));
                 let [h, w, v] = &self.ui.sidebar.scopes;
                 h.set_paintable(Some(&texture(HIST_W as u32, HIST_H as u32, histogram)));
                 w.set_paintable(Some(&texture(HIST_W as u32, HIST_H as u32, waveform)));
@@ -5971,6 +6041,17 @@ fn bind_text_domain(dir: &Path) {
 
 fn main() {
     bind_text_domain(&locale_dir());
+    // GTK 4.24 talks to the compositor's colour management (wp_color_manager_v1) only
+    // when asked: what lets the HDR preview reach an HDR screen as HDR.
+    #[cfg(target_os = "linux")]
+    {
+        let debug = std::env::var("GDK_DEBUG").unwrap_or_default();
+        if !debug.split([',', ':', ' ']).any(|f| f == "color-mgmt") {
+            let flags = if debug.is_empty() { "color-mgmt".to_string() } else { format!("{debug},color-mgmt") };
+            // SAFETY: first thing in main, before GTK or any other thread starts.
+            unsafe { std::env::set_var("GDK_DEBUG", flags) };
+        }
+    }
     // HANDLES_OPEN: files from the command line or a file manager ("Open With")
     // arrive here, also when RawVibes is already running.
     let app = adw::Application::builder().application_id(APP_ID).flags(gio::ApplicationFlags::HANDLES_OPEN).build();

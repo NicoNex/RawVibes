@@ -68,8 +68,11 @@ pub const EXPORT_FORMAT: &str = "export-format";
 /// Last JPEG export quality, 1–100.
 pub const JPEG_QUALITY: &str = "jpeg-quality";
 
-/// Last HDR export headroom, in stops.
+/// HDR headroom, in stops above SDR white (the Photo tab's HDR section).
 pub const HDR_HEADROOM: &str = "hdr-headroom";
+
+/// "1": the preview shows the HDR rendition.
+pub const HDR_PREVIEW: &str = "hdr-preview";
 
 /// What exported photos carry (`rawvibes_core::meta::Policy::tag`).
 pub const METADATA_POLICY: &str = "metadata-policy";

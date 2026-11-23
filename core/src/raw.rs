@@ -36,9 +36,9 @@ pub struct RawData {
 pub enum Pixels {
     /// Rescaled (0 = black, 1 = white) Bayer mosaic, not white-balanced.
     Bayer(Vec<f32>),
-    /// The same for a 6×6 X-Trans mosaic: [`Gpu::demosaic_xtrans`] turns it into `Rgb`.
+    /// The same for a 6×6 X-Trans mosaic: [`Gpu::demosaiced`] turns it into `Rgb`.
     XTrans(Vec<f32>),
-    /// Already demosaiced and cropped (X-Trans by [`Gpu::demosaic_xtrans`]; rawler: 4-colour, linear DNG),
+    /// Already demosaiced and cropped (X-Trans by [`Gpu::demosaiced`]; rawler: 4-colour, linear DNG),
     /// as-shot-balanced camera RGB.
     Rgb(Vec<[f32; 3]>),
 }
@@ -206,6 +206,7 @@ pub(crate) struct Work {
     /// After defringe and dehaze; then after local contrast, so a local-contrast
     /// drag does not re-run the other two.
     after_haze: Option<(Key, wgpu::Buffer)>,
+    after_tones: Option<(Key, wgpu::Buffer)>,
     after_contrast: Option<(Key, wgpu::Buffer)>,
 }
 
@@ -752,7 +753,7 @@ impl Gpu {
                 let rgb = self.storage(bytemuck::cast_slice(px));
                 self.passes(&[(&p.rgb_pack, &[(0, &params), (1, &rgb), (10, &level0)], grid(n))]);
             }
-            Pixels::XTrans(_) => return self.load_raw(&self.demosaic_xtrans(raw)?),
+            Pixels::XTrans(_) => return Err("X-Trans must be demosaiced first (Gpu::demosaiced)".into()),
         }
         let mut gpu_raw = GpuRaw {
             levels: self.mips(raw, level0),
@@ -775,12 +776,13 @@ impl Gpu {
     /// An X-Trans `raw` as as-shot-balanced camera RGB of its visible area: white balance and
     /// highlight reconstruction on the mosaic (as for Bayer), then rawler's Markesteijn 3-pass
     /// (dcraw's, darktable's and RawTherapee's reference X-Trans demosaic) on the CPU.
-    // shortcut: CPU Markesteijn, a second or two per load on 26 MP; port it to WGSL if loads feel slow.
-    pub fn demosaic_xtrans(&self, raw: &RawData) -> Result<RawData, String> {
+    /// Any other `raw` comes back as it is.
+    // shortcut: CPU Markesteijn, ~3 s per load on 26 MP; port it to WGSL if loads feel slow.
+    pub fn demosaiced(&self, raw: std::sync::Arc<RawData>) -> Result<std::sync::Arc<RawData>, String> {
         use rawler::imgop::sensor::{Demosaic, xtrans::markesteijn::XTransMarkesteijnDemosaic};
         use rawler::imgop::{Dim2, Point, Rect};
-        let Pixels::XTrans(mosaic) = &raw.pixels else { return Err("not an X-Trans mosaic".into()) };
-        let cfa = self.read_f32(&self.reconstruct(raw, mosaic)?);
+        let Pixels::XTrans(mosaic) = &raw.pixels else { return Ok(raw) };
+        let cfa = self.read_f32(&self.reconstruct(&raw, mosaic)?);
         let pattern: String = raw.pattern.iter().map(|&c| ['R', 'G', 'B'][c as usize]).collect();
         let (fw, fh) = (raw.width as usize, raw.height as usize);
         // The whole sensor, then the visible area: rawler crops its input to the ROI, so a ROI
@@ -792,11 +794,15 @@ impl Gpu {
             Rect::new(Point::new(0, 0), Dim2::new(fw, fh)),
         );
         let [x, y, w, h] = raw.crop.map(|v| v as usize);
-        let mut px = Vec::with_capacity(w * h);
-        (y..y + h).for_each(|r| px.extend_from_slice(&rgb.data[r * fw + x..][..w]));
-        drop(rgb);
+        // Cropped in place: rows only move towards the start.
+        let mut px = rgb.data;
+        for r in 0..h {
+            let from = (y + r) * fw + x;
+            px.copy_within(from..from + w, r * w);
+        }
+        px.truncate(w * h);
         let (w, h) = (w as u32, h as u32);
-        Ok(RawData {
+        Ok(std::sync::Arc::new(RawData {
             pixels: Pixels::Rgb(px),
             width: w,
             height: h,
@@ -805,7 +811,7 @@ impl Gpu {
             crop: [0, 0, w, h],
             orientation: raw.orientation,
             camera: raw.camera.clone(),
-        })
+        }))
     }
 
     /// The mip chain from `level0` (the visible area of `raw`).
@@ -882,6 +888,7 @@ impl Gpu {
                 scratch: None,
                 after_nr: None,
                 after_haze: None,
+                after_tones: None,
                 after_contrast: None,
             });
         }
@@ -904,13 +911,14 @@ impl Gpu {
         let nr_key = (raw.id, key.clone());
         key.extend([d.defringe, d.defringe_green, d.dehaze]);
         let haze_key = (raw.id, key.clone());
-        // Shadows and highlights share local contrast's stage: their drags leave defringe and dehaze cached.
-        key.extend([d.shadows, d.highlights, d.local_contrast]);
+        key.extend([d.shadows, d.highlights]);
+        let tones_key = (raw.id, key.clone());
+        key.push(d.local_contrast);
         let contrast_key = (raw.id, key);
         let nr_on = d.nr_luma > 0.0 || d.nr_chroma > 0.0;
-        let tones_on = d.shadows != 0.0 || d.highlights != 0.0;
+        let tones_on = d.tones_on();
         let haze_on = d.defringe > 0.0 || d.defringe_green > 0.0 || d.dehaze != 0.0;
-        let contrast_on = tones_on || d.local_contrast > 0.0;
+        let contrast_on = d.local_contrast > 0.0;
         // A tool turned off frees its cache (a 100% view's is ~100 MB).
         if !nr_on {
             work.after_nr = None;
@@ -918,14 +926,21 @@ impl Gpu {
         if !haze_on {
             work.after_haze = None;
         }
+        if !tones_on {
+            work.after_tones = None;
+        }
         if !contrast_on {
             work.after_contrast = None;
         }
         let (p, g) = (&self.raw, grid(lw * lh));
         let hit = |c: &Option<(Key, wgpu::Buffer)>, key: &Key| c.as_ref().filter(|c| c.0 == *key).map(|c| c.1.clone());
         // The latest cached stage, copied back; the stages after it run (and are kept).
-        let hits =
-            [hit(&work.after_nr, &nr_key), hit(&work.after_haze, &haze_key), hit(&work.after_contrast, &contrast_key)];
+        let hits = [
+            hit(&work.after_nr, &nr_key),
+            hit(&work.after_haze, &haze_key),
+            hit(&work.after_tones, &tones_key),
+            hit(&work.after_contrast, &contrast_key),
+        ];
         let from = hits.iter().rposition(Option::is_some).map_or(0, |i| i + 1);
         if let Some(b) = from.checked_sub(1).and_then(|i| hits[i].as_ref()) {
             self.copy(b, &work.lin);
@@ -954,14 +969,14 @@ impl Gpu {
             }
             keep(self, &work.lin, &mut work.after_haze, haze_key);
         }
-        if from < 3 && contrast_on {
+        if from < 3 && tones_on {
             let lin = work.lin.clone();
-            if tones_on {
-                self.tones(&lin, work.scratch(self), lw, lh, s, d);
-            }
-            if d.local_contrast > 0.0 {
-                self.local_laplacian(&lin, work.scratch(self), lw, lh, s, d.local_contrast);
-            }
+            self.tones(&lin, work.scratch(self), lw, lh, s, d);
+            keep(self, &work.lin, &mut work.after_tones, tones_key);
+        }
+        if from < 4 && contrast_on {
+            let lin = work.lin.clone();
+            self.local_laplacian(&lin, work.scratch(self), lw, lh, s, d.local_contrast);
             keep(self, &work.lin, &mut work.after_contrast, contrast_key);
         }
         if d.sharpen > 0.0 {
@@ -1484,6 +1499,10 @@ mod tests {
 
     const RGGB: [u32; 4] = [0, 1, 1, 2];
 
+    /// An X-Trans 6×6 pattern (X-T3's, colour indices).
+    const XT: [u32; 36] =
+        [1, 1, 0, 1, 1, 2, 1, 1, 2, 1, 1, 0, 2, 0, 1, 0, 2, 1, 1, 1, 2, 1, 1, 0, 1, 1, 0, 1, 1, 2, 0, 2, 1, 2, 0, 1];
+
     fn data(w: u32, h: u32, as_shot: [f32; 3]) -> RawData {
         let mut pattern = [0; 36];
         pattern[..4].copy_from_slice(&RGGB);
@@ -1660,7 +1679,7 @@ mod tests {
         let t = std::time::Instant::now();
         let raw = read_raw(Path::new(&path)).unwrap();
         let read = t.elapsed();
-        let out = gpu.load_raw(&raw).unwrap();
+        let out = gpu.load_raw(&gpu.demosaiced(std::sync::Arc::new(raw)).unwrap()).unwrap();
         gpu.read_f32(&out.levels.last().unwrap().0); // waits for the GPU
         eprintln!("read {read:?}, total {:?}, {:?}", t.elapsed(), out.size());
     }
@@ -2003,7 +2022,8 @@ mod tests {
     fn gpu_and_cpu_raw_paths_agree() {
         let Ok(path) = std::env::var("RAWVIBES_RAW") else { return eprintln!("no sample, skipped") };
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
-        let raw = gpu.load_raw(&read_raw(Path::new(&path)).unwrap()).unwrap();
+        let raw =
+            gpu.load_raw(&gpu.demosaiced(std::sync::Arc::new(read_raw(Path::new(&path)).unwrap())).unwrap()).unwrap();
         let cpu = crate::photo::Decoded::load_max(Path::new(&path), Some(512)).unwrap();
         let (w, h) = cpu.size();
         let (fw, fh) = raw.size();
@@ -2390,7 +2410,8 @@ mod tests {
         let Ok(path) = std::env::var("RAWVIBES_RAW") else { return eprintln!("no sample, skipped") };
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
         let t = std::time::Instant::now();
-        let raw = gpu.load_raw(&read_raw(Path::new(&path)).unwrap()).unwrap();
+        let raw =
+            gpu.load_raw(&gpu.demosaiced(std::sync::Arc::new(read_raw(Path::new(&path)).unwrap())).unwrap()).unwrap();
         eprintln!("load {:?}, noise {:?}", t.elapsed(), raw.noise);
         assert!(raw.noise.a > 0.0 || raw.noise.b > 0.0);
         let (w, h) = raw.oriented_size();
@@ -2418,7 +2439,8 @@ mod tests {
     fn fit_and_zoom_agree_statistically() {
         let Ok(path) = std::env::var("RAWVIBES_RAW") else { return eprintln!("no sample, skipped") };
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
-        let raw = gpu.load_raw(&read_raw(Path::new(&path)).unwrap()).unwrap();
+        let raw =
+            gpu.load_raw(&gpu.demosaiced(std::sync::Arc::new(read_raw(Path::new(&path)).unwrap())).unwrap()).unwrap();
         let (w, h) = raw.oriented_size();
         let r = Region { center: [w as f32 / 2.0, h as f32 / 2.0], size: [2048.0, 1364.0], angle: 0.0 };
         let dev = Develop { detail: nr(50.0, 50.0), ..Develop::default() };
@@ -2476,7 +2498,8 @@ mod tests {
     fn stage_cost_on_sample() {
         let Ok(path) = std::env::var("RAWVIBES_RAW") else { return eprintln!("no sample, skipped") };
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
-        let raw = gpu.load_raw(&read_raw(Path::new(&path)).unwrap()).unwrap();
+        let raw =
+            gpu.load_raw(&gpu.demosaiced(std::sync::Arc::new(read_raw(Path::new(&path)).unwrap())).unwrap()).unwrap();
         let (w, h) = raw.oriented_size();
         let fr = whole(w, h);
         let view = Region { center: fr.center, size: [2048.0, 1365.0], angle: 0.0 };
@@ -2652,18 +2675,15 @@ mod tests {
     #[test]
     fn xtrans_flat_colour_survives_demosaic() {
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
-        const XT: [u32; 36] = [
-            1, 1, 0, 1, 1, 2, 1, 1, 2, 1, 1, 0, 2, 0, 1, 0, 2, 1, 1, 1, 2, 1, 1, 0, 1, 1, 0, 1, 1, 2, 0, 2, 1, 2, 0, 1,
-        ];
         let (w, h) = (120, 96);
         let mut raw = data(w, h, [1.7, 1.0, 1.3]);
         let flat = [0.2, 0.3, 0.4];
         let m = (0..w * h).map(|i| flat[XT[(((i / w) % 6) * 6 + (i % w) % 6) as usize] as usize]).collect();
         (raw.pattern, raw.pattern_size, raw.crop, raw.pixels) = (XT, [6, 6], [6, 6, w - 12, h - 12], Pixels::XTrans(m));
-        let out = gpu.demosaic_xtrans(&raw).unwrap();
+        let want: [f32; 3] = std::array::from_fn(|c| flat[c] * raw.camera.as_shot[c]);
+        let out = gpu.demosaiced(std::sync::Arc::new(raw)).unwrap();
         assert_eq!((out.width, out.height, out.crop), (w - 12, h - 12, [0, 0, w - 12, h - 12]));
         let Pixels::Rgb(px) = &out.pixels else { panic!("not RGB") };
-        let want: [f32; 3] = std::array::from_fn(|c| flat[c] * raw.camera.as_shot[c]);
         let bad: Vec<_> =
             px.iter().enumerate().filter(|(_, p)| (0..3).any(|c| (p[c] - want[c]).abs() >= 1e-4)).collect();
         let edge = |i: usize| (i % (w as usize - 12), i / (w as usize - 12));
@@ -2680,9 +2700,6 @@ mod tests {
     #[test]
     fn xtrans_pattern_is_honoured() {
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
-        const XT: [u32; 36] = [
-            1, 1, 0, 1, 1, 2, 1, 1, 2, 1, 1, 0, 2, 0, 1, 0, 2, 1, 1, 1, 2, 1, 1, 0, 1, 1, 0, 1, 1, 2, 0, 2, 1, 2, 0, 1,
-        ];
         let mut raw = data(36, 36, [1.7, 1.0, 1.3]);
         (raw.pattern, raw.pattern_size) = (XT, [6, 6]);
         let col = |x: u32, y: u32| XT[((y % 6) * 6 + x % 6) as usize] as usize;

@@ -126,12 +126,16 @@ impl Detail {
             + on(d.defringe_green, 32.0)
             + on(d.dehaze, 67.0)
             + on(d.local_contrast, 256.0)
-            // The tone equalizer's mask: 3σ of its guided filter, √3 for its three iterations.
-            + if d.shadows != 0.0 || d.highlights != 0.0 { TONES_SUPPORT } else { 0.0 }
+            + if d.tones_on() { TONES_SUPPORT } else { 0.0 }
             // The most iterations at the largest radius, so neither amount nor radius moves the margin (or the caches).
             + on(d.sharpen, 11.0 * 2.0 * 6.0)
             // Two separable blurs at the largest radius (3σ of 3 px).
             + on(d.usm, 9.0)
+    }
+
+    /// Shadows or highlights is on (the tone equalizer runs).
+    pub fn tones_on(&self) -> bool {
+        self.shadows != 0.0 || self.highlights != 0.0
     }
 
     /// Within the sliders' ranges; `None` when a value is not a number.

@@ -160,8 +160,7 @@ impl Gpu {
                 let back = pseudo_inverse(m);
                 (self.storage(bytemuck::cast_slice(&lin)), 0, 0, 1, diag(back))
             }
-            // The worker hands the AI the demosaiced RGB (`Job::LoadRaw`).
-            Pixels::XTrans(_) => return Err("X-Trans must be demosaiced before AI denoise".into()),
+            Pixels::XTrans(_) => return Err("X-Trans must be demosaiced first (Gpu::demosaiced)".into()),
         };
         let (pw, ph) = ((raw.width - ox) / s, (raw.height - oy) / s);
         // As few tiles as edge `t` allows, then as small as they can be: less overlap to compute.
@@ -240,12 +239,6 @@ impl Gpu {
         run.next += 1;
         Ok(())
     }
-}
-
-/// A sample file as the worker hands it to the AI: X-Trans demosaiced first (`Job::LoadRaw`).
-#[cfg(test)]
-fn xtrans_as_rgb(gpu: &Gpu, raw: RawData) -> RawData {
-    if matches!(raw.pixels, Pixels::XTrans(_)) { gpu.demosaic_xtrans(&raw).unwrap() } else { raw }
 }
 
 #[cfg(test)]
@@ -437,7 +430,8 @@ mod tests {
     fn ai_on_sample() {
         let Ok(path) = std::env::var("RAWVIBES_RAW") else { return };
         let Some((gpu, net)) = setup() else { return };
-        let raw = xtrans_as_rgb(&gpu, crate::raw::read_raw(std::path::Path::new(&path)).unwrap());
+        let raw =
+            gpu.demosaiced(std::sync::Arc::new(crate::raw::read_raw(std::path::Path::new(&path)).unwrap())).unwrap();
         let start = std::time::Instant::now();
         gpu.ai_denoise(&raw, &net, &AtomicBool::new(false), &|_| {}).unwrap().unwrap();
         eprintln!("AI denoise {}×{}: {:.2?}", raw.width, raw.height, start.elapsed());
@@ -661,7 +655,8 @@ mod quality {
         else {
             return;
         };
-        let data = xtrans_as_rgb(&gpu, crate::raw::read_raw(std::path::Path::new(&path)).unwrap());
+        let data =
+            gpu.demosaiced(std::sync::Arc::new(crate::raw::read_raw(std::path::Path::new(&path)).unwrap())).unwrap();
         let net = UNet::new(&gpu, &Weights::load(&dir, Variant::Bayer).unwrap());
         let mut raw = gpu.load_raw(&data).unwrap();
         let level0 = gpu.ai_denoise(&data, &net, &AtomicBool::new(false), &|_| {}).unwrap().unwrap();

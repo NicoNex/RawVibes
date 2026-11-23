@@ -2,7 +2,7 @@
 // darktable's tone equalizer (src/iop/toneequal.c) with its EIGF mask
 // (src/common/eigf.h, no quantisation, linear blending). See tones.rs.
 //
-// `sa.x` holds the full-resolution mask; `sb` the downscaled guided filter
+// `sa` holds the full-resolution mask (one f32 a pixel); `sb` the downscaled guided filter
 // statistics: (mean, mean²) at [0, dn), the horizontal blur at [dn, 2 dn).
 
 struct TonesParams {
@@ -26,7 +26,7 @@ struct TonesParams {
 
 @group(0) @binding(0) var<storage, read> p: TonesParams;
 @group(0) @binding(1) var<storage, read_write> lin: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read_write> sa: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> sa: array<f32>;
 @group(0) @binding(3) var<storage, read_write> sb: array<vec4<f32>>;
 
 const MIN_FLOAT: f32 = 1.52587890625e-5; // 2^-16
@@ -41,7 +41,7 @@ fn te_mask(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec
            @builtin(local_invocation_index) lid: u32) {
     let i = index(wg, n, lid);
     if i >= p.w * p.h { return; }
-    sa[i].x = max(p.boost * length(lin[i].xyz), MIN_FLOAT);
+    sa[i] = max(p.boost * length(lin[i].xyz), MIN_FLOAT);
 }
 
 // The mask averaged over f × f blocks, with its square.
@@ -55,7 +55,7 @@ fn te_down(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: vec
     var s = 0.0;
     for (var y = y0; y < y0 + p.f; y++) {
         for (var x = x0; x < x0 + p.f; x++) {
-            s += sa[min(y, p.h - 1u) * p.w + min(x, p.w - 1u)].x;
+            s += sa[min(y, p.h - 1u) * p.w + min(x, p.w - 1u)];
         }
     }
     let g = s / f32(p.f * p.f);
@@ -120,11 +120,11 @@ fn te_blend(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: ve
         mix(sb[ds_at(x, y + 1)].xy, sb[ds_at(x + 1, y + 1)].xy, t.x),
         t.y,
     );
-    let image = sa[i].x;
+    let image = sa[i];
     let nv = av.y / max(av.x * image, 1e-6);
     let a = nv / (nv + p.feather);
     let b = av.x - a * av.x;
-    sa[i].x = max(image * a + b, MIN_FLOAT);
+    sa[i] = max(image * a + b, MIN_FLOAT);
 }
 
 // The gain of the mask's exposure (apply_toneequalizer, interpolated in EV).
@@ -133,7 +133,7 @@ fn te_apply(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n: ve
             @builtin(local_invocation_index) lid: u32) {
     let i = index(wg, n, lid);
     if i >= p.w * p.h { return; }
-    let ev = clamp(log2(sa[i].x), -8.0, 0.0);
+    let ev = clamp(log2(sa[i]), -8.0, 0.0);
     var g = 0.0;
     for (var j = 0; j < 8; j++) {
         let d = ev - (-8.0 + 8.0 * f32(j) / 7.0);

@@ -1895,9 +1895,14 @@ impl App {
     }
 }
 
-/// An sRGB RGBA8 frame as a texture, in the monitor's colour space (`display_color`).
+/// An sRGB RGBA8 photo as a texture, in the monitor's colour space (`display_color`).
 fn texture(width: u32, height: u32, rgba: Vec<u8>) -> gdk::MemoryTexture {
-    let bytes = glib::Bytes::from_owned(display_color::to_monitor(rgba));
+    scope_texture(width, height, display_color::to_monitor(rgba))
+}
+
+/// An RGBA8 texture as it is: scopes are graphs, not colours to reproduce.
+fn scope_texture(width: u32, height: u32, rgba: Vec<u8>) -> gdk::MemoryTexture {
+    let bytes = glib::Bytes::from_owned(rgba);
     gdk::MemoryTexture::new(width as i32, height as i32, gdk::MemoryFormat::R8g8b8a8, &bytes, width as usize * 4)
 }
 
@@ -2966,7 +2971,6 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     profile_sel.update_property(&[gtk::accessible::Property::Label(&gettext("Input profile"))]);
     let hint = caption(&profile_hint(Profile::Standard));
     let profile_link = caption("");
-    profile_link.set_use_markup(true);
     profile_link.set_markup(&profile_link_markup(Profile::Standard));
     let (snd, h, l) = (sender.clone(), hint.clone(), profile_link.clone());
     profile_sel.connect_selected_notify(move |d| {
@@ -5662,9 +5666,9 @@ impl App {
             Done::Graded { width, height, rgba, scopes: Scopes { histogram, waveform, vectorscope } } => {
                 self.ui.grade_pic.set_paintable(Some(&texture(width, height, rgba)));
                 let [h, w, v] = &self.ui.sidebar.scopes;
-                h.set_paintable(Some(&texture(HIST_W as u32, HIST_H as u32, histogram)));
-                w.set_paintable(Some(&texture(HIST_W as u32, HIST_H as u32, waveform)));
-                v.set_paintable(Some(&texture(VEC_SIZE as u32, VEC_SIZE as u32, vectorscope)));
+                h.set_paintable(Some(&scope_texture(HIST_W as u32, HIST_H as u32, histogram)));
+                w.set_paintable(Some(&scope_texture(HIST_W as u32, HIST_H as u32, waveform)));
+                v.set_paintable(Some(&scope_texture(VEC_SIZE as u32, VEC_SIZE as u32, vectorscope)));
             }
             Done::Lab { width, height, rgba } => self.ui.lab.pic.set_paintable(Some(&texture(width, height, rgba))),
             Done::Thumb { generation, index, width, height, rgba } => {

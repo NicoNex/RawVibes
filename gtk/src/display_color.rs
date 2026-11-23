@@ -6,6 +6,7 @@
 //! with moxcms (relative colorimetric, as darktable and RapidRaw do).
 
 use moxcms::{ColorProfile, Layout, RenderingIntent, Transform8BitExecutor, TransformOptions};
+use rawvibes_core::gpu::Done;
 use std::sync::{Arc, LazyLock};
 
 static MONITOR: LazyLock<Option<Arc<Transform8BitExecutor>>> =
@@ -23,6 +24,18 @@ pub fn to_monitor(rgba: Vec<u8>) -> Vec<u8> {
     let mut out = vec![0; rgba.len()];
     // A transform error leaves the pixels as they were: unmanaged, never lost.
     if t.transform(&rgba, &mut out).is_ok() { out } else { rgba }
+}
+
+/// `d` with its photo frames in the monitor's colour space; scopes (graphs) and the rest as they are.
+pub fn frames_to_monitor(mut d: Done) -> Done {
+    if let Done::Graded { rgba, .. }
+    | Done::Lab { rgba, .. }
+    | Done::Thumb { rgba, .. }
+    | Done::RollFrame { rgba, .. } = &mut d
+    {
+        *rgba = to_monitor(std::mem::take(rgba));
+    }
+    d
 }
 
 // shortcut: the main display's profile, read once; upgrade to the window's display

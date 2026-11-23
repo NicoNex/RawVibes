@@ -1895,13 +1895,8 @@ impl App {
     }
 }
 
-/// An sRGB RGBA8 photo as a texture, in the monitor's colour space (`display_color`).
+/// An RGBA8 texture; photos arrive already in the monitor's colour space (`display_color`).
 fn texture(width: u32, height: u32, rgba: Vec<u8>) -> gdk::MemoryTexture {
-    scope_texture(width, height, display_color::to_monitor(rgba))
-}
-
-/// An RGBA8 texture as it is: scopes are graphs, not colours to reproduce.
-fn scope_texture(width: u32, height: u32, rgba: Vec<u8>) -> gdk::MemoryTexture {
     let bytes = glib::Bytes::from_owned(rgba);
     gdk::MemoryTexture::new(width as i32, height as i32, gdk::MemoryFormat::R8g8b8a8, &bytes, width as usize * 4)
 }
@@ -3349,7 +3344,8 @@ impl SimpleComponent for App {
         adw::StyleManager::default().set_color_scheme(adw::ColorScheme::PreferDark);
 
         let snd = sender.clone();
-        let (jobs, gpu_thread) = gpu::spawn(move |d| snd.input(Msg::Gpu(d)));
+        // Photo frames reach the monitor's colour space on the GPU thread, off the UI's.
+        let (jobs, gpu_thread) = gpu::spawn(move |d| snd.input(Msg::Gpu(display_color::frames_to_monitor(d))));
 
         // ---------------- grade page
         let grade_pic = gtk::Picture::builder()
@@ -4454,7 +4450,11 @@ impl SimpleComponent for App {
                 // The source is the photo as the camera shot it, before any edit.
                 let source = as_shot_render(&d, &as_shot, self.profile);
                 let m = &self.ui.sidebar.matching;
-                m.pic.set_paintable(Some(&texture(reference.width, reference.height, rgba8(&reference.pixels))));
+                m.pic.set_paintable(Some(&texture(
+                    reference.width,
+                    reference.height,
+                    display_color::to_monitor(rgba8(&reference.pixels)),
+                )));
                 m.name.set_label(&gettext("Camera JPEG"));
                 self.match_gen += 1;
                 self.camera_job = Some(path);
@@ -4788,7 +4788,7 @@ impl SimpleComponent for App {
                     // References are display images (a still, a JPEG); RAWs are rendered neutrally.
                     let r = Decoded::load_max(&path, Some(1024)).map(|d| {
                         let reference = d.encode(Profile::Standard, &Develop::default());
-                        let thumb = rgba8(&reference.pixels);
+                        let thumb = display_color::to_monitor(rgba8(&reference.pixels));
                         (reference, thumb)
                     });
                     s.emit(Msg::MatchLoaded(path, r));
@@ -5666,9 +5666,9 @@ impl App {
             Done::Graded { width, height, rgba, scopes: Scopes { histogram, waveform, vectorscope } } => {
                 self.ui.grade_pic.set_paintable(Some(&texture(width, height, rgba)));
                 let [h, w, v] = &self.ui.sidebar.scopes;
-                h.set_paintable(Some(&scope_texture(HIST_W as u32, HIST_H as u32, histogram)));
-                w.set_paintable(Some(&scope_texture(HIST_W as u32, HIST_H as u32, waveform)));
-                v.set_paintable(Some(&scope_texture(VEC_SIZE as u32, VEC_SIZE as u32, vectorscope)));
+                h.set_paintable(Some(&texture(HIST_W as u32, HIST_H as u32, histogram)));
+                w.set_paintable(Some(&texture(HIST_W as u32, HIST_H as u32, waveform)));
+                v.set_paintable(Some(&texture(VEC_SIZE as u32, VEC_SIZE as u32, vectorscope)));
             }
             Done::Lab { width, height, rgba } => self.ui.lab.pic.set_paintable(Some(&texture(width, height, rgba))),
             Done::Thumb { generation, index, width, height, rgba } => {

@@ -105,6 +105,20 @@ geometry.
   handles; the ratio holds at the edges of the photo.
 - **Straighten** by angle or by dragging along the horizon.
 
+### HDR
+
+- **HDR rendition:** the highlights a RAW or log photo holds go up to the *Headroom*
+  (1–3 stops above SDR white, Photo tab), with the same look: the grade and LUTs stay
+  SDR, and the HDR only extends the highlights. The HDR exports carry it (see
+  *Export the photo*).
+- **HDR preview** (Linux): on an HDR screen, with HDR on in the system settings, the
+  preview shows the HDR rendition. GTK hands it to the compositor as Rec.2100.
+- **Merge brackets to HDR** (main menu): two or more RAWs of one scene at different
+  exposures become one DNG with their combined range, in the RAW domain before
+  demosaic, as Lightroom and darktable do. The frames are aligned (handheld shots
+  too), weighted by their noise, and a frame is left out where something moved. The
+  DNG opens at the middle exposure and edits like any RAW.
+
 ### Grade: build the look
 
 <img src="docs/screenshots/wheels.jpg" alt="Grade tab of RawVibes: primary colour wheels for lift, gamma, gain and offset on a Salento coast photo" width="100%">
@@ -330,8 +344,9 @@ sudo pacman -U packaging/arch/rawvibes-*.pkg.tar.zst
 
 ### From source (any Linux)
 
-You need Rust (stable), GTK ≥ 4.20, libadwaita ≥ 1.9, gettext and a Vulkan driver.
-Lens profiles need the lensfun database (`lensfun` package) at build time.
+You need Rust (stable), GTK ≥ 4.20, libadwaita ≥ 1.9, libjxl, gettext and a Vulkan
+driver; cmake and nasm build the bundled AVIF encoder (libavif with libaom). Lens
+profiles need the lensfun database (`lensfun` package) at build time.
 
 ```sh
 make models                     # fetch and convert the AI denoise weights (curl, unzip, python3 + onnx, numpy)
@@ -348,7 +363,7 @@ Other targets: `make test`, `make check` (format, clippy and tests), `make pot`
 Open the `.dmg`, drag RawVibes to Applications, and follow its `README.txt`: the
 app is not signed with an Apple Developer ID, so you clear the quarantine flag once
 with `xattr -cr /Applications/RawVibes.app`. To build the disk image yourself, install
-`gtk4 libadwaita adwaita-icon-theme librsvg gettext dylibbundler` with Homebrew and
+`gtk4 libadwaita adwaita-icon-theme librsvg jpeg-xl cmake nasm gettext dylibbundler` with Homebrew and
 run `make dmg`.
 
 ---
@@ -382,7 +397,6 @@ run `make dmg`.
 ## Roadmap
 
 - Perspective correction, guided by lines you draw on the photo.
-- HDR output.
 
 ## Translations
 

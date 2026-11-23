@@ -6,42 +6,58 @@ what each part would mean for RawVibes.
 
 ## Status
 
-Step 1 is built (2026-11-23): the HDR rendition and the Ultra HDR export.
-- Rendition, `grade.wgsl` `hdr_gain`. The view transform's extended Reinhard
-  shoulder with its output white raised to the peak P = 2^headroom:
-  hdr(m) = m (1 + m P / W²) / (1 + m / P).
-  - P = 1 is the SDR curve exactly. Both reach white at the same scene value W.
-  - The gain hdr/sdr of the exposed scene's max channel is one factor per
-    pixel, so it keeps hue. It is applied over the graded SDR.
-  - The scene comes from the log decode (log inputs) or from the developed
-    RAW's alpha (`raw.wgsl` `develop_encode` writes it; grade param `scene`).
-    A Standard JPEG or TIFF has no scene: gain 1.
-  - We chose the Reinhard family over porting ACES 2.0 or sigmoid, because
-    the SDR rendition must stay exactly today's.
-- Export, `export.rs` `ultra_hdr`.
-  - The gain map is half resolution, single channel, gamma 1, offsets 0.
-  - Metadata is ISO 21496-1 plus Ultra HDR v1 XMP, built with `ultrahdr-rs`'s
-    metadata builders.
-  - The container is assembled here, so the photo's XMP (IPTC) stays in one
-    packet with the container directory.
-  - The UI adds the format "JPEG HDR" and an HDR headroom setting (1–3 stops,
-    default 2) in the export dialog.
-- Tests:
-  - `hdr_gain_extends_only_the_highlights` (GPU): gain against the reference;
-    1 at black and at 0 stops; the peak at W; monotone in the scene and the
-    headroom; RAW equals V-Log.
-  - `ultra_hdr_carries_its_gain_map`: the file read back by ultrahdr-rs's
-    decoder.
-  - The export strips test now checks the RAW scene plumbing.
-- Checked on a real RW2: exiftool reads the MPF, the hdrgm fields and the
-  container directory.
-- Not done yet:
-  - The headroom lives in the export dialog. It moves to the Photo tab with
-    the HDR preview (step 2).
-  - The decoded file has not been viewed on an HDR screen in Chrome or on
-    Android.
+Everything below is built (2026-11-23).
 
-HDR covers three separate jobs, plus bracket merge (roadmap phase 9).
+1. HDR rendition, `grade.wgsl` `hdr_gain`. The view transform's extended
+   Reinhard shoulder with its output white raised to the peak P = 2^headroom:
+   hdr(m) = m (1 + m P / W²) / (1 + m / P).
+   - P = 1 is the SDR curve exactly. Both reach white at the same scene value W.
+   - The gain hdr/sdr of the exposed scene's max channel is one factor per
+     pixel, so it keeps hue. It is applied over the graded SDR, so grade and
+     LUTs stay SDR.
+   - The scene comes from the log decode (log inputs) or from the developed
+     RAW's alpha (`raw.wgsl` `develop_encode`; grade param `scene`). A
+     Standard JPEG or TIFF has no scene: gain 1.
+   - We chose the Reinhard family over porting ACES 2.0 or sigmoid, because
+     the SDR rendition must stay exactly today's.
+2. HDR export (`export.rs`, `export/hdr.rs`). One writer serves the file and
+   the size estimate, which encodes the preview frame in the chosen format,
+   gain map included.
+   - Ultra HDR JPEG.
+     - The gain map is half resolution, single channel, gamma 1, offsets 0.
+     - Metadata is ISO 21496-1 plus Ultra HDR v1 XMP, from `ultrahdr-rs`'s
+       builders.
+     - We assemble the container, so the photo's XMP stays in one packet.
+   - JPEG XL (`jpegxl-rs`, the system libjxl).
+   - AVIF, 10-bit 4:4:4 (`libavif-sys` with libaom; rav1e took 54 s on
+     24 MP, libaom takes 3.5 s).
+   - 16-bit PNG with cICP and cLLI (the `png` crate; it does not write those
+     chunks, so we write them).
+   - All of these are Rec.2100 PQ, SDR white at 203 cd/m² (BT.2408), and
+     carry EXIF and XMP.
+3. HDR preview on Linux.
+   - The `preview_hdr` kernel outputs RGBA16F in GTK's rec2100-linear
+     (1.0 = 203 cd/m², from `gdkcolordefs.h`).
+   - `main()` adds `GDK_DEBUG=color-mgmt`: without it GTK 4.24 skips
+     `wp_color_manager_v1` (`gdkdisplay-wayland.c`).
+   - The Photo tab's HDR section has the HDR preview switch (Linux) and the
+     Headroom (an app setting, also the exports').
+   - The scopes read the SDR rendition (shortcut).
+4. Bracket merge (`merge.rs`, main menu "Merge Brackets to HDR…").
+   - Exposure ratios come from the data.
+   - Alignment is a global translation in CFA periods, coarse to fine.
+   - Weights are Granados 2010 inverse-variance, with the reference's
+     Poisson–Gaussian noise.
+   - Ghost rejection is per CFA block against the reference.
+   - The output is a float DNG (rawler's writer) with BaselineExposure. That
+     tag is now read for every DNG (`raw::decode`).
+   - Shortcuts:
+     - global translation only (no per-tile alignment as in HDR+);
+     - X-Trans shifts in steps of 6;
+     - uncompressed float32 DNG (rawler writes no float16 or deflate).
+
+Not verified here: how the HDR preview and the files look on an HDR screen.
+This session's mutter reported no monitors.
 
 ## Where we start
 

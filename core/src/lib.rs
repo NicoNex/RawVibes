@@ -19,6 +19,7 @@ pub mod lensdb;
 pub mod lut;
 pub mod makernote;
 pub mod matching;
+pub mod merge;
 pub mod meta;
 pub mod noise;
 pub mod photo;

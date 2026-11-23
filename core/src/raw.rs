@@ -100,11 +100,20 @@ pub(crate) fn decode(path: &Path) -> Result<(rawler::RawImage, u16), String> {
     let raw = rawler::decode(&src, &params).map_err(|e| e.to_string())?;
     // Decoders such as Panasonic's leave `raw.orientation` at Normal; the EXIF
     // Orientation tag is the reliable source (6/8 = portrait shots).
-    let orientation = rawler::get_decoder(&src)
-        .and_then(|d| d.raw_metadata(&src, &params))
-        .ok()
+    let decoder = rawler::get_decoder(&src).ok();
+    let orientation = decoder
+        .as_ref()
+        .and_then(|d| d.raw_metadata(&src, &params).ok())
         .and_then(|m| m.exif.orientation)
         .unwrap_or_else(|| raw.orientation.to_u16());
+    // DNG BaselineExposure (an HDR merge's, among others), kept with the image for `camera`.
+    let baseline = decoder
+        .and_then(|d| d.ifd(rawler::decoders::WellKnownIFD::VirtualDngRootTags).ok().flatten())
+        .and_then(|ifd| ifd.get_entry(rawler::tags::DngTag::BaselineExposure).map(|e| e.value.clone()));
+    let mut raw = raw;
+    if let Some(v) = baseline {
+        raw.dng_tags.insert(rawler::tags::DngTag::BaselineExposure as u16, v);
+    }
     Ok((raw, orientation))
 }
 
@@ -148,9 +157,9 @@ fn xyz2cam<const N: usize>(raw: &rawler::RawImage) -> Option<[[f32; 3]; N]> {
 pub(crate) fn camera(raw: &rawler::RawImage) -> Camera {
     let xyz2cam = xyz2cam::<3>(raw);
     let as_shot = [raw.wb_coeffs[0], raw.wb_coeffs[1], raw.wb_coeffs[2]];
+    let baseline = raw.dng_tags.get(&(rawler::tags::DngTag::BaselineExposure as u16)).map_or(0.0, |v| v.force_f32(0));
     match xyz2cam {
-        // shortcut: DNG BaselineExposure is not exposed by rawler 0.8; 0 EV until it is.
-        Some(m) => Camera::new(m, as_shot, 0.0),
+        Some(m) => Camera::new(m, as_shot, baseline),
         None => Camera::neutral(),
     }
 }
@@ -2798,5 +2807,15 @@ mod tests {
             let c = col(i as u32 % 36, i as u32 / 36);
             assert_eq!(*v, m[i] * raw.camera.as_shot[c], "pixel {i}");
         }
+    }
+
+    /// A DNG's BaselineExposure reaches the camera model (the default RAW exposure):
+    /// `RAWVIBES_DNG=x.dng RAWVIBES_DNG_EV=0.17 cargo test -p rawvibes-core dng_baseline -- --ignored`.
+    #[test]
+    #[ignore]
+    fn dng_baseline_exposure_is_read() {
+        let (Ok(path), Ok(ev)) = (std::env::var("RAWVIBES_DNG"), std::env::var("RAWVIBES_DNG_EV")) else { return };
+        let raw = read_raw(Path::new(&path)).unwrap();
+        assert!((raw.camera.baseline_ev - ev.parse::<f32>().unwrap()).abs() < 1e-3, "{}", raw.camera.baseline_ev);
     }
 }

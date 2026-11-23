@@ -246,6 +246,10 @@ enum Msg {
     /// `Profile`), re-encoded for a new profile, pick or drop one, grid view.
     /// Photos for the filmstrip, and the one of them to open (else the first new one).
     RollAddPaths(Vec<PathBuf>, Option<PathBuf>),
+    /// Merge to HDR: pick the bracketed RAWs, merge them, then the DNG written (or why not).
+    MergeHdr,
+    MergeHdrRun(Vec<PathBuf>),
+    MergeHdrDone(Result<PathBuf, String>),
     RollLoaded(PathBuf, Result<(Decoded, Profile, Arc<Photo>), String>),
     RollEncoded(Profile, Vec<(PathBuf, Arc<Photo>)>),
     /// The grade settled (debounced): render the filmstrip if this is the latest tick.
@@ -3815,6 +3819,9 @@ impl SimpleComponent for App {
         edits_menu.append(Some(gettext("Paste Edits to All Photos").as_str()), Some("win.paste-edits-all"));
         edits_menu.append(Some(gettext("Reset All Edits").as_str()), Some("win.reset-all"));
         menu.append_section(None, &edits_menu);
+        let merge_menu = gio::Menu::new();
+        merge_menu.append(Some(gettext("Merge Brackets to HDR…").as_str()), Some("win.merge-hdr"));
+        menu.append_section(None, &merge_menu);
         let section_menu = gio::Menu::new();
         section_menu.append(Some(gettext("Preferences").as_str()), Some("win.preferences"));
         section_menu.append(Some(gettext("Keyboard Shortcuts").as_str()), Some("win.show-help-overlay"));
@@ -3929,6 +3936,10 @@ impl SimpleComponent for App {
             });
             window.add_action(&action);
         }
+        let action = gio::SimpleAction::new("merge-hdr", None);
+        let snd = sender.clone();
+        action.connect_activate(move |_, _| snd.input(Msg::MergeHdr));
+        window.add_action(&action);
         let action = gio::SimpleAction::new("export-photo", Some(glib::VariantTy::STRING));
         let snd = sender.clone();
         action.connect_activate(move |_, v| {
@@ -4339,6 +4350,33 @@ impl SimpleComponent for App {
                 });
             }
             Msg::RollAddPaths(paths, open_at) => self.add_to_roll(paths, open_at, &sender),
+            Msg::MergeHdr => {
+                let dialog = photo_dialog(&gettext("Merge Brackets to HDR"));
+                let s = sender.clone();
+                dialog.open_multiple(Some(&self.ui.window), gio::Cancellable::NONE, move |r| {
+                    let Ok(files) = r else { return };
+                    let paths = files.iter::<gio::File>().filter_map(|f| f.ok().and_then(|f| f.path())).collect();
+                    s.input(Msg::MergeHdrRun(paths));
+                });
+            }
+            Msg::MergeHdrRun(mut paths) => {
+                if paths.len() < 2 {
+                    return self.toast(&gettext("Pick two or more RAWs of the same scene at different exposures"));
+                }
+                paths.sort();
+                let out = merged_name(&paths[0]);
+                self.toast(&gettext!("Merging {} photos to HDR…", paths.len()));
+                let s = sender.input_sender().clone();
+                std::thread::spawn(move || {
+                    let refs: Vec<&std::path::Path> = paths.iter().map(PathBuf::as_path).collect();
+                    s.emit(Msg::MergeHdrDone(rawvibes_core::merge::merge_files(&refs, &out).map(|_| out)));
+                });
+            }
+            Msg::MergeHdrDone(Ok(path)) => {
+                self.toast(&gettext!("HDR merge saved: {}", path.file_name().unwrap_or_default().to_string_lossy()));
+                self.add_to_roll(vec![path], None, &sender);
+            }
+            Msg::MergeHdrDone(Err(e)) => self.toast(&gettext!("HDR merge failed: {}", e)),
             Msg::RollLoaded(path, Ok((small, profile, photo))) => {
                 if let Some(it) = self.roll.iter_mut().find(|it| it.path == path) {
                     (it.small, it.encoded) = (Some(small), Some((profile, photo)));
@@ -6090,6 +6128,16 @@ fn main() {
 }
 
 /// File dialog for photos and RAWs, starting where the last photo was opened.
+/// Where an HDR merge starting at `first` goes: `<stem>-HDR.dng` beside it, never over a file.
+fn merged_name(first: &std::path::Path) -> PathBuf {
+    let stem = first.file_stem().unwrap_or_default().to_string_lossy();
+    let dir = first.parent().unwrap_or(std::path::Path::new("."));
+    (1..)
+        .map(|n| dir.join(if n == 1 { format!("{stem}-HDR.dng") } else { format!("{stem}-HDR-{n}.dng") }))
+        .find(|p| !p.exists())
+        .expect("some name is free")
+}
+
 fn photo_dialog(title: &str) -> gtk::FileDialog {
     // add_suffix matches case-insensitively.
     let pats: Vec<&str> = RASTER_EXTS.iter().chain(RAW_EXTS).copied().collect();

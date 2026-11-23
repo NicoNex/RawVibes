@@ -302,6 +302,7 @@ pub struct Pipelines {
     ll_top: wgpu::ComputePipeline,
     ll_collapse: wgpu::ComputePipeline,
     ll_apply: wgpu::ComputePipeline,
+    xt: [wgpu::ComputePipeline; 11],
     te_mask: wgpu::ComputePipeline,
     te_down: wgpu::ComputePipeline,
     te_blur_h: wgpu::ComputePipeline,
@@ -349,6 +350,11 @@ impl Pipelines {
         let ll = crate::gpu::shader(device, "ll.wgsl", concat!(include_str!("common.wgsl"), include_str!("ll.wgsl")));
         let tones =
             crate::gpu::shader(device, "tones.wgsl", concat!(include_str!("common.wgsl"), include_str!("tones.wgsl")));
+        let xt = crate::gpu::shader(
+            device,
+            "xtrans.wgsl",
+            concat!(include_str!("common.wgsl"), include_str!("xtrans.wgsl")),
+        );
         Self {
             box_h: tone("box_h"),
             box_v: tone("box_v"),
@@ -363,6 +369,7 @@ impl Pipelines {
             ll_top: ll("ll_top"),
             ll_collapse: ll("ll_collapse"),
             ll_apply: ll("ll_apply"),
+            xt: XT_KERNELS.map(|k| xt(&format!("xt_{k}"))),
             te_mask: tones("te_mask"),
             te_down: tones("te_down"),
             te_blur_h: tones("te_blur_h"),
@@ -554,6 +561,44 @@ struct ToneParams {
     omega: f32,
     seed: u32,
     _pad: f32,
+}
+
+/// `xtrans.wgsl` entry points (`xt_` + name), in `Pipelines::xt` order.
+const XT_KERNELS: [&str; 11] =
+    ["init", "minmax", "green", "regreen", "solitary", "redblue", "twoxtwo", "drv", "homo", "final", "copy"];
+/// Visible pixels per X-Trans tile side (a pattern multiple), and the border all round.
+const XT_TILE: u32 = 1020;
+const XT_PAD: u32 = 18;
+
+/// darktable's X-Trans hexagons: for each (y mod 3, x mod 3) the eight (x, y) offsets of the
+/// green hexagon around a non-green pixel and vice versa, and the solitary green's offset.
+fn xtrans_hexagons(pattern: &[u32; 36]) -> ([i32; 144], [i32; 2]) {
+    const ORTH: [i32; 12] = [1, 0, 0, 1, -1, 0, 0, -1, 1, 0, 0, 1];
+    const PATT: [[i32; 16]; 2] =
+        [[0, 1, 0, -1, 2, 0, -1, 0, 1, 1, 1, -1, 0, 0, 0, 0], [0, 1, 0, -2, 1, 0, -2, 0, 1, 1, -2, -2, 1, -1, -1, 1]];
+    let fc = |row: i32, col: i32| pattern[(row.rem_euclid(6) * 6 + col.rem_euclid(6)) as usize];
+    let (mut hex, mut sgreen) = ([0; 144], [0; 2]);
+    for row in 0..3 {
+        for col in 0..3 {
+            let g = (fc(row, col) == 1) as i32;
+            let mut ng = 0;
+            for d in (0..10).step_by(2) {
+                ng = if fc(row + ORTH[d] + 6, col + ORTH[d + 2] + 6) == 1 { 0 } else { ng + 1 };
+                if ng == 4 {
+                    sgreen = [col, row];
+                }
+                if ng == g + 1 {
+                    for c in 0..8 {
+                        let (a, b) = (PATT[g as usize][c * 2], PATT[g as usize][c * 2 + 1]);
+                        let k = ((row * 3 + col) * 8 + (c as i32 ^ ((g * 2) & d as i32))) as usize;
+                        hex[2 * k] = ORTH[d + 2] * a + ORTH[d + 3] * b;
+                        hex[2 * k + 1] = ORTH[d] * a + ORTH[d + 1] * b;
+                    }
+                }
+            }
+        }
+    }
+    (hex, sgreen)
 }
 
 /// `TonesParams` of `tones.wgsl`.
@@ -774,41 +819,91 @@ impl Gpu {
     }
 
     /// An X-Trans `raw` as as-shot-balanced camera RGB of its visible area: white balance and
-    /// highlight reconstruction on the mosaic (as for Bayer), then rawler's Markesteijn 3-pass
-    /// (dcraw's, darktable's and RawTherapee's reference X-Trans demosaic) on the CPU.
-    /// Any other `raw` comes back as it is.
-    // shortcut: CPU Markesteijn, ~3 s per load on 26 MP; port it to WGSL if loads feel slow.
+    /// highlight reconstruction on the mosaic (as for Bayer), then Markesteijn 3-pass (the
+    /// reference X-Trans demosaic of dcraw, darktable and RawTherapee) on the GPU, ported from
+    /// darktable's OpenCL kernels (`xtrans.wgsl`). Any other `raw` comes back as it is.
     pub fn demosaiced(&self, raw: std::sync::Arc<RawData>) -> Result<std::sync::Arc<RawData>, String> {
-        use rawler::imgop::sensor::{Demosaic, xtrans::markesteijn::XTransMarkesteijnDemosaic};
-        use rawler::imgop::{Dim2, Point, Rect};
         let Pixels::XTrans(mosaic) = &raw.pixels else { return Ok(raw) };
-        let cfa = self.read_f32(&self.reconstruct(&raw, mosaic)?);
-        let pattern: String = raw.pattern.iter().map(|&c| ['R', 'G', 'B'][c as usize]).collect();
-        let (fw, fh) = (raw.width as usize, raw.height as usize);
-        // The whole sensor, then the visible area: rawler crops its input to the ROI, so a ROI
-        // would leave the visible area's own border without neighbours.
-        let rgb = XTransMarkesteijnDemosaic::new_pass_3().demosaic(
-            &rawler::pixarray::PixF32::new_with(cfa, fw, fh),
-            &rawler::CFA::new(&pattern),
-            &Default::default(),
-            Rect::new(Point::new(0, 0), Dim2::new(fw, fh)),
-        );
-        let [x, y, w, h] = raw.crop.map(|v| v as usize);
-        // Cropped in place: rows only move towards the start.
-        let mut px = rgb.data;
-        for r in 0..h {
-            let from = (y + r) * fw + x;
-            px.copy_within(from..from + w, r * w);
+        let [cx, cy, cw, ch] = raw.crop;
+        let src = self.reconstruct(&raw, mosaic)?;
+        // Tiles of up to XT_TILE visible pixels, each aligned to the pattern, with XT_PAD all round.
+        let span = |c: u32, len: u32| (c % 6 + len).div_ceil(6) * 6;
+        let (iw, ih) = (span(cx, cw).min(XT_TILE), span(cy, ch).min(XT_TILE));
+        let (tw, th) = (iw + 2 * XT_PAD, ih + 2 * XT_PAD);
+        let n = tw as u64 * th as u64;
+        self.fits(8 * n * 16)?;
+        self.fits(cw as u64 * ch as u64 * 12)?;
+        let none = wgpu::BufferUsages::empty();
+        let (rgb, gmm, aux) = (self.buffer(8 * n * 16, none), self.buffer(n * 8, none), self.buffer(n * 16, none));
+        let (drv, homo) = (self.buffer(8 * n * 4, none), self.buffer(8 * n * 4, none));
+        let out = self.buffer(cw as u64 * ch as u64 * 12, wgpu::BufferUsages::COPY_SRC);
+        let (allhex, sgreen) = xtrans_hexagons(&raw.pattern);
+        let params = |border: i32, d: i32, dir: [i32; 2], hcomp: i32, base: u32| {
+            let head = [raw.width, raw.height, tw, th, cx, cy, cw, ch];
+            let mid = [border, d, dir[0], dir[1], hcomp, sgreen[0], sgreen[1]].map(|v| v as u32);
+            let words: Vec<u32> = [&head[..], &mid, &[base], &raw.pattern, &allhex.map(|v| v as u32)].concat();
+            self.storage(bytemuck::cast_slice(&words))
+        };
+        let [init, minmax, green, regreen, solitary, redblue, twoxtwo, drv_k, homo_k, finish, copy] = &self.raw.xt;
+        let common = params(0, 0, [0, 0], 0, 0);
+        // Per pass (first set of planes, then the second): the runs and their params, as darktable orders them.
+        let mut runs = Vec::new();
+        for pass in 0..3 {
+            let base = if pass == 0 { 0 } else { 4 };
+            if pass == 1 {
+                runs.push((copy, params(0, 0, [0, 0], 0, 0), 4 * n as u32));
+            }
+            if pass > 0 {
+                runs.push((regreen, params(6, 0, [0, 0], 0, base), n as u32));
+            }
+            for d in 0..6i32 {
+                let plane = base + [0, 1, 2, 2, 3, 3][d as usize];
+                let dir = if d % 2 == 0 { [1, 0] } else { [0, 1] };
+                runs.push((solitary, params(5, d, dir, (d % 2) * 2, plane), n as u32));
+            }
+            for d in 0..4i32 {
+                runs.push((redblue, params(5, d, [0, 0], 0, base + d as u32), n as u32));
+            }
+            for (k, d) in (0..8i32).step_by(2).enumerate() {
+                runs.push((twoxtwo, params(4, d, [0, 0], 0, base + k as u32), n as u32));
+            }
         }
-        px.truncate(w * h);
-        let (w, h) = (w as u32, h as u32);
+        *self.raw.batch.borrow_mut() = Some(self.device.create_command_encoder(&Default::default()));
+        let g = grid(n as u32);
+        for y0 in (cy - cy % 6..cy + ch).step_by(XT_TILE as usize) {
+            for x0 in (cx - cx % 6..cx + cw).step_by(XT_TILE as usize) {
+                let origin = [x0 as i32 - XT_PAD as i32, y0 as i32 - XT_PAD as i32];
+                let tile = self.storage(bytemuck::cast_slice(&origin));
+                let (p, t) = (&common, &tile);
+                let first = [(0, p), (1, t), (2, &src), (3, &rgb)];
+                let greens = [(0, p), (3, &rgb), (4, &gmm)];
+                let (to_drv, to_homo) =
+                    ([(0, p), (3, &rgb), (5, &aux), (6, &drv)], [(0, p), (5, &aux), (6, &drv), (7, &homo)]);
+                let last = [(0, p), (1, t), (3, &rgb), (7, &homo), (8, &out)];
+                let mut passes: Vec<Pass> = vec![(init, &first, g), (minmax, &greens, g), (green, &greens, g)];
+                let binds: Vec<Vec<(u32, &wgpu::Buffer)>> = runs
+                    .iter()
+                    .map(|(k, q, _)| match *k {
+                        k if std::ptr::eq(k, solitary) => vec![(0, q), (3, &rgb), (5, &aux)],
+                        k if std::ptr::eq(k, regreen) => vec![(0, q), (3, &rgb), (4, &gmm)],
+                        _ => vec![(0, q), (3, &rgb)],
+                    })
+                    .collect();
+                passes.extend(runs.iter().zip(&binds).map(|((k, _, items), b)| (*k, &b[..], grid(*items))));
+                passes.extend([(drv_k, &to_drv[..], g), (homo_k, &to_homo, g), (finish, &last, g)]);
+                self.passes(&passes);
+            }
+        }
+        let enc = self.raw.batch.take().expect("opened above");
+        self.queue.submit([enc.finish()]);
+        let px: Vec<[f32; 3]> = self.read_f32(&out).as_chunks::<3>().0.to_vec();
         Ok(std::sync::Arc::new(RawData {
             pixels: Pixels::Rgb(px),
-            width: w,
-            height: h,
+            width: cw,
+            height: ch,
             pattern: [0; 36],
             pattern_size: [1, 1],
-            crop: [0, 0, w, h],
+            crop: [0, 0, cw, ch],
             orientation: raw.orientation,
             camera: raw.camera.clone(),
         }))
@@ -2676,25 +2771,19 @@ mod tests {
     fn xtrans_flat_colour_survives_demosaic() {
         let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
         let (w, h) = (120, 96);
-        let mut raw = data(w, h, [1.7, 1.0, 1.3]);
         let flat = [0.2, 0.3, 0.4];
-        let m = (0..w * h).map(|i| flat[XT[(((i / w) % 6) * 6 + (i % w) % 6) as usize] as usize]).collect();
-        (raw.pattern, raw.pattern_size, raw.crop, raw.pixels) = (XT, [6, 6], [6, 6, w - 12, h - 12], Pixels::XTrans(m));
-        let want: [f32; 3] = std::array::from_fn(|c| flat[c] * raw.camera.as_shot[c]);
-        let out = gpu.demosaiced(std::sync::Arc::new(raw)).unwrap();
-        assert_eq!((out.width, out.height, out.crop), (w - 12, h - 12, [0, 0, w - 12, h - 12]));
-        let Pixels::Rgb(px) = &out.pixels else { panic!("not RGB") };
-        let bad: Vec<_> =
-            px.iter().enumerate().filter(|(_, p)| (0..3).any(|c| (p[c] - want[c]).abs() >= 1e-4)).collect();
-        let edge = |i: usize| (i % (w as usize - 12), i / (w as usize - 12));
-        assert!(
-            bad.is_empty(),
-            "{} bad, first {:?} at {:?}, last at {:?}",
-            bad.len(),
-            bad[0].1,
-            edge(bad[0].0),
-            edge(bad[bad.len() - 1].0)
-        );
+        // A visible area with margins, and one up to the sensor edges (read with the pattern's phase).
+        for crop in [[7, 6, w - 12, h - 13], [0, 0, w, h]] {
+            let mut raw = data(w, h, [1.7, 1.0, 1.3]);
+            let m = (0..w * h).map(|i| flat[XT[(((i / w) % 6) * 6 + (i % w) % 6) as usize] as usize]).collect();
+            (raw.pattern, raw.pattern_size, raw.crop, raw.pixels) = (XT, [6, 6], crop, Pixels::XTrans(m));
+            let want: [f32; 3] = std::array::from_fn(|c| flat[c] * raw.camera.as_shot[c]);
+            let out = gpu.demosaiced(std::sync::Arc::new(raw)).unwrap();
+            assert_eq!((out.width, out.height, out.crop), (crop[2], crop[3], [0, 0, crop[2], crop[3]]));
+            let Pixels::Rgb(px) = &out.pixels else { panic!("not RGB") };
+            let bad = px.iter().position(|p| (0..3).any(|c| (p[c] - want[c]).abs() >= 1e-4));
+            assert!(bad.is_none(), "crop {crop:?}: pixel {bad:?} is {:?}, {want:?} expected", px[bad.unwrap_or(0)]);
+        }
     }
 
     #[test]

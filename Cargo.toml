@@ -13,7 +13,3 @@ codegen-units = 1
 
 [profile.dev.package."*"]
 opt-level = 3
-
-# rawler's Markesteijn wraps negative CFA offsets on purpose (`color_at`); release does, debug must too.
-[profile.dev.package.rawler]
-overflow-checks = false

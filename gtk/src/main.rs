@@ -212,8 +212,9 @@ enum Msg {
     ExportSettings,
     /// The preview shows the HDR rendition.
     HdrPreview(bool),
-    /// HDR headroom in stops above SDR white.
+    /// HDR headroom in stops above SDR white, and saving it once it rests.
     Headroom(f32),
+    HeadroomSave(f32),
     /// Encodes the JPEG size estimate of this generation (for `w` × `h`), if still current.
     ExportEstimateRun(u64, u32, u32),
     /// A JPEG size estimate (estimate generation, bytes).
@@ -925,18 +926,7 @@ impl App {
         let stem = stem_label(&path).unwrap_or_default();
         let suffix = export_suffix();
         // Never over an existing file: a RAW+JPEG pair, or a photo of the strip itself.
-        let out =
-            (1..)
-                .map(|n| {
-                    if n == 1 {
-                        edit_name(&stem, ext, &suffix)
-                    } else {
-                        edit_name(&format!("{stem}-{n}"), ext, &suffix)
-                    }
-                })
-                .map(|name| b.dir.join(name))
-                .find(|p| !p.exists())
-                .expect("unbounded");
+        let out = free_path(&b.dir, &stem, ext, &suffix);
         if !self.export_to(out) {
             self.batch.as_mut().expect("checked above").failed.push(gettext!("{}: cannot export", file_label(&path)));
             self.batch_next(sender);
@@ -1046,7 +1036,9 @@ impl App {
         let _ = settings::set_value(settings::JPEG_QUALITY, &ui.quality().to_string());
         let (format, quality, headroom) = (ui.format(), ui.quality(), self.headroom);
         let tags = self.export_tags(&crop);
-        if format.ext() == "jpg" && tags.xmp.as_deref().is_some_and(|x| !export::xmp_fits_jpeg(x)) {
+        if matches!(format, PhotoFormat::Jpeg | PhotoFormat::UltraHdr)
+            && tags.xmp.as_deref().is_some_and(|x| !export::xmp_fits_jpeg(x))
+        {
             self.toast(&gettext("Title, keywords and rights are too long for a JPEG: exported without them"));
         }
         self.send(Job::ExportPhoto(Box::new(PhotoExport {
@@ -1902,6 +1894,10 @@ impl App {
     fn export_estimate(&mut self, sender: &ComponentSender<Self>) {
         let Some((w, h)) = self.crop_region().map(|c| Decoded::fit_size(&c, u32::MAX)) else { return };
         self.export_gen += 1;
+        if self.ui.export_photo.format() == PhotoFormat::Tiff16 {
+            // Uncompressed: exact without encoding.
+            return self.ui.export_photo.set_estimate(Some(glib::format_size(w as u64 * h as u64 * 6).into()));
+        }
         self.ui.export_photo.set_estimate(None);
         let (generation, s) = (self.export_gen, sender.input_sender().clone());
         // A spin held down sends a value per tick: encode only the one it stops on.
@@ -4364,7 +4360,9 @@ impl SimpleComponent for App {
                     return self.toast(&gettext("Pick two or more RAWs of the same scene at different exposures"));
                 }
                 paths.sort();
-                let out = merged_name(&paths[0]);
+                let first = &paths[0];
+                let stem = first.file_stem().unwrap_or_default().to_string_lossy();
+                let out = free_path(first.parent().unwrap_or(std::path::Path::new(".")), &stem, "dng", "-HDR");
                 self.toast(&gettext!("Merging {} photos to HDR…", paths.len()));
                 let s = sender.input_sender().clone();
                 std::thread::spawn(move || {
@@ -5090,7 +5088,7 @@ impl SimpleComponent for App {
                 ui.set_format(ui.format());
                 // The frame holds HDR gains or not: rendered again only when that changes.
                 match &self.export_frame {
-                    Some(f) if (f.headroom > 0.0) == ui.format().hdr() => self.export_estimate(&sender),
+                    Some(f) if f.hdr() == ui.format().hdr() => self.export_estimate(&sender),
                     _ => self.export_frame_request(),
                 }
             }
@@ -5101,13 +5099,21 @@ impl SimpleComponent for App {
             }
             Msg::Headroom(stops) => {
                 self.headroom = stops;
-                let _ = settings::set_value(settings::HDR_HEADROOM, &format!("{stops:.2}"));
                 self.render();
+                // Saved once the slider rests, not per tick.
+                let s = sender.input_sender().clone();
+                glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+                    s.emit(Msg::HeadroomSave(stops))
+                });
             }
+            Msg::HeadroomSave(stops) if stops == self.headroom => {
+                let _ = settings::set_value(settings::HDR_HEADROOM, &format!("{stops:.2}"));
+            }
+            Msg::HeadroomSave(_) => {}
             Msg::ExportEstimateRun(generation, w, h) if generation == self.export_gen => {
                 let ui = &self.ui.export_photo;
                 // A frame for the other kind (SDR or HDR) is stale: the right one is on its way.
-                let Some(frame) = self.export_frame.clone().filter(|f| (f.headroom > 0.0) == ui.format().hdr()) else {
+                let Some(frame) = self.export_frame.clone().filter(|f| f.hdr() == ui.format().hdr()) else {
                     return;
                 };
                 let (format, quality, s) = (ui.format(), ui.quality(), sender.input_sender().clone());
@@ -6134,14 +6140,12 @@ fn main() {
     RelmApp::from_app(app).with_args(std::env::args().collect()).run::<App>(());
 }
 
-/// Where an HDR merge starting at `first` goes: `<stem>-HDR.dng` beside it, never over a file.
-fn merged_name(first: &std::path::Path) -> PathBuf {
-    let stem = first.file_stem().unwrap_or_default().to_string_lossy();
-    let dir = first.parent().unwrap_or(std::path::Path::new("."));
+/// `<stem><suffix>.<ext>` in `dir`, or `<stem>-2<suffix>.<ext>` and on: never an existing file.
+fn free_path(dir: &std::path::Path, stem: &str, ext: &str, suffix: &str) -> PathBuf {
     (1..)
-        .map(|n| dir.join(if n == 1 { format!("{stem}-HDR.dng") } else { format!("{stem}-HDR-{n}.dng") }))
+        .map(|n| dir.join(edit_name(&if n == 1 { stem.to_string() } else { format!("{stem}-{n}") }, ext, suffix)))
         .find(|p| !p.exists())
-        .expect("some name is free")
+        .expect("unbounded")
 }
 
 /// File dialog for photos and RAWs, starting where the last photo was opened.

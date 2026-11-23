@@ -214,10 +214,10 @@ impl Gpu {
         self.queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&p));
     }
 
-    /// `grade` (its curves too) for rendering `photo`, which says whether its alpha holds the scene.
+    /// `grade` (its curves too) for rendering `photo`, which knows whether its alpha holds the scene.
     fn write_photo_params(&self, grade: &Grade, photo: &GpuPhoto, look: Option<&GpuLut>, split: f32) {
         let mut params = grade.params;
-        params.scene |= photo.scene.get() as u32;
+        params.scene = photo.scene.get() as u32;
         self.write_params(params, photo.width, photo.height, look.map_or(0, |l| l.size), split);
         self.queue.write_buffer(&self.curves, 0, bytemuck::cast_slice(&grade.curve_samples()));
     }
@@ -269,7 +269,7 @@ impl Gpu {
 
     /// Graded preview as RGBA8, optionally seen through a look LUT.
     pub fn render(&self, photo: &GpuPhoto, grade: &Grade, look: Option<&GpuLut>, split: f32) -> Vec<u8> {
-        self.grade_pass(&self.preview, photo, grade, look, split, &photo.out, &photo.staging)
+        self.grade_pass(&self.preview, photo, grade, look, split, &[(&photo.out, &photo.staging)]).swap_remove(0)
     }
 
     /// The graded preview with its HDR rendition (`grade.params.hdr_stops` > 0):
@@ -277,18 +277,10 @@ impl Gpu {
     pub fn render_hdr(&self, photo: &GpuPhoto, grade: &Grade, look: Option<&GpuLut>, split: f32) -> (Vec<u8>, Vec<u8>) {
         let n = photo.width as u64 * photo.height as u64;
         let (hdr, hdr_staging) = photo.hdr.get_or_init(|| self.output(n * 8));
-        self.write_photo_params(grade, photo, look, split);
-        let lut = look.map_or(&self.no_lut, |l| &l.buf);
-        let entries = [(0, &self.params), (1, &self.curves), (2, &photo.src), (3, &photo.out), (5, lut), (6, hdr)];
-        let bind = self.bind(&self.preview_hdr, &entries);
-        let mut out = self.run_all(
-            &self.preview_hdr,
-            &bind,
-            photo.width * photo.height,
-            &[(&photo.out, &photo.staging), (hdr, hdr_staging)],
-        );
-        let hdr = out.pop().expect("two outputs");
-        (out.pop().expect("two outputs"), hdr)
+        let outputs = [(&photo.out, &photo.staging), (hdr, hdr_staging)];
+        let [sdr, hdr] = <[_; 2]>::try_from(self.grade_pass(&self.preview_hdr, photo, grade, look, split, &outputs))
+            .expect("two outputs");
+        (sdr, hdr)
     }
 
     /// The graded photo for export, appended to `into` as 16-bit RGB: as
@@ -304,7 +296,7 @@ impl Gpu {
     ) {
         // shortcut: new output buffers per strip; keep them per export if allocation shows in profiles.
         let (out, staging) = self.output(photo.width as u64 * photo.height as u64 * 8);
-        let rgba = self.grade_pass(&self.export16, photo, grade, look, 0.0, &out, &staging);
+        let rgba = self.grade_pass(&self.export16, photo, grade, look, 0.0, &[(&out, &staging)]).swap_remove(0);
         // A Vec<u8> may be unaligned for a u16 cast: read the little-endian pairs.
         let px = rgba.as_chunks::<8>().0;
         into.extend(px.iter().flat_map(|p| [0, 2, 4].map(|i| u16::from_le_bytes([p[i], p[i + 1]]))));
@@ -313,7 +305,8 @@ impl Gpu {
         }
     }
 
-    /// `photo` through the grade and `look` with `pipeline`, read back from `out`.
+    /// `photo` through the grade and `look` with `pipeline`, read back from `outputs`
+    /// (bound at 3, then 6: the SDR result, then the HDR preview's).
     #[allow(clippy::too_many_arguments)]
     fn grade_pass(
         &self,
@@ -322,13 +315,14 @@ impl Gpu {
         grade: &Grade,
         look: Option<&GpuLut>,
         split: f32,
-        out: &wgpu::Buffer,
-        staging: &wgpu::Buffer,
-    ) -> Vec<u8> {
+        outputs: &[(&wgpu::Buffer, &wgpu::Buffer)],
+    ) -> Vec<Vec<u8>> {
         self.write_photo_params(grade, photo, look, split);
         let lut = look.map_or(&self.no_lut, |l| &l.buf);
-        let bind = self.bind(pipeline, &[(0, &self.params), (1, &self.curves), (2, &photo.src), (3, out), (5, lut)]);
-        self.run(pipeline, &bind, photo.width * photo.height, out, staging)
+        let mut entries = vec![(0, &self.params), (1, &self.curves), (2, &photo.src), (5, lut)];
+        entries.extend([3, 6].into_iter().zip(outputs.iter().map(|o| o.0)));
+        let bind = self.bind(pipeline, &entries);
+        self.run_all(pipeline, &bind, photo.width * photo.height, outputs)
     }
 
     /// Photo seen through an external LUT (tetrahedral), as RGBA8.
@@ -492,7 +486,7 @@ pub struct PhotoExport {
     pub look: Stack,
     pub format: PhotoFormat,
     pub quality: u8,
-    /// HDR headroom in stops over SDR white, for [`PhotoFormat::UltraHdr`].
+    /// HDR headroom in stops over SDR white, for the HDR formats.
     pub headroom: f32,
     pub path: PathBuf,
     /// Set by the UI to stop between strips.
@@ -832,7 +826,7 @@ impl Worker {
         let rows = (budget / ((w as u64 + 2 * margin) * 16)).saturating_sub(2 * margin);
         let rows = (rows as u32).clamp(16, h.max(16));
         let mut out = Vec::with_capacity(w as usize * h as usize * 3);
-        let mut gains = Vec::new();
+        let mut gains = Vec::with_capacity(if e.format.hdr() { w as usize * h as usize } else { 0 });
         let mut slot = None;
         for y0 in (0..h).step_by(rows as usize) {
             if cancelled() {
@@ -1730,9 +1724,11 @@ mod tests {
             if let Some(p) = input {
                 grade.params.set_input(p);
             }
-            (grade.params.hdr_stops, grade.params.scene) = (stops, input.is_none() as u32);
+            grade.params.hdr_stops = stops;
+            let photo = gpu.upload(&photo);
+            photo.scene.set(input.is_none());
             let (mut rgb, mut gains) = (Vec::new(), Vec::new());
-            gpu.render16(&gpu.upload(&photo), &grade, None, &mut rgb, &mut gains);
+            gpu.render16(&photo, &grade, None, &mut rgb, &mut gains);
             if stops == 0.0 {
                 assert!(gains.is_empty());
                 return vec![1.0; ms.len()];
@@ -1775,8 +1771,9 @@ mod tests {
         let ms = [0.0f32, 0.3, 1.0, 3.0, 6.0, 9.0, 0.6, 2.0];
         let pixels = ms.iter().map(|&m| [0.9, 0.6, 0.3, m]).collect();
         let photo = gpu.upload(&Photo { width: ms.len() as u32, height: 1, pixels });
+        photo.scene.set(true);
         let mut grade = Grade::default();
-        (grade.params.hdr_stops, grade.params.scene) = (2.0, 1);
+        grade.params.hdr_stops = 2.0;
         let (sdr, hdr) = gpu.render_hdr(&photo, &grade, None, 0.0);
         assert_eq!(sdr, gpu.render(&photo, &grade, None, 0.0));
         let (mut rgb, mut gains) = (Vec::new(), Vec::new());

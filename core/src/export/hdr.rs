@@ -29,36 +29,33 @@ pub struct Pq {
 
 /// SMPTE ST 2084 inverse EOTF: cd/m² to the PQ signal in 0..1.
 pub fn pq_encode(nits: f32) -> f32 {
-    const M1: f32 = 2610.0 / 16384.0;
-    const M2: f32 = 2523.0 / 4096.0 * 128.0;
-    const C1: f32 = 3424.0 / 4096.0;
-    const C2: f32 = 2413.0 / 4096.0 * 32.0;
-    const C3: f32 = 2392.0 / 4096.0 * 32.0;
-    let y = (nits / 10_000.0).clamp(0.0, 1.0).powf(M1);
-    ((C1 + C2 * y) / (1.0 + C3 * y)).powf(M2)
+    ultrahdr_rs::color::transfer::pq_oetf((nits / 10_000.0).clamp(0.0, 1.0))
 }
 
-/// Pixel `i` of the rendition: linear Rec.2020 in cd/m².
-fn nits(img: &Exported, m: &[[f32; 3]; 3], i: usize) -> [f32; 3] {
-    let sdr = [0, 1, 2].map(|c| srgb_invert_gamma(img.rgb[3 * i + c] as f32 / 65535.0));
-    let gain = (img.gains[i] as f32 / 65535.0 * img.headroom).exp2();
-    multiply_row1(m, &sdr).map(|v| v.max(0.0) * gain * SDR_WHITE)
-}
-
-/// `img`'s HDR rendition in Rec.2100 PQ.
+/// `img`'s HDR rendition in Rec.2100 PQ: the graded SDR in linear light times each
+/// pixel's gain, in Rec.2020 cd/m². One parallel pass; the sRGB decode and the gain
+/// come from 65536-entry tables (both inputs are 16-bit).
 pub fn pq_rec2100(img: &Exported) -> Pq {
     let m = rec709_to_rec2020();
     let n = img.gains.len();
-    let px: Vec<([u16; 3], f32)> = (0..n)
-        .into_par_iter()
-        .map(|i| {
-            let c = nits(img, &m, i);
-            (c.map(|v| (pq_encode(v) * 65535.0).round() as u16), c[0].max(c[1]).max(c[2]))
+    let linear: Vec<f32> = (0..=u16::MAX).map(|v| srgb_invert_gamma(v as f32 / 65535.0)).collect();
+    let gain: Vec<f32> = (0..=u16::MAX).map(|g| (g as f32 / 65535.0 * img.headroom).exp2() * SDR_WHITE).collect();
+    let mut samples = vec![0u16; 3 * n];
+    let (max_cll, sum) = samples
+        .par_chunks_mut(3)
+        .zip(img.rgb.par_chunks(3))
+        .zip(img.gains.par_iter())
+        .map(|((out, sdr), &g)| {
+            let c =
+                multiply_row1(&m, &[0, 1, 2].map(|k| linear[sdr[k] as usize])).map(|v| v.max(0.0) * gain[g as usize]);
+            for (o, v) in out.iter_mut().zip(c) {
+                *o = (pq_encode(v) * 65535.0).round() as u16;
+            }
+            let peak = c[0].max(c[1]).max(c[2]);
+            (peak, peak as f64)
         })
-        .collect();
-    let max_cll = px.iter().map(|p| p.1).fold(0.0, f32::max);
-    let max_fall = px.iter().map(|p| p.1 as f64).sum::<f64>() as f32 / n.max(1) as f32;
-    Pq { samples: px.iter().flat_map(|p| p.0).collect(), light: Light { max_cll, max_fall } }
+        .reduce(|| (0.0, 0.0), |a, b| (a.0.max(b.0), a.1 + b.1));
+    Pq { samples, light: Light { max_cll, max_fall: (sum / n.max(1) as f64) as f32 } }
 }
 
 /// JPEG XL (libjxl, the reference encoder) of the PQ rendition: lossy XYB at the

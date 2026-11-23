@@ -94,6 +94,13 @@ pub struct Exported {
     pub headroom: f32,
 }
 
+impl Exported {
+    /// Whether it carries the HDR gains (rendered for an HDR format).
+    pub fn hdr(&self) -> bool {
+        !self.gains.is_empty()
+    }
+}
+
 /// Default JPEG quality (as Lightroom's export: high, without the size of 100).
 pub const JPEG_QUALITY: u8 = 90;
 
@@ -195,7 +202,7 @@ fn encode(
         PhotoFormat::UltraHdr => {
             let mut base = Vec::new();
             encode_jpeg(&mut base, rgb, w, h, quality, &tags.exif)?;
-            to.write_all(&ultra_hdr(&base, img, quality, tags.xmp.as_deref())?).map_err(io)
+            ultra_hdr(to, &base, img, quality, tags.xmp.as_deref())
         }
         PhotoFormat::JxlHdr => to.write_all(&hdr::jxl(img, quality, tags)?).map_err(io),
         PhotoFormat::AvifHdr => to.write_all(&hdr::avif(img, quality, tags)?).map_err(io),
@@ -238,9 +245,15 @@ fn write_png(to: impl Write, w: u32, h: u32, px: &[u16], pq: Option<hdr::Light>,
         let clli = [light.max_cll, light.max_fall].map(|n| ((n * 10_000.0) as u32).to_be_bytes()).concat();
         writer.write_chunk(png::chunk::ChunkType(*b"cLLI"), &clli).map_err(err)?;
     }
-    let be: Vec<u8> = px.par_iter().flat_map_iter(|v| v.to_be_bytes()).collect();
-    writer.write_image_data(&be).map_err(err)?;
-    writer.finish().map_err(err)
+    // Row by row, big-endian: no second copy of the image.
+    let mut stream = writer.stream_writer().map_err(err)?;
+    let mut row = Vec::with_capacity(w as usize * 6);
+    for line in px.chunks_exact(w as usize * 3) {
+        row.clear();
+        row.extend(line.iter().flat_map(|v| v.to_be_bytes()));
+        stream.write_all(&row).map_err(|e| e.to_string())?;
+    }
+    stream.finish().map_err(err)
 }
 
 fn encode_jpeg(to: impl Write, rgb: &[u16], w: u32, h: u32, quality: u8, exif: &[u8]) -> Result<(), String> {
@@ -260,7 +273,7 @@ const GAIN_MAP_SCALE: u32 = 2;
 /// `base` (the SDR JPEG of `img`) made an Ultra HDR JPEG: its gain map, downscaled and
 /// encoded at `quality`, appended as an MPF secondary image with ISO 21496-1 and Ultra HDR
 /// v1 XMP metadata; the photo's own `xmp` kept, the container directory added to it.
-fn ultra_hdr(base: &[u8], img: &Exported, quality: u8, xmp: Option<&str>) -> Result<Vec<u8>, String> {
+fn ultra_hdr(to: impl Write, base: &[u8], img: &Exported, quality: u8, xmp: Option<&str>) -> Result<(), String> {
     use ultrahdr_rs::metadata::{
         build_gainmap_metadata_markers, create_mpf_header, create_version_only_iso_app2, create_xmp_app1_marker,
         generate_primary_xmp,
@@ -268,9 +281,6 @@ fn ultra_hdr(base: &[u8], img: &Exported, quality: u8, xmp: Option<&str>) -> Res
     use ultrahdr_rs::{GainMapEncodingFormat, GainMapMetadata};
 
     let (gw, gh) = (img.w.div_ceil(GAIN_MAP_SCALE), img.h.div_ceil(GAIN_MAP_SCALE));
-    if img.gains.len() != img.w as usize * img.h as usize {
-        return Err("HDR gain buffer size mismatch".into());
-    }
     // Block mean of the log2 gain (the map is linear in it: gamma 1).
     let map: Vec<u8> = (0..gw * gh)
         .into_par_iter()
@@ -319,7 +329,8 @@ fn ultra_hdr(base: &[u8], img: &Exported, quality: u8, xmp: Option<&str>) -> Res
     let mpf_len = create_mpf_header(0, 0, Some(before_mpf.len())).len();
     let primary_len = before_mpf.len() + mpf_len + tail.len();
     let mpf = create_mpf_header(primary_len, gain_map.len(), Some(before_mpf.len()));
-    Ok([&before_mpf[..], &mpf, tail, &gain_map].concat())
+    let mut to = to;
+    [&before_mpf[..], &mpf, tail, &gain_map].iter().try_for_each(|b| to.write_all(b)).map_err(|e| e.to_string())
 }
 
 /// The namespace that opens a JPEG's XMP segment.

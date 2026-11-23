@@ -99,9 +99,7 @@ fn ratio(a: &Blocks, b: &Blocks, d: [i32; 2]) -> Option<f32> {
     if pairs.len() < 64 {
         return None;
     }
-    let mut r: Vec<f32> = pairs.iter().map(|(x, y)| y / x).collect();
-    let mid = r.len() / 2;
-    let median = *r.select_nth_unstable_by(mid, f32::total_cmp).1;
+    let median = noise::median(&mut pairs.iter().map(|(x, y)| y / x).collect::<Vec<_>>());
     let (sa, sb) = pairs
         .iter()
         .filter(|(x, y)| (y / x / median - 1.0).abs() < 0.5)
@@ -181,14 +179,14 @@ pub fn merge(frames: &[Frame], w: usize, h: usize, period: usize) -> Result<Merg
     let level = |b: &Blocks| b.mean.iter().zip(&b.clipped).map(|(&m, &c)| if c { 1.0 } else { m }).sum::<f32>();
     let mut order: Vec<usize> = (0..frames.len()).collect();
     order.sort_by(|&i, &j| level(&blocks[i]).total_cmp(&level(&blocks[j])));
-    let reference = order[order.len() / 2];
+    let mid = order.len() / 2;
+    let reference = order[mid];
     let r = &blocks[reference];
     // Exposure and shift relative to the reference, chained through neighbours in exposure
     // order (each pair overlaps well even across a wide bracket): unaligned estimate,
     // alignment, then the estimate again on the aligned blocks.
     let mut rel = vec![1.0f32; frames.len()];
     let mut shift = vec![[0i32; 2]; frames.len()];
-    let mid = order.len() / 2;
     let chain = (mid + 1..order.len())
         .map(|k| (order[k - 1], order[k]))
         .chain((0..mid).rev().map(|k| (order[k + 1], order[k])));
@@ -204,14 +202,17 @@ pub fn merge(frames: &[Frame], w: usize, h: usize, period: usize) -> Result<Merg
 
     // Noise of the reference's photosites, σ² = a·v + b, on its brightest CFA position's
     // plane (green): one colour, full resolution.
-    let plane = |ox: usize, oy: usize| -> Vec<f32> {
-        (0..r.h * r.w).map(|k| frames[reference].pixels[(k / r.w * period + oy) * w + k % r.w * period + ox]).collect()
-    };
+    let at =
+        |ox: usize, oy: usize, k: usize| frames[reference].pixels[(k / r.w * period + oy) * w + k % r.w * period + ox];
     let (gx, gy) = (0..period * period)
         .map(|k| (k % period, k / period))
-        .max_by(|a, b| plane(a.0, a.1).iter().sum::<f32>().total_cmp(&plane(b.0, b.1).iter().sum()))
+        .max_by(|a, b| {
+            let sum = |(ox, oy): (usize, usize)| (0..r.h * r.w).into_par_iter().map(|k| at(ox, oy, k)).sum::<f32>();
+            sum(*a).total_cmp(&sum(*b))
+        })
         .expect("period ≥ 1");
-    let NoiseModel { a, b } = noise::estimate(&plane(gx, gy).iter().map(|&v| [v; 3]).collect::<Vec<_>>(), r.w, r.h);
+    let plane: Vec<[f32; 3]> = (0..r.h * r.w).map(|k| [at(gx, gy, k); 3]).collect();
+    let NoiseModel { a, b } = noise::estimate(&plane, r.w, r.h);
     // shortcut: no flat area to measure: a high-ISO-like model, so ghost rejection errs towards keeping frames.
     let (a, b) = if a > 0.0 { (a, b.max(1e-8)) } else { (2e-3, 1e-5) };
     // A block mean averages p² photosites.
@@ -227,8 +228,7 @@ pub fn merge(frames: &[Frame], w: usize, h: usize, period: usize) -> Result<Merg
             let (blocks, shift, order, exposure) = (&blocks, &shift, &order, &exposure);
             let (x, y) = (k % r.w, k / r.w);
             let at = move |i: usize| blocks[i].at(x, y, shift[i]);
-            let anchor =
-                order[..=order.len() / 2].iter().rev().copied().find(|&i| at(i).is_some_and(|j| !blocks[i].clipped[j]));
+            let anchor = order[..=mid].iter().rev().copied().find(|&i| at(i).is_some_and(|j| !blocks[i].clipped[j]));
             (0..nf).map(move |i| {
                 let (Some(c), Some(j)) = (anchor, at(i)) else { return true };
                 let Some(jc) = at(c) else { return true };
@@ -245,38 +245,28 @@ pub fn merge(frames: &[Frame], w: usize, h: usize, period: usize) -> Result<Merg
 
     let p = period as i32;
     let dark = order[0];
-    let pixels: Vec<f32> = (0..h)
-        .into_par_iter()
-        .flat_map_iter(|y| {
-            let (agree, frames, shift, exposure) = (&agree, frames, &shift, &exposure);
-            (0..w).map(move |x| {
-                let (bx, by) = ((x / period).min(r.w.saturating_sub(1)), (y / period).min(r.h.saturating_sub(1)));
-                let ok = &agree[(by * r.w + bx) * nf..][..nf];
-                let (mut sum, mut wsum) = (0.0f32, 0.0f32);
-                for (i, f) in frames.iter().enumerate() {
-                    let (sx, sy) = (x as i32 + shift[i][0] * p, y as i32 + shift[i][1] * p);
-                    if !ok[i] || sx < 0 || sy < 0 || sx >= w as i32 || sy >= h as i32 {
-                        continue;
-                    }
-                    let v = f.pixels[sy as usize * w + sx as usize];
-                    if v >= CLIP {
-                        continue;
-                    }
-                    let wi = 1.0 / var(v.max(0.0), exposure[i]);
-                    sum += wi * v / exposure[i];
-                    wsum += wi;
-                }
-                if wsum > 0.0 {
-                    sum / wsum
-                } else {
-                    // Clipped everywhere: the darkest frame's value, clipped, for highlight reconstruction.
-                    let (sx, sy) = (x as i32 + shift[dark][0] * p, y as i32 + shift[dark][1] * p);
-                    let inside = sx >= 0 && sy >= 0 && sx < w as i32 && sy < h as i32;
-                    if inside { frames[dark].pixels[sy as usize * w + sx as usize] } else { 1.0 }
-                }
-            })
-        })
-        .collect();
+    // Frame i's photosite under the reference's (x, y), if inside.
+    let sample = |i: usize, x: usize, y: usize| {
+        let (sx, sy) = (x as i32 + shift[i][0] * p, y as i32 + shift[i][1] * p);
+        let inside = sx >= 0 && sy >= 0 && sx < w as i32 && sy < h as i32;
+        inside.then(|| frames[i].pixels[sy as usize * w + sx as usize])
+    };
+    let mut pixels = vec![0f32; w * h];
+    pixels.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        for (x, out) in row.iter_mut().enumerate() {
+            let (bx, by) = ((x / period).min(r.w.saturating_sub(1)), (y / period).min(r.h.saturating_sub(1)));
+            let ok = &agree[(by * r.w + bx) * nf..][..nf];
+            let (mut sum, mut wsum) = (0.0f32, 0.0f32);
+            for i in (0..nf).filter(|&i| ok[i]) {
+                let Some(v) = sample(i, x, y).filter(|&v| v < CLIP) else { continue };
+                let wi = 1.0 / var(v.max(0.0), exposure[i]);
+                sum += wi * v / exposure[i];
+                wsum += wi;
+            }
+            // Clipped everywhere: the darkest frame's value, clipped, for highlight reconstruction.
+            *out = if wsum > 0.0 { sum / wsum } else { sample(dark, x, y).unwrap_or(1.0) };
+        }
+    });
     let shift = shift.iter().map(|d| [d[0] * p, d[1] * p]).collect();
     Ok(Merged { pixels, exposure, shift, reference })
 }
@@ -286,22 +276,22 @@ pub fn merge(frames: &[Frame], w: usize, h: usize, period: usize) -> Result<Merg
 /// result's pixels are left empty (they went to the file).
 pub fn merge_files(paths: &[&Path], out: &Path) -> Result<Merged, String> {
     use rawler::RawImageData;
-    use rawler::decoders::RawDecodeParams;
     use rawler::dng::writer::DngWriter;
     use rawler::dng::{CropMode, DNG_VERSION_V1_4, DngCompression, DngPhotometricConversion};
     use rawler::formats::tiff::SRational;
     use rawler::rawimage::RawPhotometricInterpretation;
     use rawler::tags::{DngTag, ExifTag};
 
-    let mut decoded: Vec<(rawler::RawImage, u16)> = paths
+    type Decoded = (rawler::RawImage, u16, Option<rawler::decoders::RawMetadata>);
+    let mut decoded: Vec<Decoded> = paths
         .par_iter()
         .map(|p| {
-            let (mut raw, orientation) = crate::raw::decode(p)?;
+            let (mut raw, orientation, metadata) = crate::raw::decode_with_metadata(p)?;
             if raw.cpp != 1 || !matches!(raw.photometric, RawPhotometricInterpretation::Cfa(_)) {
                 return Err(format!("{}: merging to HDR needs Bayer or X-Trans RAWs", p.display()));
             }
             raw.apply_scaling().map_err(|e| e.to_string())?;
-            Ok((raw, orientation))
+            Ok((raw, orientation, metadata))
         })
         .collect::<Result<_, String>>()?;
     let first = &decoded[0].0;
@@ -309,7 +299,7 @@ pub fn merge_files(paths: &[&Path], out: &Path) -> Result<Merged, String> {
         (r.width, r.height, &r.clean_make, &r.clean_model)
             == (first.width, first.height, &first.clean_make, &first.clean_model)
     };
-    if !decoded.iter().all(|(r, _)| same(r)) {
+    if !decoded.iter().all(|(r, ..)| same(r)) {
         return Err("Merging to HDR needs photos from one camera, at one size".into());
     }
     let RawPhotometricInterpretation::Cfa(cfa) = &first.photometric else { unreachable!("checked above") };
@@ -318,22 +308,17 @@ pub fn merge_files(paths: &[&Path], out: &Path) -> Result<Merged, String> {
     // The mosaics move into the frames (no second copy); the reference's comes back merged.
     let frames: Vec<Frame> = decoded
         .iter_mut()
-        .map(|(r, _)| match std::mem::replace(&mut r.data, RawImageData::Float(Vec::new())) {
+        .map(|(r, ..)| match std::mem::replace(&mut r.data, RawImageData::Float(Vec::new())) {
             RawImageData::Float(pixels) => Frame { pixels },
             other => Frame { pixels: other.as_f32().into_owned() },
         })
         .collect();
-    let merged = merge(&frames, w, h, period)?;
-    drop(frames);
-
-    let mut merged = merged;
-    let (mut raw, orientation) = decoded.swap_remove(merged.reference);
+    let mut merged = merge(&frames, w, h, period)?;
+    drop(frames); // the mosaics' memory, before the DNG is written
+    let (mut raw, orientation, metadata) = decoded.swap_remove(merged.reference);
     raw.data = RawImageData::Float(std::mem::take(&mut merged.pixels));
-    let src = rawler::rawsource::RawSource::new(paths[merged.reference]).map_err(|e| e.to_string())?;
-    let params = RawDecodeParams::default();
-    let metadata = rawler::get_decoder(&src).and_then(|d| d.raw_metadata(&src, &params)).map_err(|e| e.to_string())?;
     // The source's own BaselineExposure (a DNG's) stays on top of the merge's.
-    let source_ev = raw.dng_tags.get(&(DngTag::BaselineExposure as u16)).map_or(0.0, |v| v.force_f32(0));
+    let source_ev = crate::raw::baseline_ev(&raw);
     let write = || -> rawler::dng::writer::Result<()> {
         // Never over an existing file: two merges racing for one name, the second fails.
         let file = std::io::BufWriter::new(std::fs::File::create_new(out)?);
@@ -342,7 +327,9 @@ pub fn merge_files(paths: &[&Path], out: &Path) -> Result<Merged, String> {
         frame.raw_image(&raw, CropMode::Best, DngCompression::Uncompressed, DngPhotometricConversion::Original, 1)?;
         frame.finalize()?;
         dng.load_base_tags(&raw)?;
-        dng.load_metadata(&metadata)?;
+        if let Some(m) = &metadata {
+            dng.load_metadata(m)?;
+        }
         dng.root_ifd_mut().add_tag(ExifTag::Orientation, orientation);
         // The merge is in the darkest frame's units: open it as the reference was exposed.
         let ev = merged.exposure[merged.reference].log2() + source_ev;

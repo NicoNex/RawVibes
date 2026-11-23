@@ -95,26 +95,34 @@ pub fn read_raw(path: &Path) -> Result<RawData, String> {
 
 /// A RAW file decoded by rawler, and its EXIF orientation (1–8).
 pub(crate) fn decode(path: &Path) -> Result<(rawler::RawImage, u16), String> {
+    decode_with_metadata(path).map(|(raw, orientation, _)| (raw, orientation))
+}
+
+/// [`decode`], and the file's metadata (what a DNG written from it carries).
+pub(crate) fn decode_with_metadata(
+    path: &Path,
+) -> Result<(rawler::RawImage, u16, Option<rawler::decoders::RawMetadata>), String> {
     let src = rawler::rawsource::RawSource::new(path).map_err(|e| e.to_string())?;
     let params = rawler::decoders::RawDecodeParams::default();
-    let raw = rawler::decode(&src, &params).map_err(|e| e.to_string())?;
+    let mut raw = rawler::decode(&src, &params).map_err(|e| e.to_string())?;
+    let decoder = rawler::get_decoder(&src).ok();
+    let metadata = decoder.as_ref().and_then(|d| d.raw_metadata(&src, &params).ok());
     // Decoders such as Panasonic's leave `raw.orientation` at Normal; the EXIF
     // Orientation tag is the reliable source (6/8 = portrait shots).
-    let decoder = rawler::get_decoder(&src).ok();
-    let orientation = decoder
-        .as_ref()
-        .and_then(|d| d.raw_metadata(&src, &params).ok())
-        .and_then(|m| m.exif.orientation)
-        .unwrap_or_else(|| raw.orientation.to_u16());
-    // DNG BaselineExposure (an HDR merge's, among others), kept with the image for `camera`.
+    let orientation = metadata.as_ref().and_then(|m| m.exif.orientation).unwrap_or_else(|| raw.orientation.to_u16());
+    // DNG BaselineExposure (an HDR merge's, among others), kept with the image for `baseline_ev`.
     let baseline = decoder
         .and_then(|d| d.ifd(rawler::decoders::WellKnownIFD::VirtualDngRootTags).ok().flatten())
         .and_then(|ifd| ifd.get_entry(rawler::tags::DngTag::BaselineExposure).map(|e| e.value.clone()));
-    let mut raw = raw;
     if let Some(v) = baseline {
         raw.dng_tags.insert(rawler::tags::DngTag::BaselineExposure as u16, v);
     }
-    Ok((raw, orientation))
+    Ok((raw, orientation, metadata))
+}
+
+/// The DNG BaselineExposure `decode` kept, in EV (0 for other RAWs).
+pub(crate) fn baseline_ev(raw: &rawler::RawImage) -> f32 {
+    raw.dng_tags.get(&(rawler::tags::DngTag::BaselineExposure as u16)).map_or(0.0, |v| v.force_f32(0))
 }
 
 /// Camera RGB pixels, width, height and camera model.
@@ -157,7 +165,7 @@ fn xyz2cam<const N: usize>(raw: &rawler::RawImage) -> Option<[[f32; 3]; N]> {
 pub(crate) fn camera(raw: &rawler::RawImage) -> Camera {
     let xyz2cam = xyz2cam::<3>(raw);
     let as_shot = [raw.wb_coeffs[0], raw.wb_coeffs[1], raw.wb_coeffs[2]];
-    let baseline = raw.dng_tags.get(&(rawler::tags::DngTag::BaselineExposure as u16)).map_or(0.0, |v| v.force_f32(0));
+    let baseline = baseline_ev(raw);
     match xyz2cam {
         Some(m) => Camera::new(m, as_shot, baseline),
         None => Camera::neutral(),

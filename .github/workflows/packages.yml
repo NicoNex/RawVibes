@@ -22,7 +22,7 @@ jobs:
       - name: Install build dependencies
         run: |
           pacman -Syu --noconfirm --needed base-devel git rust gtk4 libadwaita vulkan-icd-loader \
-            gettext unzip python-onnx python-numpy
+            gettext unzip python-onnx python-numpy cmake nasm lensfun libjxl
       - uses: actions/checkout@v7
       - name: Build with makepkg
         # makepkg refuses to run as root.
@@ -51,7 +51,7 @@ jobs:
           python-version: "3.x"
       - name: Install build dependencies
         run: |
-          brew install gtk4 libadwaita adwaita-icon-theme librsvg gettext dylibbundler
+          brew install gtk4 libadwaita adwaita-icon-theme librsvg gettext dylibbundler jpeg-xl cmake nasm lensfun
           python -m pip install onnx numpy
           echo "GETTEXT_DIR=$(brew --prefix gettext)" >> "$GITHUB_ENV"
       - name: Build the .dmg

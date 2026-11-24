@@ -124,7 +124,7 @@ arch:
 # Self-contained .app: dylibbundler copies the linked dylibs, and the GTK runtime data
 # (schemas, icon themes, pixbuf loaders) comes from Homebrew into the bundle; the
 # launcher points GTK at it. Needs Homebrew gtk4, libadwaita, adwaita-icon-theme, jpeg-xl, cmake, nasm,
-# librsvg and dylibbundler.
+# librsvg, lensfun and dylibbundler.
 APP  := target/RawVibes.app
 BREW  = $(shell brew --prefix)
 PIXBUF = lib/gdk-pixbuf-2.0/2.10.0
@@ -145,9 +145,9 @@ dmg: release models
 	install -m644 data/icons/hicolor/scalable/actions/*.svg $(APP)/Contents/share/icons/hicolor/scalable/actions/
 	install -d $(APP)/Contents/$(PIXBUF)/loaders
 	cp $(BREW)/$(PIXBUF)/loaders/*.so $(APP)/Contents/$(PIXBUF)/loaders/
-	# Queried before dylibbundler: afterwards the loaders only load from inside the app.
-	gdk-pixbuf-query-loaders $(APP)/Contents/$(PIXBUF)/loaders/*.so \
-	  | sed 's|$(abspath $(APP))/Contents|@CONTENTS@|g' > $(APP)/Contents/Resources/loaders.cache.in
+	# Queried in Homebrew: the copies cannot load yet (librsvg via @rpath) and drop out of the cache.
+	gdk-pixbuf-query-loaders $(BREW)/$(PIXBUF)/loaders/*.so \
+	  | sed 's|$(BREW)/$(PIXBUF)|@CONTENTS@/$(PIXBUF)|g' > $(APP)/Contents/Resources/loaders.cache.in
 	# dylibbundler asks on stdin for a library it cannot find: "quit" fails the build instead of hanging it.
 	yes quit | dylibbundler -of -b -s $(BREW)/lib -d $(APP)/Contents/libs -p @executable_path/../libs/ -x $(APP)/Contents/MacOS/$(BIN)-bin \
 	  $(foreach f,$(wildcard $(BREW)/$(PIXBUF)/loaders/*.so),-x $(APP)/Contents/$(PIXBUF)/loaders/$(notdir $(f)))

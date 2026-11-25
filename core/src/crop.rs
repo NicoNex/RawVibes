@@ -63,7 +63,8 @@ pub fn fit_ratio(ratio: Ratio, img_w: u32, img_h: u32, angle: f32) -> Crop {
     let (sin, cos) = angle.to_radians().abs().sin_cos();
     // A rect a·ch × ch turned by θ inside W × H: ch·(a·cos + sin) ≤ W, ch·(a·sin + cos) ≤ H.
     let ch = (w / (a * cos + sin)).min(h / (a * sin + cos));
-    let (nw, nh) = (a * ch / w, ch / h);
+    // Rounding can make the full side a hair over 1, and its origin a hair under 0.
+    let (nw, nh) = ((a * ch / w).min(1.0), (ch / h).min(1.0));
     Crop { rect: [(1.0 - nw) / 2.0, (1.0 - nh) / 2.0, nw, nh], angle }
 }
 
@@ -324,6 +325,17 @@ pub fn aspect(c: &Crop, img_w: u32, img_h: u32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+
+    /// Wide ratios fill the width: rounding must not push the origin below 0.
+    #[test]
+    fn fit_ratio_stays_in_the_frame() {
+        for (w, h) in [(3008, 2000), (5776, 4336), (6000, 4000), (4000, 6000)] {
+            for (a, b) in [(65.0, 24.0), (16.0, 9.0), (3.0, 2.0), (1.0, 1.0), (4.0, 5.0)] {
+                let c = fit_ratio(Ratio::Fixed(a, b), w, h, 0.0);
+                assert!(c.rect.iter().all(|v| (0.0..=1.0).contains(v)), "{w}x{h} {a}:{b} {:?}", c.rect);
+            }
+        }
+    }
 
     /// A new ratio keeps the framing: centred where the crop was, moved only
     /// as far as the image needs.

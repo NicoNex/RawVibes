@@ -205,14 +205,16 @@ impl Sidecar {
             exposure: d.exposure.clamp(-EXPOSURE, EXPOSURE),
             detail: detail.expect("checked above"),
         };
-        let c = f.crop;
+        let mut c = f.crop;
         let [x, y, w, h] = c.rect;
-        let crop_ok = c.rect.iter().all(|v| (0.0..=1.0).contains(v))
+        // Float rounding leaves edges a hair outside the frame (-2e-7): tolerated, then clamped.
+        let crop_ok = c.rect.iter().all(|v| (-1e-4..=1.0 + 1e-4).contains(v))
             && w >= 0.01
             && h >= 0.01
             && x + w <= 1.0 + 1e-4
             && y + h <= 1.0 + 1e-4
             && (-90.0..=90.0).contains(&c.angle);
+        c.rect = c.rect.map(|v| v.clamp(0.0, 1.0));
         let ratio_ok = match f.ratio {
             Ratio::Fixed(a, b) => a > 0.0 && b > 0.0 && a.is_finite() && b.is_finite(),
             _ => true,
@@ -347,5 +349,13 @@ mod tests {
             s.crop.rect = rect;
             assert!(Sidecar::from_json(&s.to_json()).is_err(), "{rect:?}");
         }
+    }
+    /// A full-width 65:24 crop came out at x = -1.9e-7 and the whole sidecar was lost.
+    #[test]
+    fn rounding_off_the_frame_loads_clamped() {
+        let mut s = sample();
+        s.crop.rect = [-1.9370997e-7, 0.18197213, 1.0, 0.5538462];
+        let back = Sidecar::from_json(&s.to_json()).expect("loads");
+        assert_eq!(back.crop.rect[0], 0.0);
     }
 }

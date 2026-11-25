@@ -1350,8 +1350,12 @@ impl App {
                 }
                 self.toast(&gettext!("GPU unavailable: {}", e))
             }
-            Done::Graded { width, height, rgba, hdr: _, scopes: Scopes { histogram, waveform, vectorscope } } => {
-                // shortcut: the HDR rendition waits for an HDR swapchain (QSG_RHI_HDR); SDR meanwhile.
+            Done::Graded { width, height, rgba, hdr, scopes: Scopes { histogram, waveform, vectorscope } } => {
+                // The HDR rendition goes to the HDR surface; the SDR one always backs the canvas.
+                if let Some(hdr) = hdr {
+                    rv_set_image("hdr", hdr, width, height, true);
+                    self.ui.hdr_gen += 1;
+                }
                 rv_set_image("photo", rgba, width, height, false);
                 rv_set_image("hist", histogram, HIST_W as u32, HIST_H as u32, false);
                 rv_set_image("wave", waveform, HIST_W as u32, HIST_H as u32, false);

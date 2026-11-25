@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Shapes
 import RawVibes
+import RawVibes.Hdr
 
 // The photo as graded, and everything done on it: zoom and pan, the before/after split,
 // the white-balance picker, the crop frame and the level line.
@@ -86,49 +87,31 @@ Rectangle {
         }
     }
 
-    // Pointer: zoom on the wheel, pan by dragging, double-click for 100%, click to pick a grey.
-    WheelHandler {
-        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-        enabled: !s.crop.editing
-        onWheel: (e) => {
-            const p = canvas.area(point.position.x, point.position.y)
-            Store.cmd("zoom", { cmd: "scroll", dy: -e.angleDelta.y / 120, x: p.x, y: p.y })
+    CanvasPointer { anchors.fill: parent; canvas: canvas }
+
+    // The HDR rendition on an HDR surface laid exactly over the photo; the SDR photo stays under it.
+    // A native window sits above every Qt Quick item, so it steps aside while anything is drawn on the photo.
+    HdrWindow {
+        id: hdr
+        color: "black"
+        onHdrChanged: Store.cmd("hdrWhite", { v: white })
+        Image {
+            anchors.fill: parent
+            // The SDR frame until the swapchain turns out HDR: an SDR screen gets an SDR one.
+            source: hdr.hdr ? (s.hdrGen ? "image://rv/hdr/" + s.hdrGen : "") : (s.photoGen ? "image://rv/photo/" + s.photoGen : "")
+            fillMode: Image.Stretch
+            cache: false
+            smooth: true
+            retainWhileLoading: true
         }
+        CanvasPointer { anchors.fill: parent; canvas: canvas; ox: canvas.shown.x; oy: canvas.shown.y }
     }
-    MouseArea {
-        id: pointer
-        anchors.fill: parent
-        enabled: !s.crop.editing
-        acceptedButtons: Qt.LeftButton | Qt.MiddleButton
-        hoverEnabled: true
-        cursorShape: s.picker ? Qt.CrossCursor : (s.zoomed ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.ArrowCursor)
-        property point last
-        property bool splitting: false
-        // A press that became a pan or a split drag is not a click (no grey picked where it ends).
-        property real travelled: 0
-        onPressed: (e) => {
-            last = Qt.point(e.x, e.y)
-            travelled = 0
-            splitting = s.compare && e.button === Qt.LeftButton
-            if (splitting) setSplit(e.x)
-        }
-        function setSplit(x) {
-            Store.cmd("split", { x: Math.max(0, Math.min(1, (x - canvas.shown.x) / canvas.shown.width)) })
-        }
-        onPositionChanged: (e) => {
-            if (!pressed) return
-            travelled += Math.abs(e.x - last.x) + Math.abs(e.y - last.y)
-            if (splitting) { last = Qt.point(e.x, e.y); return setSplit(e.x) }
-            const d = { dx: (e.x - last.x) * canvas.dpr, dy: (e.y - last.y) * canvas.dpr }
-            last = Qt.point(e.x, e.y)
-            Store.cmd("zoom", { cmd: "pan", dx: d.dx, dy: d.dy, button: e.buttons & Qt.MiddleButton ? 2 : 1 })
-        }
-        onClicked: (e) => {
-            if (travelled > 4) return
-            const p = canvas.area(e.x, e.y)
-            Store.cmd("canvasClick", { x: p.x, y: p.y })
-        }
-        onDoubleClicked: (e) => { const p = canvas.area(e.x, e.y); Store.cmd("zoom", { cmd: "toggle", x: p.x, y: p.y }) }
+    WindowContainer {
+        window: hdr
+        x: canvas.shown.x; y: canvas.shown.y
+        width: canvas.shown.width; height: canvas.shown.height
+        visible: s.hdrPreview === true && (s.hdrGen || 0) > 0 && s.canvas === "image"
+                 && !(s.crop && s.crop.editing) && !s.compare
     }
 
     // The crop over the whole straightened frame, while editing it.

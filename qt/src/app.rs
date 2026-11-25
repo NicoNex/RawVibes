@@ -308,6 +308,8 @@ pub enum Msg {
     ExportPhoto(Option<PhotoFormat>),
     ExportSettings(PhotoFormat, u8, bool),
     HdrPreview(bool),
+    /// The HDR surface's scale for SDR white, as its swapchain reports it.
+    HdrWhite(f32),
     Headroom(f32),
     HeadroomSave(f32),
     ExportEstimateRun(u64, u32, u32),
@@ -457,6 +459,8 @@ pub struct UiState {
     /// "empty", "loading" or "image".
     pub canvas: &'static str,
     pub photo_gen: u64,
+    /// Bumped with each HDR rendition (only while the HDR preview is on).
+    pub hdr_gen: u64,
     pub scopes_gen: u64,
     pub lab_gen: u64,
     pub match_thumb: u64,
@@ -633,7 +637,13 @@ impl PartialEq for BaseKey {
 impl App {
     pub fn new(tx: Tx) -> Self {
         let g = tx.clone();
-        let (jobs, gpu_thread) = gpu::spawn(move |d| g.send(Msg::Gpu(d)));
+        // The HDR rendition is converted for Qt's HDR surface here, on the GPU worker, not the GUI thread.
+        let (jobs, gpu_thread) = gpu::spawn(move |mut d| {
+            if let Done::Graded { hdr: Some(hdr), .. } = &mut d {
+                crate::hdr::to_scrgb(hdr, crate::hdr::white());
+            }
+            g.send(Msg::Gpu(d))
+        });
         let (format, quality) = remembered_export();
         let mut app = App {
             grade: Grade::default(),
@@ -1539,6 +1549,11 @@ impl App {
                     Some(f) if f.hdr() == format.hdr() && !hdr_changed => self.export_estimate(),
                     _ => self.export_frame_request(),
                 }
+            }
+            Msg::HdrWhite(w) => {
+                crate::hdr::set_white(w);
+                self.sent = None;
+                self.render();
             }
             Msg::HdrPreview(on) => {
                 self.hdr_preview = on;

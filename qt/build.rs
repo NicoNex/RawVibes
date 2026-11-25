@@ -1,7 +1,19 @@
 use cxx_qt_build::{CxxQtBuilder, QResource, QResources, QmlFile, QmlModule};
 use qt_build_utils::QResourceFile;
 
+/// `qmake -query <var>`, with the qmake cxx-qt-build would find ($QMAKE, else qmake6, else qmake).
+fn qmake(var: &str) -> String {
+    let candidates = std::env::var("QMAKE").into_iter().chain(["qmake6".into(), "qmake".into()]);
+    candidates
+        .filter_map(|q| std::process::Command::new(q).args(["-query", var]).output().ok())
+        .find(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .expect("qmake (Qt 6) on PATH or in $QMAKE")
+}
+
 fn main() {
+    // The RHI (rhi/qrhi.h, for the HDR swapchain's info) is semi-public: in QtGui's versioned folder.
+    let rhi = format!("{}/QtGui/{}/QtGui", qmake("QT_INSTALL_HEADERS"), qmake("QT_VERSION"));
     let qml = std::fs::read_dir("qml")
         .expect("qml/ exists")
         .map(|e| e.expect("readable qml/").path())
@@ -33,7 +45,9 @@ fn main() {
         .qt_module("QuickControls2")
         .qrc_resources(QResources::new().resource(QResource::new().prefix("/").files(icons)))
         .include_dir("cpp")
+        .include_dir(&rhi)
         .cpp_file("cpp/images.cpp")
+        .cpp_file("cpp/hdrwindow.h")
         .files(["src/bridge.rs"])
         .build();
 }

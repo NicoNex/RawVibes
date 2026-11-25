@@ -107,6 +107,7 @@ pub fn state(app: &App) -> Value {
         "photoInfo": photo_info(camera),
         "canvas": app.ui.canvas,
         "photoGen": app.ui.photo_gen,
+        "hdrGen": app.ui.hdr_gen,
         "scopesGen": app.ui.scopes_gen,
         "labGen": app.ui.lab_gen,
         "hasSource": app.has_source(),

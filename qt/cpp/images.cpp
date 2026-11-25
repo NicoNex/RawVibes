@@ -1,4 +1,6 @@
 #include "images.h"
+#include "hdrwindow.h"
+#include <QtQml/qqml.h>
 
 static QMutex lock;
 static QHash<QString, QImage> frames;
@@ -36,4 +38,5 @@ void rv_drop(rust::Str key) {
 
 void rv_install_images(QQmlApplicationEngine &engine) {
     engine.addImageProvider(QStringLiteral("rv"), new RvImages);
+    qmlRegisterType<RvHdrWindow>("RawVibes.Hdr", 1, 0, "HdrWindow");
 }

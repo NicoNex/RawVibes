@@ -3,6 +3,7 @@
 
 mod app;
 mod bridge;
+mod hdr;
 mod i18n;
 mod settings;
 mod timers;
@@ -12,6 +13,13 @@ use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
 use cxx_qt_lib::QQuickStyle;
 
 fn main() {
+    // HDR swapchains exist on Vulkan, Metal and D3D, not OpenGL (Qt Quick's default on Linux);
+    // the GPU core already needs Vulkan there.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("QSG_RHI_BACKEND").is_none() {
+        // SAFETY: first thing in main, before Qt or any other thread starts.
+        unsafe { std::env::set_var("QSG_RHI_BACKEND", "vulkan") };
+    }
     i18n::bind(&i18n::locale_dir());
     let mut app = QGuiApplication::new();
     if let Some(mut app) = app.as_mut() {

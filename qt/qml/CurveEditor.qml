@@ -32,9 +32,9 @@ ColumnLayout {
             current: ed.active - ed.first
             onPicked: (i) => { ed.active = ed.first + i; plot.requestPaint() }
         }
-        Icon {
-            name: "edit-undo"
-            tip: Store.tr("Reset this curve")
+        Btn {
+            text: Store.tr("Reset curve")
+            flat: true
             onClicked: Store.cmd("curve", { ch: ed.active, points: ed.neutral(ed.active) })
         }
     }

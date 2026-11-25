@@ -220,7 +220,12 @@ pub fn state(app: &App) -> Value {
         // Metadata
         "meta": meta_view(&app.meta, defaults),
         "camera": camera_card(camera),
-        "policyNote": gettext!("On export: {} — {}.", policy_name(policy), policy_hint(policy)),
+        "policyNote": gettext!(
+            "On export: <b>{}</b> — {}. <a href=\"prefs\">{}</a>",
+            policy_name(policy),
+            policy_hint(policy),
+            gettext("Preferences")
+        ),
         "prefs": {
             "policy": Policy::ALL.iter().position(|&p| p == policy).unwrap_or(1),
             "suffix": app.prefs.suffix,

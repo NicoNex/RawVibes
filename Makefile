@@ -69,7 +69,9 @@ target/locale/%/LC_MESSAGES/$(BIN).mo: po/%.po
 
 pot:
 	xgettext -L Rust --from-code=UTF-8 -k --keyword=gettext --keyword='gettext!' \
-	  --package-name=RawVibes -o po/$(BIN).pot gtk/src/*.rs
+	  --package-name=RawVibes -o po/$(BIN).pot gtk/src/*.rs qt/src/*.rs qt/src/app/*.rs
+	# The Qt interface's QML: Store.tr("…") reads the same catalogue.
+	xgettext -L JavaScript --from-code=UTF-8 -k --keyword=tr -j -o po/$(BIN).pot qt/qml/*.qml
 	for l in $(LINGUAS); do msgmerge -U --backup=none po/$$l.po po/$(BIN).pot; done
 
 target/release/$(BIN):

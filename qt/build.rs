@@ -12,9 +12,11 @@ fn main() {
         })
         .collect::<Vec<_>>();
     // Symbolic icons as resources: Windows and macOS have no icon theme to find them in.
-    let icons = std::fs::read_dir("icons")
-        .expect("icons/ exists")
-        .map(|e| e.expect("readable icons/").path())
+    // RawVibes' own icons from data/icons, the theme's from icons/.
+    let icons = ["icons", "../data/icons/hicolor/scalable/actions"]
+        .iter()
+        .flat_map(|d| std::fs::read_dir(d).unwrap_or_else(|e| panic!("{d}: {e}")))
+        .map(|e| e.expect("readable icon folder").path())
         .filter(|p| p.extension().is_some_and(|e| e == "svg"))
         .map(|p| {
             let name = p.file_name().expect("a file").to_string_lossy().into_owned();
@@ -22,6 +24,7 @@ fn main() {
         })
         .collect::<Vec<_>>();
     println!("cargo:rerun-if-changed=icons");
+    println!("cargo:rerun-if-changed=../data/icons");
     println!("cargo:rerun-if-changed=qml");
     println!("cargo:rerun-if-changed=cpp");
     CxxQtBuilder::new_qml_module(QmlModule::new("RawVibes").qml_files(qml))

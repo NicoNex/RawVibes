@@ -4,23 +4,19 @@ import QtQuick.Layouts
 import RawVibes
 
 // Export Photo: full resolution of the crop, with every edit; one photo or every one the filmstrip shows.
-Dialog {
+DialogShell {
     id: dlg
     readonly property var e: Store.s.export || ({})
-    readonly property var formats: e.formats || []
+    readonly property var formats: Store.c.formats || []
     readonly property int fi: Math.max(0, formats.findIndex(f => f.tag === e.format))
     readonly property var fmt: formats[fi] || ({})
     title: Store.tr("Export Photo")
-    modal: true
-    anchors.centerIn: Overlay.overlay
     width: 460
     padding: 20
     visible: e.open === true
     closePolicy: Popup.CloseOnEscape
     onRejected: Store.cmd("exportClosed")
     function settings(format, quality, all) { Store.cmd("exportSettings", { format: format, quality: quality, all: all }) }
-    background: Rectangle { color: Theme.panel; radius: 12; border.color: Theme.line }
-    header: Label { text: dlg.title; color: Theme.text; font.pixelSize: 17; font.weight: Font.DemiBold; padding: 20; bottomPadding: 4 }
 
     ColumnLayout {
         anchors.fill: parent
@@ -34,7 +30,7 @@ Dialog {
             Label { text: Store.tr("Format"); color: Theme.dim }
             Choice {
                 Layout.fillWidth: true
-                model: dlg.formats.map(f => f.name)
+                model: Store.c.formatNames
                 currentIndex: dlg.fi
                 onActivated: (i) => dlg.settings(dlg.formats[i].tag, e.quality, e.all)
             }

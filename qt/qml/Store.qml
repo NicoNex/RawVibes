@@ -5,8 +5,8 @@ import RawVibes
 // The editor's state as Rust publishes it, and the one way to change it.
 QtObject {
     readonly property var s: JSON.parse(Backend.state || "{}")
-    // Interface-only state: straightening along a line drawn on the photo.
-    property bool levelling: false
+    // What never changes while RawVibes runs (names, colours, choices): parsed once.
+    readonly property var c: JSON.parse(Backend.constants || "{}")
     // The Metadata tab's link to Preferences.
     signal prefsRequested()
 

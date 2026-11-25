@@ -17,15 +17,21 @@ QImage RvImages::requestImage(const QString &id, QSize *size, const QSize &reque
     return img;
 }
 
-void rv_set_image(rust::Str key, rust::Slice<const uint8_t> pixels, uint32_t width, uint32_t height, bool half) {
+void rv_set_image(rust::Str key, rust::Vec<uint8_t> pixels, uint32_t width, uint32_t height, bool half) {
     const auto format = half ? QImage::Format_RGBA16FPx4 : QImage::Format_RGBA8888;
     const qsizetype bpl = qsizetype(width) * (half ? 8 : 4);
-    QImage img(int(width), int(height), format);
-    if (img.isNull() || qsizetype(pixels.size()) < bpl * qsizetype(height)) return;
-    for (uint32_t y = 0; y < height; ++y)
-        memcpy(img.scanLine(int(y)), pixels.data() + bpl * y, size_t(bpl));
+    if (width == 0 || height == 0 || qsizetype(pixels.size()) < bpl * qsizetype(height)) return;
+    // The image wraps the Rust buffer and frees it with its last copy.
+    auto *owned = new rust::Vec<uint8_t>(std::move(pixels));
+    QImage img(owned->data(), int(width), int(height), bpl, format,
+               [](void *p) { delete static_cast<rust::Vec<uint8_t> *>(p); }, owned);
     QMutexLocker l(&lock);
     frames.insert(QString::fromUtf8(key.data(), qsizetype(key.size())), img);
+}
+
+void rv_drop(rust::Str key) {
+    QMutexLocker l(&lock);
+    frames.remove(QString::fromUtf8(key.data(), qsizetype(key.size())));
 }
 
 void rv_install_images(QQmlApplicationEngine &engine) {

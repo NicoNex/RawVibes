@@ -85,3 +85,12 @@ pub const AUTHOR_EMAIL: &str = "author-email";
 pub const AUTHOR_WEBSITE: &str = "author-website";
 
 
+
+/// A stored on/off setting ("1"/"0"); `default` when never set.
+pub fn flag(key: &str, default: bool) -> bool {
+    value(key).map_or(default, |v| v == "1")
+}
+
+pub fn set_flag(key: &str, on: bool) -> std::io::Result<()> {
+    set_value(key, if on { "1" } else { "0" })
+}

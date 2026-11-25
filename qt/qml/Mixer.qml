@@ -36,7 +36,7 @@ ColumnLayout {
             readonly property bool mono: s.mixerMono === true
             // Output rows start at 100% of their own channel; black & white at the luminance weights.
             readonly property int coeff: mono ? 9 + index : m.row * 3 + index
-            readonly property real base: mono ? Math.round((s.luma || [0.2126, 0.7152, 0.0722])[index] * 1000) / 10
+            readonly property real base: mono ? Math.round((Store.c.luma || [0.2126, 0.7152, 0.0722])[index] * 1000) / 10
                                               : (m.row === index ? 100 : 0)
             label: m.names[index]
             from: -200; to: 200; neutral: base

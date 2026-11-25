@@ -35,8 +35,13 @@ fn typed<T: serde::de::DeserializeOwned>(a: &Value, k: &str) -> Option<T> {
     serde_json::from_value(a.get(k)?.clone()).ok()
 }
 
+/// "lab" or "look" (the default), as QML names the two stacks.
 fn layers(a: &Value) -> Layers {
     if s(a, "which") == "lab" { Layers::Lab } else { Layers::Look }
+}
+
+fn opt_u(a: &Value, k: &str) -> Option<usize> {
+    a.get(k).and_then(Value::as_u64).map(|i| i as usize)
 }
 
 /// A sidebar section's eye key ("g:Tone", "d:Noise", "looks", "crop") as the core's `Off`.
@@ -141,16 +146,13 @@ fn meta_field(k: &str) -> Option<MetaField> {
 
 /// `name` with `a` as a message; `None` for an unknown command or malformed arguments.
 pub fn command(name: &str, a: &Value) -> Option<Msg> {
-    let extra = a.get("extra").cloned().unwrap_or(Value::Null);
     Some(match name {
         "open" => Msg::Open,
-        "rollAdd" => Msg::RollAddPaths(paths(a), None),
         "rollSelect" => Msg::RollSelect(u(a, "i")),
         "rollRemove" => Msg::RollRemove(u(a, "i")),
         "rollFilter" => Msg::RollFilter(u(a, "f") as u32),
         "grid" => Msg::Grid(b(a, "on")),
         "mergeHdr" => Msg::MergeHdr,
-        "mergeHdrRun" => Msg::MergeHdrRun(paths(a)),
         "set" => Msg::Set(lookup(PARAMS, &s(a, "key"))?, f(a, "v")),
         "wheel" => Msg::Wheel(u(a, "i"), f(a, "x") as f32, f(a, "y") as f32),
         "wheelLuma" => Msg::WheelLuma(u(a, "i"), f(a, "v")),
@@ -205,7 +207,6 @@ pub fn command(name: &str, a: &Value) -> Option<Msg> {
         "lensManual" => Msg::LensManual(f(a, "focal") as f32, f(a, "aperture") as f32),
         // Match
         "matchChoose" => Msg::MatchChoose,
-        "matchReference" => Msg::MatchReference(path(a)?),
         "matchClear" => Msg::MatchClear,
         "matchAmount" => Msg::MatchAmount(f(a, "v")),
         // Crop and view
@@ -222,6 +223,7 @@ pub fn command(name: &str, a: &Value) -> Option<Msg> {
         "cropReset" => Msg::CropReset,
         "cropPress" => Msg::CropPress([f(a, "x") as f32, f(a, "y") as f32], [f(a, "tx") as f32, f(a, "ty") as f32]),
         "cropDrag" => Msg::CropDrag([f(a, "dx") as f32, f(a, "dy") as f32]),
+        "level" => Msg::Level(b(a, "on")),
         "cropLevel" => Msg::CropLevel(f(a, "dx") as f32, f(a, "dy") as f32),
         "canvasSize" => Msg::CanvasSize([f(a, "w") as f32, f(a, "h") as f32]),
         "zoom" => Msg::Zoom(match s(a, "cmd").as_str() {
@@ -243,17 +245,19 @@ pub fn command(name: &str, a: &Value) -> Option<Msg> {
         "copyEdits" => Msg::CopyEdits,
         "pasteEdits" => Msg::PasteEdits,
         "pasteEditsAll" => Msg::PasteEditsAll,
+        // Dropped files, as Open would add them.
+        "rollAdd" => Msg::RollAddPaths(paths(a), None),
+        "dialogAnswer" => Msg::DialogAnswer(u(a, "id") as i32, DialogAnswer { paths: paths(a), name: s(a, "name") }),
         "toastAction" => Msg::ToastAction(u(a, "id") as i32),
         // LUTs
         "chooseFolder" => Msg::ChooseFolder,
-        "lutFolder" => Msg::Folder(path(a)?),
         "reload" => Msg::Reload,
         "group" => Msg::Group(u(a, "i") as u32),
         "search" => Msg::Search(s(a, "text")),
         "browse" => Msg::Browse(b(a, "on")),
         "selectLut" => Msg::SelectLut(u(a, "i")),
-        "hover" => Msg::Hover(a.get("i").and_then(Value::as_u64).map(|i| i as usize)),
-        "preview" => Msg::Preview(a.get("i").and_then(Value::as_u64).map(|i| i as usize)),
+        "hover" => Msg::Hover(opt_u(a, "i")),
+        "preview" => Msg::Preview(opt_u(a, "i")),
         "commit" => Msg::Commit(u(a, "i")),
         "openInLab" => Msg::OpenInLab,
         "layerAdd" => Msg::LayerAdd(
@@ -266,10 +270,6 @@ pub fn command(name: &str, a: &Value) -> Option<Msg> {
                 _ => return None,
             },
         ),
-        "layerFile" => {
-            let which = if extra.get("which").and_then(Value::as_str) == Some("lab") { Layers::Lab } else { Layers::Look };
-            Msg::LayerFile(which, path(a)?)
-        }
         "layerRemove" => Msg::LayerRemove(layers(a), u(a, "i")),
         "layerMove" => Msg::LayerMove(layers(a), u(a, "i"), b(a, "up")),
         "layerIntensity" => Msg::LayerIntensity(layers(a), u(a, "i"), f(a, "v")),
@@ -279,21 +279,12 @@ pub fn command(name: &str, a: &Value) -> Option<Msg> {
         "labBlend" => Msg::LabBlend(typed(a, "blend")?),
         "lookBlend" => Msg::LookBlend(typed(a, "blend")?),
         "exportLut" => Msg::Export(lut_format(&s(a, "format"))?, u(a, "size"), what(a)?),
-        "exportLutTo" => Msg::ExportTo(lut_format(&s(&extra, "format"))?, u(&extra, "size"), what(&extra)?, path(a)?),
-        "cameraLutFound" => {
-            let l = CameraLut { name: s(&extra, "name"), opacity: u(&extra, "opacity") as _ };
-            Msg::CameraLutFound(PathBuf::from(s(&extra, "photo")), l, path(a)?)
-        }
         // Presets
         "presetSave" => Msg::PresetSave,
-        "presetSaveAs" => Msg::PresetSaveAs(s(a, "name")),
-        "presetReplace" => Msg::PresetReplace,
         "presetApply" => Msg::PresetApply(path(a)?),
         "presetDelete" => Msg::PresetDelete(path(a)?),
         "presetImport" => Msg::PresetImport,
-        "presetImported" => Msg::PresetImported(path(a)?),
         "presetExport" => Msg::PresetExport,
-        "presetExportTo" => Msg::PresetExportTo(path(a)?),
         // Photo export
         "exportPhoto" => Msg::ExportPhoto(PhotoFormat::from_tag(&s(a, "format"))),
         "exportSettings" => Msg::ExportSettings(
@@ -302,9 +293,7 @@ pub fn command(name: &str, a: &Value) -> Option<Msg> {
             b(a, "all"),
         ),
         "exportGo" => Msg::ExportGo,
-        "exportPhotoTo" => Msg::ExportPhotoTo(path(a)?),
         "exportClosed" => Msg::ExportClosed,
-        "batchTo" => Msg::BatchTo(path(a)?),
         "hdrPreview" => Msg::HdrPreview(b(a, "on")),
         "headroom" => Msg::Headroom(f(a, "v") as f32),
         // Metadata and preferences
@@ -313,7 +302,6 @@ pub fn command(name: &str, a: &Value) -> Option<Msg> {
         "metaPolicy" => Msg::MetaPolicy(s(a, "tag")),
         "exportSuffix" => Msg::ExportSuffix(s(a, "text")),
         "authorDefault" => Msg::AuthorDefault(s(a, "key"), s(a, "text")),
-        "close" => Msg::Close,
         _ => return None,
     })
 }

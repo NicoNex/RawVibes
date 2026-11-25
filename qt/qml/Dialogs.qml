@@ -3,14 +3,14 @@ import QtQuick.Controls
 import QtQuick.Dialogs
 import RawVibes
 
-// The file and folder dialogs Rust asks for: native on every platform. Each answers with the command
-// the request names, its path(s) and the request's `extra`.
+// The dialogs Rust asks for (files and folders are native on every platform). Each answers its
+// request's id with the chosen paths or the typed name; Rust knows what to do with it.
 Item {
     id: dl
     property var req: ({})
     function answer(args) {
-        args.extra = req.extra || {}
-        Store.cmd(req.reply, args)
+        args.id = req.id
+        Store.cmd("dialogAnswer", args)
     }
     function folderUrl(p) { return p ? "file://" + (p.startsWith("/") ? "" : "/") + p : "" }
     Connections {
@@ -40,17 +40,14 @@ Item {
             }
         }
     }
-    Dialog {
+    DialogShell {
         id: confirm
-        modal: true
-        anchors.centerIn: Overlay.overlay
-        background: Rectangle { color: Theme.panel; radius: 12; border.color: Theme.line }
         footer: DialogButtonBox {
             background: null
             Btn { text: Store.tr("Cancel"); DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
             Btn { id: confirmGo; highlighted: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
         }
-        onAccepted: Store.cmd(dl.req.reply, {})
+        onAccepted: dl.answer({})
         Label { id: confirmText; width: 340; wrapMode: Text.Wrap; color: Theme.text }
     }
     FileDialog {
@@ -64,14 +61,11 @@ Item {
         id: folder
         onAccepted: dl.answer({ path: Store.localPath(selectedFolder) })
     }
-    Dialog {
+    DialogShell {
         id: ask
         title: Store.tr("Save Preset")
-        modal: true
-        anchors.centerIn: Overlay.overlay
         standardButtons: Dialog.Save | Dialog.Cancel
-        background: Rectangle { color: Theme.panel; radius: 12; border.color: Theme.line }
-        onAccepted: if (name.text.trim() !== "") Store.cmd(dl.req.reply, { name: name.text })
+        onAccepted: if (name.text.trim() !== "") dl.answer({ name: name.text })
         Column {
             spacing: 10
             Label { width: 320; wrapMode: Text.Wrap; color: Theme.dim; text: Store.tr("The grade is saved with all its settings and can be applied to any photo.") }

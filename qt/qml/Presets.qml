@@ -15,7 +15,7 @@ Icon {
         x: btn.width - width
         width: 300
         padding: 12
-        background: Rectangle { color: Theme.panel; radius: 10; border.color: Theme.line }
+        background: Rectangle { color: Theme.panel; radius: 12; border.color: Theme.line }
         ColumnLayout {
             anchors.fill: parent
             spacing: 8

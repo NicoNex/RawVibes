@@ -14,6 +14,8 @@ public:
     QImage requestImage(const QString &id, QSize *size, const QSize &requested) override;
 };
 
-// Stores an RGBA8 (or RGBA16F when `half`) frame under `key`.
-void rv_set_image(rust::Str key, rust::Slice<const uint8_t> pixels, uint32_t width, uint32_t height, bool half);
+// Stores an RGBA8 (or RGBA16F when `half`) frame under `key`, taking `pixels` over without copying them.
+void rv_set_image(rust::Str key, rust::Vec<uint8_t> pixels, uint32_t width, uint32_t height, bool half);
+// Forgets the frame under `key` (a photo that left the filmstrip).
+void rv_drop(rust::Str key);
 void rv_install_images(QQmlApplicationEngine &engine);

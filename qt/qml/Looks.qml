@@ -27,7 +27,7 @@ ColumnLayout {
             current: s.lookBlend === "Mix" ? 1 : 0
             onPicked: (i) => Store.cmd("lookBlend", { blend: i === 1 ? "Mix" : "Chain" })
         }
-        Caption { text: (s.blendHint || ["", ""])[s.lookBlend === "Mix" ? 1 : 0] }
+        Caption { text: (Store.c.blendHint || ["", ""])[s.lookBlend === "Mix" ? 1 : 0] }
     }
     // By count: rows live as long as the stack keeps its length, so a slider is never rebuilt under the pointer.
     Repeater {

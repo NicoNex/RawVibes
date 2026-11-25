@@ -19,8 +19,8 @@ ColumnLayout {
     readonly property var rgb: ["#ebebeb", "#f0544f", "#5cd16b", "#5c8ffa"]
     spacing: 6
 
-    function neutral(ch) { return ch >= 4 && ch <= 6 ? [[0, 0.5], [1, 0.5]] : [[0, 0], [1, 1]] }
-    function periodic(ch) { return ch === 4 || ch === 5 }
+    function neutral(ch) { return (Store.c.curveNeutral || [])[ch] || [[0, 0], [1, 1]] }
+    function periodic(ch) { return (Store.c.curvePeriodic || [])[ch] === true }
     function points(ch) { return (s.curves || [])[ch] || neutral(ch) }
     function colour(ch) { return ch < 4 ? rgb[ch] : rgb[0] }
 
@@ -55,7 +55,7 @@ ColumnLayout {
             ctx.fillStyle = Theme.canvas
             ctx.fillRect(0, 0, width, height)
             if (ed.hue) {
-                const strip = s.hueStrip || []
+                const strip = Store.c.hueStrip || []
                 for (let i = 0; i < 72; i++) {
                     ctx.fillStyle = ed.active === 6 ? Qt.rgba((i + 0.5) / 72, (i + 0.5) / 72, (i + 0.5) / 72, 1) : strip[i]
                     ctx.fillRect(sx(i / 72), ed.pad + ih - ed.strip, iw / 72 + 0.5, ed.strip)

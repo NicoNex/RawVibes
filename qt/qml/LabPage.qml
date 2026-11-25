@@ -45,10 +45,10 @@ ColumnLayout {
     Label { text: Store.tr("2 · I will use the final LUT on"); color: Theme.text; font.pixelSize: Theme.heading; font.weight: Font.DemiBold; Layout.topMargin: 10 }
     Choice {
         Layout.fillWidth: true
-        model: (s.profiles || []).map(p => p.name)
-        currentIndex: Math.max(0, (s.profiles || []).findIndex(p => p.key === s.labInput))
+        model: Store.c.profileNames
+        currentIndex: Math.max(0, (Store.c.profiles || []).findIndex(p => p.key === s.labInput))
         Accessible.name: Store.tr("Signal the final LUT will be used on")
-        onActivated: (i) => Store.cmd("labInput", { profile: s.profiles[i].key })
+        onActivated: (i) => Store.cmd("labInput", { profile: Store.c.profiles[i].key })
     }
     Caption { text: Store.tr("The camera profile (standard or log) you will load the exported LUT on. The signal is converted automatically to each layer's profile.") }
 
@@ -59,7 +59,7 @@ ColumnLayout {
         current: s.labBlend === "Mix" ? 1 : 0
         onPicked: (i) => Store.cmd("labBlend", { blend: i === 1 ? "Mix" : "Chain" })
     }
-    Caption { text: (s.blendHint || ["", ""])[s.labBlend === "Mix" ? 1 : 0] }
+    Caption { text: (Store.c.blendHint || ["", ""])[s.labBlend === "Mix" ? 1 : 0] }
     Label {
         visible: (s.labSummary || "") !== ""
         Layout.fillWidth: true

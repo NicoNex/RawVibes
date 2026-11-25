@@ -185,10 +185,10 @@ Rectangle {
             property point from
             property point to
             property bool active: false
-            cursorShape: Store.levelling ? Qt.CrossCursor : Qt.ArrowCursor
+            cursorShape: !!(s.crop && s.crop.levelling) ? Qt.CrossCursor : Qt.ArrowCursor
             onPressed: (e) => {
                 from = to = Qt.point(e.x, e.y)
-                active = Store.levelling
+                active = !!(s.crop && s.crop.levelling)
                 if (active) return
                 const r = canvas.shown
                 Store.cmd("cropPress", { x: (e.x - r.x) / r.width, y: (e.y - r.y) / r.height, tx: 12 / r.width, ty: 12 / r.height })
@@ -201,7 +201,6 @@ Rectangle {
             onReleased: {
                 if (active) Store.cmd("cropLevel", { dx: to.x - from.x, dy: to.y - from.y })
                 active = false
-                Store.levelling = false
             }
         }
     }

@@ -10,7 +10,9 @@ pub mod qobject {
         type QQmlApplicationEngine = cxx_qt_lib::QQmlApplicationEngine;
         include!("images.h");
         /// Stores an RGBA8 (RGBA16F with `half`) frame under `key` for image://rv/<key>/<generation>.
-        fn rv_set_image(key: &str, pixels: &[u8], width: u32, height: u32, half: bool);
+        fn rv_set_image(key: &str, pixels: Vec<u8>, width: u32, height: u32, half: bool);
+        /// Forgets the frame under `key`.
+        fn rv_drop(key: &str);
         fn rv_install_images(engine: Pin<&mut QQmlApplicationEngine>);
     }
 
@@ -19,7 +21,12 @@ pub mod qobject {
         #[qml_element]
         #[qml_singleton]
         #[qproperty(QString, state)]
+        #[qproperty(QString, constants)]
         type Backend = super::BackendRust;
+
+        /// Writes pending edits and stops the GPU worker, now: the window is going.
+        #[qinvokable]
+        fn shutdown(self: Pin<&mut Backend>);
 
         /// A command from the UI: its name and JSON arguments.
         #[qinvokable]
@@ -47,11 +54,12 @@ use core::pin::Pin;
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
 
-pub use qobject::{rv_install_images, rv_set_image};
+pub use qobject::{rv_drop, rv_install_images, rv_set_image};
 
 #[derive(Default)]
 pub struct BackendRust {
     state: QString,
+    constants: QString,
     app: Option<Box<App>>,
 }
 
@@ -74,24 +82,27 @@ impl cxx_qt::Initialize for qobject::Backend {
         let (state, ..) = app.publish();
         self.as_mut().rust_mut().app = Some(Box::new(app));
         if let Some(state) = state {
-            self.set_state(QString::from(&state));
+            self.as_mut().set_state(QString::from(&state));
         }
+        self.set_constants(QString::from(&crate::view::constants().to_string()));
     }
 }
 
 impl qobject::Backend {
     fn cmd(self: Pin<&mut Self>, name: &QString, args: &QString) {
         let args: serde_json::Value = serde_json::from_str(&args.to_string()).unwrap_or(serde_json::Value::Null);
-        let name = name.to_string();
-        match crate::app::command(&name, &args) {
-            // Closing joins the GPU thread now: the event loop may not run again.
-            Some(msg) if name == "close" => self.handle(msg),
+        match crate::app::command(&name.to_string(), &args) {
             // Queued, not run now: QML may be evaluating a binding that reads the state this changes.
             Some(msg) => {
                 let _ = self.qt_thread().queue(move |b| b.handle(msg));
             }
             None => eprintln!("rawvibes-qt: unknown command {name} {args}"),
         }
+    }
+
+    fn shutdown(self: Pin<&mut Self>) {
+        // Not queued: the event loop may not run again once the window closes.
+        self.handle(Msg::Close);
     }
 
     fn tr(&self, text: &QString) -> QString {

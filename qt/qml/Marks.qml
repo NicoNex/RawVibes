@@ -35,7 +35,7 @@ Row {
         Menu {
             id: labelMenu
             Repeater {
-                model: s.labels || []
+                model: Store.c.labels
                 MenuItem {
                     text: modelData.name
                     checkable: true

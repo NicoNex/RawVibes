@@ -19,11 +19,11 @@ use rawvibes_core::preset::{self, Preset};
 use rawvibes_core::profiles::Profile;
 use rawvibes_core::raw::read_raw;
 use rawvibes_core::scopes::{HIST_H, HIST_W, Scopes, VEC_SIZE};
-use rawvibes_core::sidecar::{Label, LensChoice, LookRef, Off, Sidecar};
+use rawvibes_core::sidecar::{Label, LookRef, Off, Sidecar};
 use rawvibes_core::view::{Region, Zoom};
 
 use super::*;
-use crate::bridge::rv_set_image;
+use crate::bridge::{rv_drop, rv_set_image};
 
 impl App {
     pub fn split_value(&self) -> f32 {
@@ -415,15 +415,13 @@ impl App {
         }
         if self.ui.export.all {
             let folder = self.path.as_ref().and_then(|p| p.parent()).map(Path::to_path_buf);
-            return self.dialog(
-                "folder",
-                serde_json::json!({ "title": gettext("Export Photos To"), "folder": folder, "reply": "batchTo" }),
-            );
+            let options = serde_json::json!({ "title": gettext("Export Photos To"), "folder": folder });
+            return self.ask("folder", options, |a| a.path().map(Msg::BatchTo));
         }
         let Some(path) = self.path.clone() else { return };
         let format = self.ui.export.format.unwrap_or(PhotoFormat::Jpeg);
         let stem = stem_label(&path).unwrap_or_default();
-        self.dialog(
+        self.ask(
             "save",
             serde_json::json!({
                 "title": gettext("Export Photo"),
@@ -431,8 +429,8 @@ impl App {
                 "name": edit_name(&stem, format.ext(), &export_suffix()),
                 "filters": [format!("{} (*.{})", format.ext().to_uppercase(), format.ext())],
                 "folder": path.parent(),
-                "reply": "exportPhotoTo",
             }),
+            |a| a.path().map(Msg::ExportPhotoTo),
         );
     }
 
@@ -573,7 +571,8 @@ impl App {
 
     /// Takes photo `i` out of the strip; true if it was the one being edited.
     pub(super) fn drop_from_roll(&mut self, i: usize) -> bool {
-        self.roll.remove(i);
+        let gone = self.roll.remove(i);
+        rv_drop(&format!("roll/{}", gone.id));
         let was_active = self.active == Some(i);
         self.active = self.active.and_then(|a| if a > i { Some(a - 1) } else { (a < i).then_some(a) });
         self.roll_changed();
@@ -592,7 +591,7 @@ impl App {
 
     pub(super) fn show_match_thumb(&mut self, reference: &Photo) {
         let rgba = rgba8(&reference.pixels);
-        rv_set_image("match", &rgba, reference.width, reference.height, false);
+        rv_set_image("match", rgba, reference.width, reference.height, false);
         self.ui.match_thumb += 1;
     }
 
@@ -737,7 +736,7 @@ impl App {
             Ok(Some(sc)) => self.restore_sidecar(sc),
             Ok(None) => {
                 self.set_offs(&[]);
-                if self.camera().is_some() && settings::value(settings::AS_IN_CAMERA).as_deref() == Some("1") {
+                if self.camera().is_some() && self.prefs.as_in_camera {
                     self.input(Msg::AsInCamera(CameraPart::All));
                 }
             }
@@ -1127,6 +1126,14 @@ impl App {
         self.layers_changed(which, true);
     }
 
+    /// Changes layer `i` of `which`, if there is one, and shows it.
+    pub(super) fn edit_layer(&mut self, which: Layers, i: usize, f: impl FnOnce(&mut LabLayer)) {
+        if let Some(l) = self.layers_mut(which).get_mut(i) {
+            f(l);
+            self.layers_changed(which, false);
+        }
+    }
+
     pub(super) fn layers_changed(&mut self, which: Layers, structure: bool) {
         match which {
             Layers::Lab => self.render_lab(),
@@ -1345,15 +1352,15 @@ impl App {
             }
             Done::Graded { width, height, rgba, hdr: _, scopes: Scopes { histogram, waveform, vectorscope } } => {
                 // shortcut: the HDR rendition waits for an HDR swapchain (QSG_RHI_HDR); SDR meanwhile.
-                rv_set_image("photo", &rgba, width, height, false);
-                rv_set_image("hist", &histogram, HIST_W as u32, HIST_H as u32, false);
-                rv_set_image("wave", &waveform, HIST_W as u32, HIST_H as u32, false);
-                rv_set_image("vec", &vectorscope, VEC_SIZE as u32, VEC_SIZE as u32, false);
+                rv_set_image("photo", rgba, width, height, false);
+                rv_set_image("hist", histogram, HIST_W as u32, HIST_H as u32, false);
+                rv_set_image("wave", waveform, HIST_W as u32, HIST_H as u32, false);
+                rv_set_image("vec", vectorscope, VEC_SIZE as u32, VEC_SIZE as u32, false);
                 self.ui.photo_gen += 1;
                 self.ui.scopes_gen += 1;
             }
             Done::Lab { width, height, rgba } => {
-                rv_set_image("lab", &rgba, width, height, false);
+                rv_set_image("lab", rgba, width, height, false);
                 self.ui.lab_gen += 1;
             }
             Done::Thumb { generation, index, width, height, rgba } => {
@@ -1361,7 +1368,7 @@ impl App {
                     return;
                 }
                 if let Some(g) = self.ui.thumbs.get_mut(index) {
-                    rv_set_image(&format!("thumb/{index}"), &rgba, width, height, false);
+                    rv_set_image(&format!("thumb/{index}"), rgba, width, height, false);
                     *g += 1;
                 }
             }
@@ -1408,7 +1415,7 @@ impl App {
                 if generation == self.roll_gen
                     && let Some(it) = self.roll.get_mut(index)
                 {
-                    rv_set_image(&format!("roll/{}", it.id), &rgba, width, height, false);
+                    rv_set_image(&format!("roll/{}", it.id), rgba, width, height, false);
                     it.frame += 1;
                 }
             }
@@ -1464,8 +1471,8 @@ impl App {
 
 /// Display-encoded float pixels as RGBA8, for thumbnails.
 fn rgba8(pixels: &[[f32; 4]]) -> Vec<u8> {
-    pixels.iter().flat_map(|p| p.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)).collect()
+    let mut out = Vec::with_capacity(pixels.len() * 4);
+    out.extend(pixels.iter().flat_map(|p| p.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)));
+    out
 }
 
-#[allow(unused_imports)]
-use {LensChoice as _, Done as _};

@@ -16,7 +16,7 @@ ColumnLayout {
     component Detail: ValueSlider {
         property string key
         value: dev.detail[key] || 0
-        neutral: dev.defaults && dev.defaults[key] !== undefined ? dev.defaults[key] : 0
+        neutral: Store.c.detailDefaults && Store.c.detailDefaults[key] !== undefined ? Store.c.detailDefaults[key] : 0
         onMoved: (v) => Store.cmd("detail", { key: key, v: v })
     }
     component Dev: Section {
@@ -30,10 +30,10 @@ ColumnLayout {
         title: Store.tr("Input profile")
         Choice {
             Layout.fillWidth: true
-            model: (s.profiles || []).map(p => p.name)
+            model: Store.c.profileNames
             currentIndex: s.profileIndex || 0
             Accessible.name: Store.tr("Input profile")
-            onActivated: (i) => Store.cmd("profile", { profile: s.profiles[i].key })
+            onActivated: (i) => Store.cmd("profile", { profile: Store.c.profiles[i].key })
         }
         Caption { text: s.profileHint || "" }
     }
@@ -65,7 +65,7 @@ ColumnLayout {
             Layout.fillWidth: true
             Choice {
                 Layout.fillWidth: true
-                model: dev.wbPresets || []
+                model: Store.c.wbPresets
                 currentIndex: dev.wbRow || 0
                 Accessible.name: Store.tr("White balance preset")
                 onActivated: (i) => Store.cmd("wbPreset", { i: i })
@@ -81,7 +81,7 @@ ColumnLayout {
         ValueSlider {
             Layout.fillWidth: true
             label: Store.tr("Temperature")
-            from: (dev.kelvinRange || [2000, 12000])[0]; to: (dev.kelvinRange || [2000, 12000])[1]; neutral: 5500
+            from: (Store.c.kelvinRange || [2000, 12000])[0]; to: (Store.c.kelvinRange || [2000, 12000])[1]; neutral: 5500
             unit: " K"
             track: ["#4f86e8", "#e8e8e8", "#f2b84b"]
             value: dev.kelvin || 5500
@@ -158,7 +158,7 @@ ColumnLayout {
             Layout.fillWidth: true
             Choice {
                 Layout.fillWidth: true
-                model: s.crop ? s.crop.ratios : []
+                model: Store.c.ratios
                 currentIndex: s.crop ? s.crop.ratio : 0
                 Accessible.name: Store.tr("Aspect ratio")
                 onActivated: (i) => Store.cmd("cropRatio", { i: i })
@@ -181,8 +181,8 @@ ColumnLayout {
                 name: "object-flip-vertical"
                 tip: Store.tr("Straighten along a line: drag over a horizon or an edge")
                 checkable: true
-                checked: Store.levelling
-                onClicked: { Store.levelling = !Store.levelling; if (Store.levelling) Store.cmd("cropEdit", { on: true }) }
+                checked: !!(s.crop && s.crop.levelling)
+                onClicked: Store.cmd("level", { on: !(s.crop && s.crop.levelling) })
             }
         }
         RowLayout {

@@ -125,10 +125,10 @@ ColumnLayout {
             Repeater {
                 model: 8
                 AbstractButton {
-                    readonly property var modelData: (s.bands || [])[index] || { swatch: "transparent" }
+                    readonly property var modelData: (Store.c.bands || [])[index] || { swatch: "transparent" }
                     width: 22; height: 22
                     checked: index === s.band
-                    Accessible.name: (s.bandNames || [])[index] || ""
+                    Accessible.name: (Store.c.bandNames || [])[index] || ""
                     ToolTip.visible: hovered; ToolTip.text: Accessible.name; ToolTip.delay: 500
                     onClicked: Store.cmd("band", { i: index })
                     background: Rectangle {
@@ -141,7 +141,7 @@ ColumnLayout {
         }
         Label {
             Layout.alignment: Qt.AlignHCenter
-            text: (s.bandNames || [])[s.band || 0] || ""
+            text: (Store.c.bandNames || [])[s.band || 0] || ""
             color: Theme.dim; font.pixelSize: Theme.small; font.weight: Font.DemiBold
         }
         Repeater {
@@ -149,7 +149,7 @@ ColumnLayout {
             ValueSlider {
                 Layout.fillWidth: true
                 label: modelData[0]
-                track: s.bands ? s.bands[s.band || 0][modelData[1]] : []
+                track: Store.c.bands ? Store.c.bands[s.band || 0][modelData[1]] : []
                 value: (s.hue || [0, 0, 0])[index]
                 onMoved: (v) => Store.cmd("hue", { k: index, v: v })
             }

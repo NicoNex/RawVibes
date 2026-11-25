@@ -28,12 +28,15 @@ ApplicationWindow {
         property bool stripHidden: false
         property bool scopesPinned: true
     }
-    onClosing: Store.cmd("close")
+    onClosing: Backend.shutdown()
 
-    // Debugging aid: `--shot=<file.png>` saves the window once it settles, then quits.
-    readonly property string shot: (Qt.application.arguments.find(a => a.startsWith("--shot=")) || "").substring(7)
+    // Debugging aid, with RAWVIBES_DEBUG set: `--shot=<file.png>` saves the window once it settles, then quits;
+    // `--tab=<tab>` opens a tab; `--do=<command>:<json>` runs commands; `--wait=<ms>` delays the shot.
+    function arg(name) { return Store.c.debug ? (Qt.application.arguments.find(a => a.startsWith(name + "=")) || "").substring(name.length + 1) : "" }
+    readonly property string shot: arg("--shot")
     Component.onCompleted: {
-        const tab = (Qt.application.arguments.find(a => a.startsWith("--tab=")) || "").substring(6)
+        if (!Store.c.debug) return
+        const tab = arg("--tab")
         if (tab) Store.cmd("tab", { tab: tab })
         // `--do=<command>:<json>`: commands run once the photo has loaded (screenshots of a state).
         acts.list = Qt.application.arguments.filter(a => a.startsWith("--do=")).map(a => a.substring(5))
@@ -52,8 +55,8 @@ ApplicationWindow {
     }
     Timer {
         running: win.shot !== ""
-        interval: Number((Qt.application.arguments.find(a => a.startsWith("--wait=")) || "--wait=6000").substring(7))
-        onTriggered: root.grabToImage(r => { r.saveToFile(win.shot); Store.cmd("close"); Qt.quit() })
+        interval: Number(arg("--wait") || 6000)
+        onTriggered: root.grabToImage(r => { r.saveToFile(win.shot); Backend.shutdown(); Qt.quit() })
     }
     Connections { target: Store; function onPrefsRequested() { prefs.open() } }
 
@@ -137,7 +140,7 @@ ApplicationWindow {
                 Menu {
                     id: exportMenu
                     Repeater {
-                        model: (s.export || {}).formats || []
+                        model: Store.c.formats
                         MenuItem { text: modelData.name + "…"; onTriggered: Store.cmd("exportPhoto", { format: modelData.tag }) }
                     }
                     MenuSeparator {}
@@ -236,13 +239,10 @@ ApplicationWindow {
     Dialogs {}
     ExportDialog {}
     PrefsDialog { id: prefs }
-    ShortcutsDialog { id: keys }
-    Dialog {
+    ShortcutsDialog { id: keys; table: win.shortcuts }
+    DialogShell {
         id: about
-        modal: true
-        anchors.centerIn: Overlay.overlay
         width: 420
-        background: Rectangle { color: Theme.panel; radius: 12; border.color: Theme.line }
         standardButtons: Dialog.Close
         ColumnLayout {
             anchors.fill: parent
@@ -253,47 +253,65 @@ ApplicationWindow {
         }
     }
 
-    // Keyboard: as the GTK interface. Single keys stay with a text field that has focus.
-    component Key: Shortcut { context: Qt.ApplicationShortcut }
-    Key { sequences: [StandardKey.Open]; onActivated: Store.cmd("open") }
-    Key { sequence: "Ctrl+Z"; onActivated: Store.cmd("undo") }
-    Key { sequences: ["Ctrl+Shift+Z", "Ctrl+Y"]; onActivated: Store.cmd("redo") }
-    Key { sequence: "Ctrl+Shift+C"; onActivated: Store.cmd("copyEdits") }
-    Key { sequence: "Ctrl+Shift+V"; onActivated: Store.cmd("pasteEdits") }
-    Key { sequence: "F11"; onActivated: win.toggleFull() }
-    Repeater {
-        model: 6
-        Item { Shortcut { context: Qt.ApplicationShortcut; sequence: String(index); onActivated: Store.cmd("rate", { n: index, toggle: false }) } }
-    }
-    Repeater {
-        model: [["6", "Red"], ["7", "Yellow"], ["8", "Green"], ["9", "Blue"]]
-        Item { Shortcut { context: Qt.ApplicationShortcut; sequence: modelData[0]; onActivated: Store.cmd("mark", { label: modelData[1] }) } }
-    }
-    Key { sequence: "Ctrl+E"; onActivated: Store.cmd("exportPhoto", {}) }
-    Key { sequence: "Ctrl+Shift+E"; onActivated: Store.cmd("exportLut", { format: "cube", size: 33, what: "grade" }) }
-    Key { sequence: "T"; onActivated: Store.cmd("chart", { on: !s.chart }) }
-    Key { sequence: "\\"; onActivated: Store.cmd("compare", { on: !s.compare }) }
-    Key { sequence: "C"; onActivated: Store.cmd("overlay", { on: !s.overlay }) }
-    Key { sequence: "G"; onActivated: if ((s.roll || []).length > 1) Store.cmd("grid", { on: !s.grid }) }
-    Key { sequence: "K"; onActivated: Store.cmd("skin", { on: !s.skin }) }
-    Key { sequence: "Ctrl+S"; onActivated: Store.cmd("presetSave") }
-    Key { sequence: "Alt+1"; onActivated: Store.cmd("tab", { tab: "photo" }) }
-    Key { sequence: "Alt+2"; onActivated: Store.cmd("tab", { tab: "grade" }) }
-    Key { sequence: "Alt+3"; onActivated: Store.cmd("tab", { tab: "meta" }) }
-    Key { sequence: "Alt+4"; onActivated: Store.cmd("tab", { tab: "lab" }) }
-    Key { sequence: "Ctrl+F"; onActivated: { Store.cmd("tab", { tab: "grade" }); Store.cmd("browse", { on: true }) } }
-    Key { sequence: "F5"; onActivated: Store.cmd("reload") }
-    Key { sequence: "B"; onActivated: Store.cmd("browse", { on: !s.browsing }) }
-    Key { sequence: "Ctrl+,"; onActivated: prefs.open() }
-    Key { sequence: "R"; onActivated: Store.cmd("cropEdit", { on: !(s.crop && s.crop.editing) }) }
-    // Escape and Enter belong to a focused field, list or open dialog first (Qt gives shortcuts these keys before them).
+    // Keyboard, as the GTK interface: one table for the shortcuts and the help that lists them.
+    // `shown` is how the help writes the keys (empty: not listed); `when` gates a shortcut.
+    readonly property var shortcuts: [
+        { keys: [StandardKey.Open], shown: "Ctrl+O", label: Store.tr("Open Photo"), act: () => Store.cmd("open") },
+        { keys: ["Ctrl+Z"], shown: "Ctrl+Z", label: Store.tr("Undo"), act: () => Store.cmd("undo") },
+        { keys: ["Ctrl+Shift+Z", "Ctrl+Y"], shown: "Ctrl+Shift+Z", label: Store.tr("Redo"), act: () => Store.cmd("redo") },
+        { keys: ["Ctrl+Shift+C"], shown: "Ctrl+Shift+C", label: Store.tr("Copy edits"), act: () => Store.cmd("copyEdits") },
+        { keys: ["Ctrl+Shift+V"], shown: "Ctrl+Shift+V", label: Store.tr("Paste edits"), act: () => Store.cmd("pasteEdits") },
+        { keys: ["1", "2", "3", "4", "5"], shown: "1–5", label: Store.tr("Stars"), act: (k) => Store.cmd("rate", { n: Number(k), toggle: false }) },
+        { keys: ["0"], shown: "0", label: Store.tr("No stars"), act: () => Store.cmd("rate", { n: 0, toggle: false }) },
+        { keys: ["6", "7", "8", "9"], shown: "6–9", label: Store.tr("Colour label: red, yellow, green, blue"),
+          act: (k) => Store.cmd("mark", { label: ["Red", "Yellow", "Green", "Blue"][Number(k) - 6] }) },
+        { keys: ["F11"], shown: "F11", label: Store.tr("Fullscreen"), act: () => win.toggleFull() },
+        { keys: ["Ctrl+E"], shown: "Ctrl+E", label: Store.tr("Export photo"), act: () => Store.cmd("exportPhoto", {}) },
+        { keys: ["Ctrl+Shift+E"], shown: "Ctrl+Shift+E", label: Store.tr("Export LUT · 33³ .cube"), act: () => Store.cmd("exportLut", { format: "cube", size: 33, what: "grade" }) },
+        { keys: ["\\"], shown: "\\", label: Store.tr("Before / after"), act: () => Store.cmd("compare", { on: !s.compare }) },
+        { keys: ["T"], shown: "T", label: Store.tr("Test chart"), act: () => Store.cmd("chart", { on: !s.chart }) },
+        { keys: ["C"], shown: "C", label: Store.tr("Show clipping"), act: () => Store.cmd("overlay", { on: !s.overlay }) },
+        { keys: ["K"], shown: "K", label: Store.tr("Skin tone line"), act: () => Store.cmd("skin", { on: !s.skin }) },
+        { keys: ["G"], shown: "G", label: Store.tr("Grid of all photos"), act: () => { if ((s.roll || []).length > 1) Store.cmd("grid", { on: !s.grid }) } },
+        { keys: ["R"], shown: "R", label: Store.tr("Edit crop"), act: () => Store.cmd("cropEdit", { on: !(s.crop && s.crop.editing) }) },
+        // Escape and Enter belong to a focused field, list or open dialog first (Qt gives shortcuts these keys before them).
+        { keys: ["Escape"], shown: "Esc", label: Store.tr("Cancel crop"), when: () => win.keysFree, act: () => Store.cmd("escape") },
+        { keys: ["Return", "Enter"], shown: "Enter", label: Store.tr("Apply crop"), when: () => win.keysFree && !!(s.crop && s.crop.editing), act: () => Store.cmd("cropEdit", { on: false }) },
+        { keys: ["Ctrl+0"], shown: "Ctrl+0", label: Store.tr("Zoom to fit"), act: () => Store.cmd("zoom", { cmd: "fit" }) },
+        { keys: ["Ctrl+1"], shown: "Ctrl+1", label: Store.tr("Actual size"), act: () => Store.cmd("zoom", { cmd: "actual" }) },
+        { keys: [StandardKey.ZoomIn, "Ctrl+="], shown: "Ctrl++", label: Store.tr("Zoom in"), act: () => Store.cmd("zoom", { cmd: "in" }) },
+        { keys: [StandardKey.ZoomOut], shown: "Ctrl+−", label: Store.tr("Zoom out"), act: () => Store.cmd("zoom", { cmd: "out" }) },
+        { keys: ["Ctrl+S"], shown: "Ctrl+S", label: Store.tr("Save preset"), act: () => Store.cmd("presetSave") },
+        { keys: ["Alt+1"], shown: "Alt+1", label: Store.tr("Photo view"), act: () => Store.cmd("tab", { tab: "photo" }) },
+        { keys: ["Alt+2"], shown: "Alt+2", label: Store.tr("Grade view"), act: () => Store.cmd("tab", { tab: "grade" }) },
+        { keys: ["Alt+3"], shown: "Alt+3", label: Store.tr("Metadata view"), act: () => Store.cmd("tab", { tab: "meta" }) },
+        { keys: ["Alt+4"], shown: "Alt+4", label: Store.tr("LUT Lab view"), act: () => Store.cmd("tab", { tab: "lab" }) },
+        { keys: ["B"], shown: "B", label: Store.tr("Browse LUTs"), act: () => Store.cmd("browse", { on: !s.browsing }) },
+        { keys: ["Ctrl+F"], shown: "Ctrl+F", label: Store.tr("Search LUTs"), act: () => { Store.cmd("tab", { tab: "grade" }); Store.cmd("browse", { on: true }) } },
+        { keys: ["F5"], shown: "F5", label: Store.tr("Reload LUTs"), act: () => Store.cmd("reload") },
+        { keys: ["Ctrl+,"], shown: "Ctrl+,", label: Store.tr("Preferences"), act: () => prefs.open() },
+        { keys: ["Ctrl+?"], shown: "Ctrl+?", label: Store.tr("Keyboard Shortcuts"), act: () => keys.open() },
+    ]
     readonly property bool keysFree: !(activeFocusItem && ("cursorPosition" in activeFocusItem || activeFocusItem instanceof GridView))
                                      && !Overlay.overlay.children.some(c => c.visible)
-    Key { sequence: "Escape"; enabled: win.keysFree; onActivated: { Store.levelling = false; Store.cmd("escape") } }
-    Key { sequences: ["Return", "Enter"]; enabled: win.keysFree && !!(s.crop && s.crop.editing); onActivated: Store.cmd("cropEdit", { on: false }) }
-    Key { sequence: "Ctrl+0"; onActivated: Store.cmd("zoom", { cmd: "fit" }) }
-    Key { sequence: "Ctrl+1"; onActivated: Store.cmd("zoom", { cmd: "actual" }) }
-    Key { sequences: [StandardKey.ZoomIn, "Ctrl+="]; onActivated: Store.cmd("zoom", { cmd: "in" }) }
-    Key { sequences: [StandardKey.ZoomOut]; onActivated: Store.cmd("zoom", { cmd: "out" }) }
-    Key { sequence: "Ctrl+?"; onActivated: keys.open() }
+    Repeater {
+        model: win.shortcuts.length
+        Item {
+            required property int index
+            readonly property var entry: win.shortcuts[index]
+            // One Shortcut per key, so an action can tell which (stars, labels).
+            Repeater {
+                model: entry.keys.length
+                Item {
+                    required property int index
+                    Shortcut {
+                        context: Qt.ApplicationShortcut
+                        sequences: [entry.keys[index]]
+                        enabled: !entry.when || entry.when()
+                        onActivated: entry.act(String(entry.keys[index]))
+                    }
+                }
+            }
+        }
+    }
 }

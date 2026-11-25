@@ -4,17 +4,14 @@ import QtQuick.Layouts
 import RawVibes
 
 // Preferences: the LUT library, how RAWs preview, and what exported photos carry.
-Dialog {
+DialogShell {
     id: dlg
     readonly property var s: Store.s
     readonly property var pr: s.prefs || ({})
     title: Store.tr("Preferences")
-    modal: true
-    anchors.centerIn: Overlay.overlay
     width: Math.min(560, parent ? parent.width - 40 : 560)
     height: Math.min(680, parent ? parent.height - 40 : 680)
     padding: 0
-    background: Rectangle { color: Theme.panel; radius: 12; border.color: Theme.line }
     header: ColumnLayout {
         spacing: 0
         Label { text: dlg.title; color: Theme.text; font.pixelSize: 17; font.weight: Font.DemiBold; padding: 20; bottomPadding: 8 }
@@ -65,7 +62,7 @@ Dialog {
                 Label { text: Store.tr("Preview while editing"); color: Theme.text }
                 Choice {
                     Layout.fillWidth: true
-                    model: pr.qualities || []
+                    model: Store.c.qualities
                     currentIndex: s.quality || 0
                     onActivated: (i) => Store.cmd("quality", { i: i })
                 }
@@ -90,11 +87,11 @@ Dialog {
                 Label { text: Store.tr("Metadata in exported photos"); color: Theme.text }
                 Choice {
                     Layout.fillWidth: true
-                    model: (pr.policies || []).map(p => p.name)
+                    model: Store.c.policyNames
                     currentIndex: pr.policy || 0
-                    onActivated: (i) => Store.cmd("metaPolicy", { tag: pr.policies[i].tag })
+                    onActivated: (i) => Store.cmd("metaPolicy", { tag: Store.c.policies[i].tag })
                 }
-                Caption { text: ((pr.policies || [])[pr.policy || 0] || {}).hint || "" }
+                Caption { text: ((Store.c.policies || [])[pr.policy || 0] || {}).hint || "" }
                 Label { text: Store.tr("File name suffix"); color: Theme.dim; font.pixelSize: Theme.small }
                 TextField {
                     Layout.fillWidth: true

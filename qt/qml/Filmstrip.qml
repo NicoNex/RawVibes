@@ -91,7 +91,7 @@ Rectangle {
         Choice {
             Layout.preferredWidth: 150
             Layout.alignment: Qt.AlignTop
-            model: s.rollFilters || []
+            model: Store.c.rollFilters
             currentIndex: s.rollFilter || 0
             Accessible.name: Store.tr("Filter photos")
             ToolTip.visible: hovered; ToolTip.text: Store.tr("Show only some photos: by stars or colour label"); ToolTip.delay: 700

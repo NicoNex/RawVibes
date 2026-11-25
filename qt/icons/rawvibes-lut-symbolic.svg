@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
-  <!-- A 3D LUT is a colour cube: three faces, shaded by opacity so the icon stays one colour. -->
-  <path fill="#2e3436" d="M8 1.2 13.6 4.3 8 7.4 2.4 4.3Z"/>
-  <path fill="#2e3436" opacity=".5" d="M1.5 5.4 7.4 8.7V15L1.5 11.7Z"/>
-  <path fill="#2e3436" opacity=".8" d="M14.5 5.4 8.6 8.7V15L14.5 11.7Z"/>
-</svg>

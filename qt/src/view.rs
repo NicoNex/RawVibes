@@ -3,56 +3,62 @@
 use rawvibes_core::crop::PRESETS;
 use rawvibes_core::develop::{DevPart, KELVIN, WB_PRESETS};
 use rawvibes_core::export::PhotoFormat;
-use rawvibes_core::grade::{BAND_HUE_RANGE, BAND_HUES, Stage, is_periodic, sample_curve, sample_periodic};
+use rawvibes_core::grade::{BAND_HUE_RANGE, BAND_HUES, Stage};
 use rawvibes_core::lab::{Blend, oklch_to_srgb};
 use rawvibes_core::meta::{self, Exif, Policy, RawMetadata};
 use rawvibes_core::profiles::Profile;
 use rawvibes_core::sidecar::{Label, Meta};
 use serde_json::{Value, json};
 
-use crate::app::command::{DETAILS, PARAMS, off_key};
-use crate::app::{App, LabKind, LabLayer, LensStatus, mixer_value_mut, wheel_mut};
+use crate::app::command::off_key;
+use crate::app::{App, LabKind, LabLayer, LensStatus};
 use crate::gettext;
 use crate::i18n::gettext;
 
+/// What never changes while RawVibes runs: names, colours, choices. Published once, so the
+/// models QML builds from it keep their identity.
+pub fn constants() -> Value {
+    let profiles: Vec<Value> = Profile::ALL.iter().map(|p| json!({ "key": p, "name": p.name() })).collect();
+    let formats: Vec<Value> = PhotoFormat::ALL
+        .iter()
+        .map(|&f| json!({ "tag": f.tag(), "name": format_label(f), "hdr": f.hdr(), "lossy": f.lossy() }))
+        .collect();
+    let policies: Vec<Value> =
+        Policy::ALL.iter().map(|&p| json!({ "tag": p.tag(), "name": policy_name(p), "hint": policy_hint(p) })).collect();
+    json!({
+        "debug": std::env::var_os("RAWVIBES_DEBUG").is_some(),
+        "labels": Label::ALL.iter().map(|&l| json!({ "key": l, "name": label_name(l) })).collect::<Vec<_>>(),
+        "rollFilters": roll_filters(),
+        "bandNames": band_names(),
+        "bands": band_colours(),
+        "hueStrip": hue_strip(),
+        "luma": rawvibes_core::grade::LUMA,
+        "profiles": profiles,
+        "profileNames": Profile::ALL.iter().map(|p| p.name()).collect::<Vec<_>>(),
+        "kelvinRange": KELVIN,
+        "wbPresets": wb_presets(),
+        "detailDefaults": rawvibes_core::develop::Detail::default(),
+        "ratios": PRESETS.iter().map(|(n, _)| gettext(n)).collect::<Vec<_>>(),
+        "blendHint": [chain_hint(), mix_hint()],
+        "formats": formats,
+        "formatNames": PhotoFormat::ALL.iter().map(|&f| format_label(f)).collect::<Vec<_>>(),
+        "policies": policies,
+        "policyNames": Policy::ALL.iter().map(|&p| policy_name(p)).collect::<Vec<_>>(),
+        "qualities": [gettext("Automatic"), gettext("Fast"), gettext("Balanced"), gettext("Best")],
+        "stages": stage_keys(),
+        // Per curve channel: its no-change curve, and whether its ends wrap (hue).
+        "curveNeutral": (0..rawvibes_core::grade::CURVES).map(rawvibes_core::grade::neutral_curve).collect::<Vec<_>>(),
+        "curvePeriodic": (0..rawvibes_core::grade::CURVES).map(rawvibes_core::grade::is_periodic).collect::<Vec<_>>(),
+    })
+}
+
 pub fn state(app: &App) -> Value {
     let p = app.grade.params;
-    let mut params = serde_json::Map::new();
-    for (k, f) in PARAMS {
-        params.insert((*k).into(), json!(*f(&mut p.clone())));
-    }
-    let mut detail = serde_json::Map::new();
-    let mut d = app.develop.detail;
-    for (k, f) in DETAILS {
-        detail.insert((*k).into(), json!(*f(&mut d)));
-    }
-    let mut defaults = serde_json::Map::new();
-    let mut nd = rawvibes_core::develop::Detail::default();
-    for (k, f) in DETAILS {
-        defaults.insert((*k).into(), json!(*f(&mut nd)));
-    }
-    let wheels: Vec<Value> = (0..4)
-        .map(|i| {
-            let w = *wheel_mut(&mut p.clone(), i);
-            json!({ "x": w[0], "y": w[1], "luma": w[2] })
-        })
-        .collect();
-    let mixer: Vec<f32> = (0..12).map(|i| *mixer_value_mut(&mut p.clone(), i)).collect();
+    let wheels: Vec<Value> =
+        [p.lift, p.gamma, p.gain, p.offset].iter().map(|w| json!({ "x": w[0], "y": w[1], "luma": w[2] })).collect();
+    let mixer: Vec<f32> = p.mixer.iter().chain(&p.mono_mix).copied().collect();
     let b = app.band;
-    let curves: Vec<Value> =
-        app.grade.curves.iter().map(|c| Value::Array(c.iter().map(|&(x, y)| json!([x, y])).collect())).collect();
-    // Drawn by QML as the shader evaluates them: sampled here, by the core's own interpolation.
-    let samples: Vec<Vec<f32>> = app
-        .grade
-        .curves
-        .iter()
-        .enumerate()
-        .map(|(ch, c)| {
-            let mut out = vec![0.0f32; 128];
-            if is_periodic(ch) { sample_periodic(c, &mut out) } else { sample_curve(c, &mut out) }
-            out.iter().map(|v| (v * 1000.0).round() / 1000.0).collect()
-        })
-        .collect();
+    let (curves, samples) = app.curves_view();
     let roll: Vec<Value> = app
         .roll
         .iter()
@@ -61,7 +67,7 @@ pub fn state(app: &App) -> Value {
             json!({
                 "name": crate::app::file_label(&it.path),
                 "rating": it.rating,
-                "label": label_key(it.label),
+                "label": it.label,
                 "frame": it.frame,
                 "id": it.id,
                 "active": app.active == Some(i),
@@ -118,25 +124,19 @@ pub fn state(app: &App) -> Value {
         "redo": app.can_redo(),
         "clipboard": app.clipboard.is_some(),
         "rating": app.rating,
-        "label": label_key(app.label),
+        "label": app.label,
         "labelName": label_name(app.label),
-        "labels": Label::ALL.iter().map(|&l| json!({ "key": label_key(l), "name": label_name(l) })).collect::<Vec<_>>(),
         "roll": roll,
         "rollFilter": app.ui.roll_filter,
-        "rollFilters": roll_filters(),
         "grid": app.ui.grid,
         // Grade
-        "params": params,
+        "params": p,
         "wheels": wheels,
         "band": b,
-        "bandNames": band_names(),
-        "bands": band_colours(),
-        "hueStrip": hue_strip(),
         "hue": [p.hue_shift[b], p.hue_sat[b], p.hue_lum[b]],
         "curves": curves,
         "samples": samples,
         "mixer": mixer,
-        "luma": rawvibes_core::grade::LUMA,
         "mixerMono": p.mixer_mono > 0.5,
         "mixerFree": p.mixer_free > 0.5,
         "matching": app.ui.matching,
@@ -146,7 +146,6 @@ pub fn state(app: &App) -> Value {
         "matchAmount": p.match_amount,
         "off": app.off.iter().map(|&o| off_key(o)).collect::<Vec<_>>(),
         "profile": app.profile,
-        "profiles": Profile::ALL.iter().map(|p| json!({ "key": p, "name": p.name() })).collect::<Vec<_>>(),
         "profileIndex": Profile::ALL.iter().position(|&q| q == app.profile).unwrap_or(0),
         "profileName": app.profile.name(),
         "sourceProfileName": app.source_profile().name(),
@@ -157,12 +156,9 @@ pub fn state(app: &App) -> Value {
         "develop": {
             "kelvin": app.kelvin_tint().map_or(5500.0, |kt| kt[0]),
             "tint": app.kelvin_tint().map_or(0.0, |kt| kt[1]),
-            "kelvinRange": KELVIN,
             "exposure": app.develop.exposure,
             "wbRow": app.wb_row(),
-            "wbPresets": wb_presets(),
-            "detail": detail,
-            "defaults": defaults,
+            "detail": app.develop.detail,
             "nrAi": app.develop.detail.nr_ai,
             "caCorrect": app.develop.detail.ca_correct,
             "lensTca": app.develop.detail.lens_tca,
@@ -184,8 +180,8 @@ pub fn state(app: &App) -> Value {
             "rect": app.crop.rect,
             "angle": app.crop.angle,
             "editing": app.editing.is_some(),
+            "levelling": app.levelling,
             "ratio": app.ratio_row,
-            "ratios": PRESETS.iter().map(|(n, _)| gettext(n)).collect::<Vec<_>>(),
             "swappable": matches!(app.ratio, rawvibes_core::crop::Ratio::Fixed(a, b) if a != b),
             "aspect": size.and_then(|(w, h)| app.ratio.aspect(w, h)),
             "frame": size.map_or([0.0; 2], |(w, h)| [w as f32, h as f32]),
@@ -198,7 +194,6 @@ pub fn state(app: &App) -> Value {
         "labBlend": app.lab_blend,
         "labInput": app.lab_input,
         "labSummary": summary(&app.lab_layers, app.lab_blend, app.lab_input),
-        "blendHint": [chain_hint(), mix_hint()],
         "browsing": app.browsing,
         "gallery": gallery,
         "groups": groups,
@@ -211,7 +206,6 @@ pub fn state(app: &App) -> Value {
         "export": {
             "open": e.open,
             "format": e.format.unwrap_or(PhotoFormat::Jpeg).tag(),
-            "formats": PhotoFormat::ALL.iter().map(|&f| json!({ "tag": f.tag(), "name": format_label(f), "hdr": f.hdr(), "lossy": f.lossy() })).collect::<Vec<_>>(),
             "quality": e.quality,
             "all": e.all,
             "roll": e.roll,
@@ -228,7 +222,6 @@ pub fn state(app: &App) -> Value {
         "camera": camera_card(camera),
         "policyNote": gettext!("On export: {} — {}.", policy_name(policy), policy_hint(policy)),
         "prefs": {
-            "policies": Policy::ALL.iter().map(|&p| json!({ "tag": p.tag(), "name": policy_name(p), "hint": policy_hint(p) })).collect::<Vec<_>>(),
             "policy": Policy::ALL.iter().position(|&p| p == policy).unwrap_or(1),
             "suffix": app.prefs.suffix,
             "author": defaults.creator,
@@ -236,9 +229,7 @@ pub fn state(app: &App) -> Value {
             "email": defaults.email,
             "website": defaults.website,
             "background": app.prefs.background,
-            "qualities": [gettext("Automatic"), gettext("Fast"), gettext("Balanced"), gettext("Best")],
         },
-        "stages": stage_keys(),
     })
 }
 
@@ -253,14 +244,10 @@ fn layers(list: &[LabLayer]) -> Value {
     Value::Array(
         list.iter()
             .map(|l| {
-                let (kind, badge, title) = match &l.kind {
-                    LabKind::Lut(lut) => ("lut", lut.format.badge(), lut.title.clone()),
-                    LabKind::Grade => ("grade", "GRADE", gettext("Current grade")),
-                    LabKind::Convert(_) => ("convert", "CONV", gettext("Conversion")),
-                };
-                let to = match &l.kind {
-                    LabKind::Convert(p) => *p,
-                    _ => l.input,
+                let (kind, badge, title, to) = match &l.kind {
+                    LabKind::Lut(lut) => ("lut", lut.format.badge(), lut.title.clone(), l.input),
+                    LabKind::Grade => ("grade", "GRADE", gettext("Current grade"), l.input),
+                    LabKind::Convert(p) => ("convert", "CONV", gettext("Conversion"), *p),
                 };
                 json!({
                     "kind": kind,
@@ -393,17 +380,6 @@ fn wb_presets() -> Vec<String> {
         .take(WB_PRESETS.len() + 1)
         .chain(std::iter::once(gettext("Custom")))
         .collect()
-}
-
-pub fn label_key(l: Label) -> &'static str {
-    match l {
-        Label::None => "None",
-        Label::Red => "Red",
-        Label::Yellow => "Yellow",
-        Label::Green => "Green",
-        Label::Blue => "Blue",
-        Label::Purple => "Purple",
-    }
 }
 
 fn label_name(l: Label) -> String {

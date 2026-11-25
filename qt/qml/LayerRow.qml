@@ -61,9 +61,9 @@ Rectangle {
             }
             Choice {
                 Layout.fillWidth: true
-                model: (Store.s.profiles || []).map(p => p.name)
+                model: Store.c.profileNames
                 currentIndex: entry.inputIndex
-                onActivated: (i) => row.send("layerProfile", { profile: Store.s.profiles[i].key })
+                onActivated: (i) => row.send("layerProfile", { profile: Store.c.profiles[i].key })
             }
         }
     }

@@ -16,9 +16,9 @@ use rawvibes_core::develop::{Detail, Develop};
 use rawvibes_core::export::{self, PhotoFormat};
 use rawvibes_core::gpu::{self, Done, Job};
 use rawvibes_core::grade::{Curve, Grade, MASTER, Params, Stage, neutral_curve};
-use rawvibes_core::lab::{Blend, Layer, Source};
+use rawvibes_core::lab::Blend;
 use rawvibes_core::lensdb;
-use rawvibes_core::lut::{self, Format, Lut3d, LutEntry, MAX_LIBRARY};
+use rawvibes_core::lut::{Format, Lut3d, LutEntry};
 use rawvibes_core::makernote::CameraLut;
 use rawvibes_core::matching::Match;
 use rawvibes_core::meta::RawMetadata;
@@ -298,8 +298,6 @@ pub enum Msg {
     PresetSave,
     PresetSaveAs(String),
     PresetWrite(Box<Preset>, bool, bool),
-    /// The user confirmed replacing the preset of the same name.
-    PresetReplace,
     PresetApply(PathBuf),
     PresetDelete(PathBuf),
     PresetRestore(PathBuf, String),
@@ -352,6 +350,8 @@ pub enum Msg {
     CropPress([f32; 2], [f32; 2]),
     CropDrag([f32; 2]),
     CropLevel(f32, f32),
+    /// Straighten along a line: the next drag on the frame draws it.
+    Level(bool),
     CropReset,
     Undo,
     Redo,
@@ -363,11 +363,26 @@ pub enum Msg {
     BatchTo(PathBuf),
     /// A toast's button was pressed.
     ToastAction(i32),
+    /// A dialog's answer (cancelled dialogs send none).
+    DialogAnswer(i32, DialogAnswer),
     /// Preferences.
     Background(String),
     MetaPolicy(String),
     ExportSuffix(String),
     AuthorDefault(String, String),
+}
+
+/// What the user chose in a dialog: files, or a typed name.
+#[derive(Debug, Default)]
+pub struct DialogAnswer {
+    pub paths: Vec<PathBuf>,
+    pub name: String,
+}
+
+impl DialogAnswer {
+    pub fn path(self) -> Option<PathBuf> {
+        self.paths.into_iter().next()
+    }
 }
 
 /// A batch export in progress: photos still to export (last first), where to, and how it went.
@@ -424,7 +439,7 @@ pub struct Prefs {
 impl Prefs {
     fn load() -> Self {
         Prefs {
-            as_in_camera: settings::value(settings::AS_IN_CAMERA).as_deref() == Some("1"),
+            as_in_camera: settings::flag(settings::AS_IN_CAMERA, false),
             lut_folder: settings::folder(settings::LUT_FOLDER),
             policy: export_policy(),
             suffix: export_suffix(),
@@ -544,6 +559,7 @@ pub struct App {
     pub ratio_row: u32,
     /// A crop drag: the handle (`None`: drawing a new crop), the crop at its start, the press point.
     crop_grab: Option<(Option<crop::Handle>, Crop, [f32; 2])>,
+    pub levelling: bool,
     pub zoom: Option<Zoom>,
     canvas: [f32; 2],
     view_gen: u64,
@@ -572,13 +588,13 @@ pub struct App {
     undo_at: usize,
     pub clipboard: Option<Edits>,
     batch: Option<Batch>,
-    /// A preset waiting for "Replace Preset?", and whether to apply it once written.
-    pending_preset: Option<(Box<Preset>, bool)>,
     pub ui: UiState,
     pub prefs: Prefs,
     next_roll_id: u64,
     /// The state as QML last got it: an unchanged one is not sent again.
     published: String,
+    /// The curves as last published, with their points and samples as JSON: sampled again only when they change.
+    curve_cache: std::cell::RefCell<Option<(Vec<Curve>, serde_json::Value, serde_json::Value)>>,
     tx: Tx,
     timers: Timers,
     /// Messages the update itself queued (GTK's `sender.input`), run before publishing.
@@ -586,6 +602,8 @@ pub struct App {
     toasts: Vec<(String, String, i32)>,
     dialogs: Vec<(String, String)>,
     actions: HashMap<i32, Box<dyn Fn() -> Msg>>,
+    /// Dialogs waiting for an answer, by request id.
+    answers: HashMap<i32, Box<dyn FnOnce(DialogAnswer) -> Option<Msg>>>,
     next_action: i32,
     /// The state changed since QML last read it.
     dirty: bool,
@@ -659,7 +677,7 @@ impl App {
             exporting: None,
             export_frame: None,
             export_gen: 0,
-            hdr_preview: settings::value(settings::HDR_PREVIEW).as_deref() == Some("1"),
+            hdr_preview: settings::flag(settings::HDR_PREVIEW, false),
             headroom: headroom_setting(),
             sent: None,
             load_gen: 0,
@@ -677,6 +695,7 @@ impl App {
             editing: None,
             ratio_row: 0,
             crop_grab: None,
+            levelling: false,
             zoom: None,
             canvas: [1.0, 1.0],
             view_gen: 0,
@@ -686,7 +705,7 @@ impl App {
             drafting: false,
             frame_cost: 0.0,
             auto_draft: 0.75,
-            refine: settings::value(settings::REFINE_IDLE).as_deref() != Some("0"),
+            refine: settings::flag(settings::REFINE_IDLE, true),
             develop_tick: 0,
             camera_match: None,
             camera_curve: None,
@@ -705,7 +724,6 @@ impl App {
             undo_at: 0,
             clipboard: None,
             batch: None,
-            pending_preset: None,
             ui: UiState {
                 tab: "grade".into(),
                 canvas: "empty",
@@ -716,12 +734,14 @@ impl App {
             prefs: Prefs::load(),
             next_roll_id: 0,
             published: String::new(),
+            curve_cache: Default::default(),
             timers: Timers::new(tx.clone()),
             tx,
             queue: VecDeque::new(),
             toasts: Vec::new(),
             dialogs: Vec::new(),
             actions: HashMap::new(),
+            answers: HashMap::new(),
             next_action: 1,
             dirty: true,
         };
@@ -763,6 +783,25 @@ impl App {
         (state, std::mem::take(&mut self.toasts), std::mem::take(&mut self.dialogs))
     }
 
+    /// The grade's curves for QML: their points, and samples drawn as the shader evaluates them (the core's interpolation).
+    pub fn curves_view(&self) -> (serde_json::Value, serde_json::Value) {
+        use rawvibes_core::grade::{is_periodic, sample_curve, sample_periodic};
+        let mut cache = self.curve_cache.borrow_mut();
+        if cache.as_ref().is_none_or(|c| c.0 != self.grade.curves) {
+            let samples: Vec<Vec<f32>> = (self.grade.curves.iter().enumerate())
+                .map(|(ch, c)| {
+                    let mut out = vec![0.0f32; 128];
+                    if is_periodic(ch) { sample_periodic(c, &mut out) } else { sample_curve(c, &mut out) }
+                    out.iter().map(|v| (v * 1000.0).round() / 1000.0).collect()
+                })
+                .collect();
+            let points = serde_json::to_value(&self.grade.curves).unwrap_or_default();
+            *cache = Some((self.grade.curves.to_vec(), points, samples.into()));
+        }
+        let c = cache.as_ref().expect("filled above");
+        (c.1.clone(), c.2.clone())
+    }
+
     fn input(&mut self, msg: Msg) {
         self.queue.push_back(msg);
     }
@@ -791,36 +830,60 @@ impl App {
         self.action_toast(title, &gettext("Undo"), undo);
     }
 
-    /// Asks QML for a file dialog; it answers with command `reply` and `{path|paths, extra}`.
-    fn dialog(&mut self, kind: &str, options: serde_json::Value) {
+    /// Asks QML for a dialog (`open`, `openMany`, `save`, `folder`, `confirm`, `presetName`); its answer,
+    /// sent back with the request's id, becomes the message `answer` makes of it (`None`: nothing to do).
+    fn ask(&mut self, kind: &str, mut options: serde_json::Value, answer: impl FnOnce(DialogAnswer) -> Option<Msg> + 'static) {
+        let id = self.next_action;
+        self.next_action += 1;
+        self.answers.insert(id, Box::new(answer));
+        options["id"] = id.into();
         self.dialogs.push((kind.to_owned(), options.to_string()));
     }
 
+    /// A debounce tick or a result some later request superseded: it changes nothing to show.
+    fn is_stale(&self, msg: &Msg) -> bool {
+        match msg {
+            Msg::SaveSidecar(t) | Msg::WriteSidecar(t) => *t != self.save_tick,
+            Msg::RollTick(t) => *t != self.roll_tick,
+            Msg::DevelopSettled(t) => *t != self.develop_tick || !(self.drafting && self.refine),
+            Msg::HoverSettled(t, _) => *t != self.hover_tick,
+            Msg::FolderSettled(n) => *n != self.folder_changes,
+            Msg::ExportEstimateRun(g, ..) | Msg::ExportEstimate(g, _) => *g != self.export_gen,
+            Msg::Loaded(g, ..) | Msg::SourceMeta(g, ..) => *g != self.load_gen,
+            Msg::SidecarLooks(g, _) => *g != self.looks_gen,
+            _ => false,
+        }
+    }
+
     fn dispatch(&mut self, msg: Msg) {
-        self.dirty = true;
+        if !self.is_stale(&msg) {
+            self.dirty = true;
+        }
         match msg {
             Msg::Open => {
                 let folder = settings::folder(settings::PHOTO_FOLDER);
-                self.dialog(
+                self.ask(
                     "openMany",
                     serde_json::json!({
                         "title": gettext("Open Photo"),
                         "filters": [photo_filter()],
                         "folder": folder,
-                        "reply": "rollAdd",
+                        
                     }),
+                    |a| Some(Msg::RollAddPaths(a.paths, None)),
                 );
             }
             Msg::RollAddPaths(paths, open_at) => self.add_to_roll(paths, open_at),
-            Msg::MergeHdr => self.dialog(
+            Msg::MergeHdr => self.ask(
                 "openMany",
                 serde_json::json!({
                     "title": gettext("Merge Brackets to HDR"),
                     "filters": [photo_filter()],
                     "folder": settings::folder(settings::PHOTO_FOLDER),
-                    "reply": "mergeHdrRun",
+                    
                 }),
-            ),
+                    |a| Some(Msg::MergeHdrRun(a.paths)),
+                ),
             Msg::MergeHdrRun(mut paths) => {
                 if paths.len() < 2 {
                     return self.toast(&gettext("Pick two or more RAWs of the same scene at different exposures"));
@@ -965,17 +1028,12 @@ impl App {
                 self.action_toast(&title, &gettext("Find…"), move || Msg::CameraLutFind(photo.clone(), l.clone()));
             }
             Msg::CameraLutFind(photo, l) => {
-                let extra = serde_json::json!({ "photo": photo, "name": l.name, "opacity": l.opacity });
-                self.dialog(
-                    "open",
-                    serde_json::json!({
-                        "title": gettext!("Find the LUT “{}”", l.name),
-                        "filters": [lut_filter(&gettext("LUTs"))],
-                        "folder": settings::folder(settings::LUT_FOLDER),
-                        "reply": "cameraLutFound",
-                        "extra": extra,
-                    }),
-                );
+                let options = serde_json::json!({
+                    "title": gettext!("Find the LUT “{}”", l.name),
+                    "filters": [lut_filter(&gettext("LUTs"))],
+                    "folder": settings::folder(settings::LUT_FOLDER),
+                });
+                self.ask("open", options, move |a| Some(Msg::CameraLutFound(photo, l, a.path()?)));
             }
             Msg::CameraLutFound(photo, l, p) => self.camera_lut_found(photo, l, p),
             Msg::CameraLutAdd(photo, ..) if Some(&photo) != self.path.as_ref() => {}
@@ -1006,10 +1064,10 @@ impl App {
                 self.toast(&gettext("This RAW has no camera JPEG to match"));
             }
             Msg::AsInCameraOnOpen(on) => {
-                self.prefs.as_in_camera = on;
-                if let Err(e) = settings::set_value(settings::AS_IN_CAMERA, if on { "1" } else { "0" }) {
+                if let Err(e) = settings::set_flag(settings::AS_IN_CAMERA, on) {
                     self.toast(&gettext!("Cannot save the setting: {}", e));
                 }
+                self.prefs = Prefs::load();
             }
             Msg::CanvasClick(p) => {
                 if let Some(at) = self.image_point(p).filter(|_| self.ui.picker) {
@@ -1029,7 +1087,7 @@ impl App {
             }
             Msg::Refine(on) => {
                 self.refine = on;
-                if let Err(e) = settings::set_value(settings::REFINE_IDLE, if on { "1" } else { "0" }) {
+                if let Err(e) = settings::set_flag(settings::REFINE_IDLE, on) {
                     self.toast(&gettext!("Cannot save the setting: {}", e));
                 }
                 if on && std::mem::take(&mut self.drafting) {
@@ -1236,14 +1294,15 @@ impl App {
                 if !self.has_source() {
                     return self.toast(&no_photo_to_match());
                 }
-                self.dialog(
+                self.ask(
                     "open",
                     serde_json::json!({
                         "title": gettext("Choose Reference"),
                         "filters": [photo_filter()],
                         "folder": settings::folder(settings::PHOTO_FOLDER),
-                        "reply": "matchReference",
+                        
                     }),
+                    |a| a.path().map(Msg::MatchReference),
                 );
             }
             Msg::MatchReference(path) => {
@@ -1285,7 +1344,9 @@ impl App {
             }
             Msg::PresetSave => {
                 let suggestion = self.path.as_deref().and_then(stem_label).unwrap_or_default();
-                self.dialog("presetName", serde_json::json!({ "name": suggestion, "reply": "presetSaveAs" }));
+                self.ask("presetName", serde_json::json!({ "name": suggestion,  }),
+                    |a| Some(Msg::PresetSaveAs(a.name)),
+                );
             }
             Msg::PresetSaveAs(name) => {
                 let name = name.trim().to_owned();
@@ -1301,16 +1362,16 @@ impl App {
                         "A preset named “{}” already exists. Replacing it overwrites its settings.",
                         preset.name
                     );
-                    self.pending_preset = Some((preset, apply));
-                    return self.dialog(
+                    return self.ask(
                         "confirm",
                         serde_json::json!({
                             "title": gettext("Replace Preset?"),
                             "body": body,
                             "action": gettext("Replace"),
-                            "reply": "presetReplace",
+                            
                         }),
-                    );
+                    move |_| Some(Msg::PresetWrite(preset, true, apply)),
+                );
                 }
                 for (p, at) in existing {
                     if p.name == preset.name && at != path {
@@ -1323,11 +1384,6 @@ impl App {
                     Err(e) => self.toast(&gettext!("Cannot save the preset: {}", e)),
                 }
                 self.input(Msg::PresetsRefresh);
-            }
-            Msg::PresetReplace => {
-                if let Some((preset, apply)) = self.pending_preset.take() {
-                    self.input(Msg::PresetWrite(preset, true, apply));
-                }
             }
             Msg::PresetApply(path) => match Preset::load(&path) {
                 Ok(p) => {
@@ -1357,34 +1413,41 @@ impl App {
                 }
                 self.input(Msg::PresetsRefresh);
             }
-            Msg::PresetImport => self.dialog(
+            Msg::PresetImport => self.ask(
                 "open",
                 serde_json::json!({
                     "title": gettext("Import Preset"),
                     "filters": [preset_filter()],
-                    "reply": "presetImported",
+                    
                 }),
-            ),
+                    |a| a.path().map(Msg::PresetImported),
+                ),
             Msg::PresetImported(p) => match Preset::load(&p) {
                 Ok(preset) => self.input(Msg::PresetWrite(Box::new(preset), false, true)),
                 Err(e) => self.toast(&gettext!("Not a valid preset: {}", e)),
             },
             Msg::PresetExport => {
                 let stem = self.path.as_deref().and_then(stem_label).unwrap_or_else(|| "preset".into());
-                self.dialog(
+                self.ask(
                     "save",
                     serde_json::json!({
                         "title": gettext("Export Preset"),
                         "filters": [preset_filter()],
                         "name": preset::file_name(&stem),
-                        "reply": "presetExportTo",
+                        
                     }),
+                    |a| a.path().map(Msg::PresetExportTo),
                 );
             }
             Msg::PresetExportTo(path) => match self.current_preset(stem_label(&path).unwrap_or_default()).save(&path) {
                 Ok(()) => self.toast(&gettext!("Preset saved: {}", path.display())),
                 Err(e) => self.toast(&gettext!("Cannot save the preset: {}", e)),
             },
+            Msg::DialogAnswer(id, a) => {
+                if let Some(msg) = self.answers.remove(&id).and_then(|f| f(a)) {
+                    self.input(msg);
+                }
+            }
             Msg::ToastAction(id) => {
                 if let Some(msg) = self.actions.get(&id).map(|f| f()) {
                     self.input(msg);
@@ -1413,22 +1476,13 @@ impl App {
                     (What::Grade, None) => format!("chart_{}_{size}", self.profile.tag()),
                 };
                 let label = format!("{} {size}³", format.badge());
-                let what = match what {
-                    What::Grade => "grade",
-                    What::Identity => "identity",
-                    What::Lab => "lab",
-                };
-                self.dialog(
-                    "save",
-                    serde_json::json!({
-                        "title": gettext!("Export {}", label),
-                        "filters": [format!("{label} (*.{})", format.ext())],
-                        "name": format!("{stem}.{}", format.ext()),
-                        "folder": settings::folder(settings::LUT_FOLDER),
-                        "reply": "exportLutTo",
-                        "extra": { "format": format.ext(), "size": size, "what": what },
-                    }),
-                );
+                let options = serde_json::json!({
+                    "title": gettext!("Export {}", label),
+                    "filters": [format!("{label} (*.{})", format.ext())],
+                    "name": format!("{stem}.{}", format.ext()),
+                    "folder": settings::folder(settings::LUT_FOLDER),
+                });
+                self.ask("save", options, move |a| Some(Msg::ExportTo(format, size, what, a.path()?)));
             }
             Msg::ExportTo(format, size, what, path) => {
                 let title = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -1482,7 +1536,7 @@ impl App {
             }
             Msg::HdrPreview(on) => {
                 self.hdr_preview = on;
-                let _ = settings::set_value(settings::HDR_PREVIEW, if on { "1" } else { "0" });
+                let _ = settings::set_flag(settings::HDR_PREVIEW, on);
                 self.render();
             }
             Msg::Headroom(stops) => {
@@ -1526,19 +1580,20 @@ impl App {
                     }
                 }
             }
-            Msg::ChooseFolder => self.dialog(
+            Msg::ChooseFolder => self.ask(
                 "folder",
                 serde_json::json!({
                     "title": gettext("LUT folder"),
                     "folder": settings::folder(settings::LUT_FOLDER),
-                    "reply": "lutFolder",
+                    
                 }),
-            ),
+                    |a| a.path().map(Msg::Folder),
+                ),
             Msg::Folder(dir) => {
                 if let Err(e) = settings::set_folder(settings::LUT_FOLDER, &dir) {
                     self.toast(&gettext!("Cannot save the LUT folder: {}", e));
                 }
-                self.prefs.lut_folder = Some(dir.clone());
+                self.prefs = Prefs::load();
                 // Watched before the scan, so files added while it runs trigger another one.
                 self.watch_folder(&dir);
                 let s = self.tx.clone();
@@ -1636,7 +1691,8 @@ impl App {
                 self.drop_candidate();
             }
             Msg::Escape => {
-                if self.ui.picker {
+                if std::mem::take(&mut self.levelling) {
+                } else if self.ui.picker {
                     self.ui.picker = false;
                 } else if self.editing.is_some() {
                     self.input(Msg::CropCancel);
@@ -1678,16 +1734,14 @@ impl App {
                     Some(p) => self.load_layer(which, p, None),
                     None => self.toast(&gettext("Select a LUT in the browser first")),
                 },
-                LabAdd::File => self.dialog(
-                    "open",
-                    serde_json::json!({
+                LabAdd::File => {
+                    let options = serde_json::json!({
                         "title": gettext("Add LUT"),
                         "filters": [lut_filter(&gettext("LUTs (.cube, .vlt, HALD .png)"))],
                         "folder": settings::folder(settings::LUT_FOLDER),
-                        "reply": "layerFile",
-                        "extra": { "which": if which == Layers::Lab { "lab" } else { "look" } },
-                    }),
-                ),
+                    });
+                    self.ask("open", options, move |a| Some(Msg::LayerFile(which, a.path()?)));
+                }
                 LabAdd::Grade => self.push_layer(which, LabKind::Grade, Profile::Standard),
                 LabAdd::Convert => self.push_layer(which, LabKind::Convert(Profile::Standard), Profile::Standard),
             },
@@ -1718,33 +1772,18 @@ impl App {
                     self.layers_changed(which, true);
                 }
             }
-            Msg::LayerIntensity(which, i, v) => {
-                if let Some(l) = self.layers_mut(which).get_mut(i) {
-                    l.intensity = (v / 100.0).clamp(0.0, 1.0) as f32;
-                    self.layers_changed(which, false);
-                }
-            }
-            Msg::LayerProfile(which, i, p) => {
-                if let Some(l) = self.layers_mut(which).get_mut(i) {
-                    match &mut l.kind {
-                        LabKind::Convert(to) => *to = p,
-                        _ => l.input = p,
-                    }
-                    self.layers_changed(which, false);
-                }
-            }
+            Msg::LayerIntensity(which, i, v) => self.edit_layer(which, i, |l| l.intensity = (v / 100.0).clamp(0.0, 1.0) as f32),
+            Msg::LayerProfile(which, i, p) => self.edit_layer(which, i, |l| match &mut l.kind {
+                LabKind::Convert(to) => *to = p,
+                _ => l.input = p,
+            }),
             Msg::LabInput(p) => self.lab_input = p,
             Msg::LookBlend(b) => {
                 self.look_blend = b;
                 self.show_looks();
                 self.refresh_gallery();
             }
-            Msg::LayerOn(which, i, on) => {
-                if let Some(l) = self.layers_mut(which).get_mut(i) {
-                    l.on = on;
-                    self.layers_changed(which, false);
-                }
-            }
+            Msg::LayerOn(which, i, on) => self.edit_layer(which, i, |l| l.on = on),
             Msg::FolderChanged => {
                 self.folder_changes += 1;
                 self.timers.after(Duration::from_millis(500), Msg::FolderSettled(self.folder_changes));
@@ -1852,7 +1891,14 @@ impl App {
                     self.crop_changed();
                 }
             }
+            Msg::Level(on) => {
+                self.levelling = on && self.decoded.is_some();
+                if self.levelling {
+                    self.input(Msg::CropEdit(true));
+                }
+            }
             Msg::CropLevel(dx, dy) => {
+                self.levelling = false;
                 if dx.hypot(dy) >= 10.0 {
                     let a = self.crop.angle + level_turn(dx, dy);
                     self.input(Msg::CropAngle(a));
@@ -1872,15 +1918,15 @@ impl App {
             }
             Msg::Background(name) => {
                 let _ = settings::set_value(settings::BACKGROUND, &name);
-                self.prefs.background = name;
+                self.prefs = Prefs::load();
             }
             Msg::MetaPolicy(tag) => {
                 let _ = settings::set_value(settings::METADATA_POLICY, &tag);
-                self.prefs.policy = export_policy();
+                self.prefs = Prefs::load();
             }
             Msg::ExportSuffix(s) => {
                 let _ = settings::set_value(settings::EXPORT_SUFFIX, &s);
-                self.prefs.suffix = s;
+                self.prefs = Prefs::load();
             }
             Msg::AuthorDefault(key, value) => {
                 let key = match key.as_str() {
@@ -1891,7 +1937,7 @@ impl App {
                     _ => return,
                 };
                 let _ = settings::set_value(key, value.trim());
-                self.prefs.author = author_defaults();
+                self.prefs = Prefs::load();
             }
         }
     }
@@ -2112,8 +2158,6 @@ fn lens_db_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/lensfun.json")))
 }
 
-#[allow(unused_imports)]
-use {lut as _, Source as _, Layer as _, MAX_LIBRARY as _};
 
 #[cfg(test)]
 mod tests {

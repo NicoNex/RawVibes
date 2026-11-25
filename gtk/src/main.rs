@@ -3042,10 +3042,11 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     // The Photo and Grade tabs show one of these each (`App::init` swaps them).
     let photo = vbox(12);
     photo.append(&section(&gettext("Input profile"), &profile_box));
+    photo.append(&section(&gettext("HDR"), &build_hdr(sender)));
     photo.append(&group_heading(&gettext("Not in the exported LUT")));
     let develop = build_develop(sender);
-    // Most used first: light and colour, then geometry, detail judged at 100%, the vignette effect,
-    // and HDR, a display and export setting. The pipeline's order is its own.
+    // Most used first: light and colour, then geometry, detail judged at 100%, the vignette effect.
+    // The pipeline's order is its own.
     photo.append(&develop.root);
     photo.append(&phase_label(&gettext("Geometry")));
     photo.append(&develop.lens);
@@ -3299,7 +3300,6 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     add(&vig, &gettext("Feather"), -100.0, 100.0, 0, None, |p| &mut p.vignette_feather);
     photo.append(&phase_label(&gettext("Effects")));
     photo.append(&eye_section(&gettext("Vignette"), &vig, false, &[], sender, Off::Grade(Stage::Vignette)));
-    photo.append(&section(&gettext("HDR"), &build_hdr(sender)));
     panel.append(&photo);
     panel.append(&grade);
     let meta = MetaUi::new(sender);

@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: RawVibes\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-25 18:43+0100\n"
+"POT-Creation-Date: 2026-11-25 18:52+0100\n"
 "PO-Revision-Date: 2026-10-21 19:30+0200\n"
 "Last-Translator: Nicolò Santamaria\n"
 "Language-Team: Italian\n"
@@ -155,7 +155,7 @@ msgstr "Salvataggio…"
 msgid "No label"
 msgstr "Nessuna etichetta"
 
-#: gtk/src/filmstrip.rs:67 gtk/src/main.rs:2783 gtk/src/main.rs:3205
+#: gtk/src/filmstrip.rs:67 gtk/src/main.rs:2783 gtk/src/main.rs:3206
 msgid "Red"
 msgstr "Rosso"
 
@@ -163,11 +163,11 @@ msgstr "Rosso"
 msgid "Yellow"
 msgstr "Giallo"
 
-#: gtk/src/filmstrip.rs:69 gtk/src/main.rs:2783 gtk/src/main.rs:3206
+#: gtk/src/filmstrip.rs:69 gtk/src/main.rs:2783 gtk/src/main.rs:3207
 msgid "Green"
 msgstr "Verde"
 
-#: gtk/src/filmstrip.rs:70 gtk/src/main.rs:2783 gtk/src/main.rs:3207
+#: gtk/src/filmstrip.rs:70 gtk/src/main.rs:2783 gtk/src/main.rs:3208
 msgid "Blue"
 msgstr "Blu"
 
@@ -737,11 +737,11 @@ msgstr "Scegli un grigio neutro sulla foto (Esc annulla)"
 msgid "White balance picker"
 msgstr "Contagocce del bilanciamento del bianco"
 
-#: gtk/src/main.rs:2588 gtk/src/main.rs:3074
+#: gtk/src/main.rs:2588 gtk/src/main.rs:3075
 msgid "Temperature"
 msgstr "Temperatura"
 
-#: gtk/src/main.rs:2590 gtk/src/main.rs:3075
+#: gtk/src/main.rs:2590 gtk/src/main.rs:3076
 msgid "Tint"
 msgstr "Tinta"
 
@@ -757,7 +757,7 @@ msgstr "Luce e colore"
 msgid "White balance"
 msgstr "Bilanciamento del bianco"
 
-#: gtk/src/main.rs:2603 gtk/src/main.rs:2611 gtk/src/main.rs:3079
+#: gtk/src/main.rs:2603 gtk/src/main.rs:2611 gtk/src/main.rs:3080
 #: gtk/src/meta_ui.rs:67
 msgid "Exposure"
 msgstr "Esposizione"
@@ -794,7 +794,7 @@ msgstr "Riduzione rumore…"
 msgid "Strength"
 msgstr "Intensità"
 
-#: gtk/src/main.rs:2658 gtk/src/main.rs:3140
+#: gtk/src/main.rs:2658 gtk/src/main.rs:3141
 msgid "Luminance"
 msgstr "Luminanza"
 
@@ -810,11 +810,11 @@ msgstr "Crominanza"
 msgid "Noise reduction"
 msgstr "Riduzione del rumore"
 
-#: gtk/src/main.rs:2665 gtk/src/main.rs:3081
+#: gtk/src/main.rs:2665 gtk/src/main.rs:3082
 msgid "Highlights"
 msgstr "Alte luci"
 
-#: gtk/src/main.rs:2666 gtk/src/main.rs:3082
+#: gtk/src/main.rs:2666 gtk/src/main.rs:3083
 msgid "Shadows"
 msgstr "Ombre"
 
@@ -882,7 +882,7 @@ msgstr "La correzione della CA laterale del profilo"
 msgid "Manual corrections"
 msgstr "Correzioni manuali"
 
-#: gtk/src/main.rs:2716 gtk/src/main.rs:3297
+#: gtk/src/main.rs:2716 gtk/src/main.rs:3298
 msgid "Midpoint"
 msgstr "Punto medio"
 
@@ -1038,74 +1038,78 @@ msgid "Input profile"
 msgstr "Profilo di ingresso"
 
 #: gtk/src/main.rs:3045
+msgid "HDR"
+msgstr "HDR"
+
+#: gtk/src/main.rs:3046
 msgid "Not in the exported LUT"
 msgstr "Non nel LUT esportato"
 
-#: gtk/src/main.rs:3050
+#: gtk/src/main.rs:3051
 msgid "Geometry"
 msgstr "Geometria"
 
-#: gtk/src/main.rs:3056
+#: gtk/src/main.rs:3057
 msgid "In the exported LUT"
 msgstr "Nel LUT esportato"
 
-#: gtk/src/main.rs:3062
+#: gtk/src/main.rs:3063
 msgid "Reference match"
 msgstr "Abbinamento a un riferimento"
 
-#: gtk/src/main.rs:3076
+#: gtk/src/main.rs:3077
 msgid "Warmth"
 msgstr "Calore"
 
-#: gtk/src/main.rs:3080
+#: gtk/src/main.rs:3081
 msgid "Contrast"
 msgstr "Contrasto"
 
-#: gtk/src/main.rs:3083
+#: gtk/src/main.rs:3084
 msgid "Whites"
 msgstr "Bianchi"
 
-#: gtk/src/main.rs:3084
+#: gtk/src/main.rs:3085
 msgid "Blacks"
 msgstr "Neri"
 
-#: gtk/src/main.rs:3085
+#: gtk/src/main.rs:3086
 msgid "Tone"
 msgstr "Tono"
 
-#: gtk/src/main.rs:3088
+#: gtk/src/main.rs:3089
 msgid "Channel mixer"
 msgstr "Miscelatore canali"
 
-#: gtk/src/main.rs:3091 gtk/src/main.rs:3140
+#: gtk/src/main.rs:3092 gtk/src/main.rs:3141
 msgid "Saturation"
 msgstr "Saturazione"
 
-#: gtk/src/main.rs:3092
+#: gtk/src/main.rs:3093
 msgid "Vibrance"
 msgstr "Vividezza"
 
-#: gtk/src/main.rs:3093
+#: gtk/src/main.rs:3094
 msgid "Shadow saturation"
 msgstr "Saturazione ombre"
 
-#: gtk/src/main.rs:3094
+#: gtk/src/main.rs:3095
 msgid "Highlight saturation"
 msgstr "Saturazione alte luci"
 
-#: gtk/src/main.rs:3095
+#: gtk/src/main.rs:3096
 msgid "Colour"
 msgstr "Colore"
 
-#: gtk/src/main.rs:3098
+#: gtk/src/main.rs:3099
 msgid "Subtractive saturation"
 msgstr "Saturazione sottrattiva"
 
-#: gtk/src/main.rs:3099
+#: gtk/src/main.rs:3100
 msgid "Colour density"
 msgstr "Densità del colore"
 
-#: gtk/src/main.rs:3101
+#: gtk/src/main.rs:3102
 msgid ""
 "Film makes colour by adding dye, so richer colours are also deeper. "
 "Subtractive saturation saturates the way dye does; density deepens saturated "
@@ -1116,11 +1120,11 @@ msgstr ""
 "pigmento; la densità rende più profondi i colori saturi. I grigi non "
 "cambiano."
 
-#: gtk/src/main.rs:3103
+#: gtk/src/main.rs:3104
 msgid "Soft light"
 msgstr "Luce soffusa"
 
-#: gtk/src/main.rs:3105
+#: gtk/src/main.rs:3106
 msgid ""
 "Soft light deepens shadows and lifts highlights, as RawTherapee's; 30 is its "
 "default."
@@ -1128,31 +1132,31 @@ msgstr ""
 "La luce soffusa scurisce le ombre e schiarisce le luci, come in RawTherapee; "
 "il suo valore predefinito è 30."
 
-#: gtk/src/main.rs:3107
+#: gtk/src/main.rs:3108
 msgid "Film colour"
 msgstr "Colore pellicola"
 
-#: gtk/src/main.rs:3140
+#: gtk/src/main.rs:3141
 msgid "Hue"
 msgstr "Tonalità"
 
-#: gtk/src/main.rs:3148
+#: gtk/src/main.rs:3149
 msgid "Selective colour"
 msgstr "Colori selettivi"
 
-#: gtk/src/main.rs:3155
+#: gtk/src/main.rs:3156
 msgid "Hue vs Hue"
 msgstr "Tonalità/Tonalità"
 
-#: gtk/src/main.rs:3156
+#: gtk/src/main.rs:3157
 msgid "Hue vs Sat"
 msgstr "Tonalità/Sat."
 
-#: gtk/src/main.rs:3157
+#: gtk/src/main.rs:3158
 msgid "Lum vs Sat"
 msgstr "Lum./Sat."
 
-#: gtk/src/main.rs:3160
+#: gtk/src/main.rs:3161
 msgid ""
 "The middle line is no change. Pull a hue up or down to shift it, saturate or "
 "desaturate it; Lum vs Sat works by brightness."
@@ -1160,27 +1164,27 @@ msgstr ""
 "La linea centrale non cambia nulla. Alza o abbassa una tonalità per "
 "spostarla, saturarla o desaturarla; Lum./Sat. agisce in base alla luminosità."
 
-#: gtk/src/main.rs:3164
+#: gtk/src/main.rs:3165
 msgid "Hue curves"
 msgstr "Curve di tonalità"
 
-#: gtk/src/main.rs:3171
+#: gtk/src/main.rs:3172
 msgid "Lift: the shadows. Highlights barely move."
 msgstr "Lift: le ombre. Le luci quasi non si muovono."
 
-#: gtk/src/main.rs:3172
+#: gtk/src/main.rs:3173
 msgid "Gamma: the midtones. Black and white stay put."
 msgstr "Gamma: i mezzitoni. Nero e bianco restano fermi."
 
-#: gtk/src/main.rs:3173
+#: gtk/src/main.rs:3174
 msgid "Gain: the highlights. Black stays put."
 msgstr "Gain: le luci. Il nero resta fermo."
 
-#: gtk/src/main.rs:3174
+#: gtk/src/main.rs:3175
 msgid "Offset: the whole image by the same amount."
 msgstr "Offset: tutta l'immagine della stessa quantità."
 
-#: gtk/src/main.rs:3193
+#: gtk/src/main.rs:3194
 msgid ""
 "Drag a wheel's centre towards a colour to tint that range, away from it to "
 "remove it; Luma brightens or darkens it. Lift is the shadows, Gamma the "
@@ -1192,95 +1196,91 @@ msgstr ""
 "Gamma i mezzitoni, Gain le luci, Offset tutto. Doppio clic su una ruota per "
 "azzerarla."
 
-#: gtk/src/main.rs:3196
+#: gtk/src/main.rs:3197
 msgid "Primary colour wheels"
 msgstr "Ruote colore primarie"
 
-#: gtk/src/main.rs:3209
+#: gtk/src/main.rs:3210
 msgid "Click to add a point, double-click or right-click to remove it"
 msgstr "Clic per aggiungere un punto, doppio clic o clic destro per rimuoverlo"
 
-#: gtk/src/main.rs:3212
+#: gtk/src/main.rs:3213
 msgid "Curves"
 msgstr "Curve"
 
-#: gtk/src/main.rs:3217
+#: gtk/src/main.rs:3218
 msgid "No LUTs: the grade is exported as is."
 msgstr "Nessun LUT: il grade viene esportato così com'è."
 
-#: gtk/src/main.rs:3236 gtk/src/main.rs:6023
+#: gtk/src/main.rs:3237 gtk/src/main.rs:6023
 msgid "Browse LUTs"
 msgstr "Sfoglia LUT"
 
-#: gtk/src/main.rs:3237
+#: gtk/src/main.rs:3238
 msgid "Browse the LUT library on this photo (B)"
 msgstr "Sfoglia la libreria di LUT su questa foto (B)"
 
-#: gtk/src/main.rs:3244 gtk/src/main.rs:3249
+#: gtk/src/main.rs:3245 gtk/src/main.rs:3250
 msgid "Add a LUT from a file"
 msgstr "Aggiungi un LUT da file"
 
-#: gtk/src/main.rs:3258
+#: gtk/src/main.rs:3259
 msgid "Back to the grade (B)"
 msgstr "Torna al grade (B)"
 
-#: gtk/src/main.rs:3261
+#: gtk/src/main.rs:3262
 msgid "Back to the grade"
 msgstr "Torna al grade"
 
-#: gtk/src/main.rs:3266 gtk/src/main.rs:3280 gtk/src/main.rs:4537
+#: gtk/src/main.rs:3267 gtk/src/main.rs:3281 gtk/src/main.rs:4537
 msgid "LUTs"
 msgstr "LUT"
 
-#: gtk/src/main.rs:3279
+#: gtk/src/main.rs:3280
 msgid ""
 "Applied after the grade, top to bottom, and included in the exported LUT."
 msgstr ""
 "Applicati dopo il grade, dall'alto in basso, e inclusi nel LUT esportato."
 
-#: gtk/src/main.rs:3284
+#: gtk/src/main.rs:3285
 msgid "Look"
 msgstr "Look"
 
-#: gtk/src/main.rs:3285
+#: gtk/src/main.rs:3286
 msgid "Balance"
 msgstr "Bilanciamento"
 
-#: gtk/src/main.rs:3286
+#: gtk/src/main.rs:3287
 msgid "Primaries"
 msgstr "Primarie"
 
-#: gtk/src/main.rs:3287
+#: gtk/src/main.rs:3288
 msgid "Secondaries"
 msgstr "Secondarie"
 
-#: gtk/src/main.rs:3288
+#: gtk/src/main.rs:3289
 msgid "Finishing"
 msgstr "Rifinitura"
 
-#: gtk/src/main.rs:3296
+#: gtk/src/main.rs:3297
 msgid "Amount"
 msgstr "Quantità"
 
-#: gtk/src/main.rs:3298
+#: gtk/src/main.rs:3299
 msgid "Roundness"
 msgstr "Rotondità"
 
-#: gtk/src/main.rs:3299
+#: gtk/src/main.rs:3300
 msgid "Feather"
 msgstr "Sfumatura"
 
-#: gtk/src/main.rs:3300
+#: gtk/src/main.rs:3301
 msgid "Effects"
 msgstr "Effetti"
 
-#: gtk/src/main.rs:3301
+#: gtk/src/main.rs:3302
 msgid "Vignette"
 msgstr "Vignettatura"
-
-#: gtk/src/main.rs:3302
-msgid "HDR"
-msgstr "HDR"
 
 #: gtk/src/main.rs:3312
 msgid "Reset all"

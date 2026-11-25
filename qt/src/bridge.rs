@@ -67,18 +67,29 @@ impl Tx {
 }
 
 impl cxx_qt::Initialize for qobject::Backend {
-    fn initialize(self: Pin<&mut Self>) {
+    fn initialize(mut self: Pin<&mut Self>) {
         let tx = Tx(self.qt_thread());
-        let app = App::new(tx);
-        self.rust_mut().app = Some(Box::new(app));
+        let mut app = App::new(tx);
+        // QML's first bindings read a whole state, not an empty one.
+        let (state, ..) = app.publish();
+        self.as_mut().rust_mut().app = Some(Box::new(app));
+        if let Some(state) = state {
+            self.set_state(QString::from(&state));
+        }
     }
 }
 
 impl qobject::Backend {
     fn cmd(self: Pin<&mut Self>, name: &QString, args: &QString) {
         let args: serde_json::Value = serde_json::from_str(&args.to_string()).unwrap_or(serde_json::Value::Null);
-        match crate::app::command(&name.to_string(), &args) {
-            Some(msg) => self.handle(msg),
+        let name = name.to_string();
+        match crate::app::command(&name, &args) {
+            // Closing joins the GPU thread now: the event loop may not run again.
+            Some(msg) if name == "close" => self.handle(msg),
+            // Queued, not run now: QML may be evaluating a binding that reads the state this changes.
+            Some(msg) => {
+                let _ = self.qt_thread().queue(move |b| b.handle(msg));
+            }
             None => eprintln!("rawvibes-qt: unknown command {name} {args}"),
         }
     }

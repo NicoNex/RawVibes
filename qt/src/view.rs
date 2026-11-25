@@ -27,6 +27,11 @@ pub fn state(app: &App) -> Value {
     for (k, f) in DETAILS {
         detail.insert((*k).into(), json!(*f(&mut d)));
     }
+    let mut defaults = serde_json::Map::new();
+    let mut nd = rawvibes_core::develop::Detail::default();
+    for (k, f) in DETAILS {
+        defaults.insert((*k).into(), json!(*f(&mut nd)));
+    }
     let wheels: Vec<Value> = (0..4)
         .map(|i| {
             let w = *wheel_mut(&mut p.clone(), i);
@@ -126,10 +131,12 @@ pub fn state(app: &App) -> Value {
         "band": b,
         "bandNames": band_names(),
         "bands": band_colours(),
+        "hueStrip": hue_strip(),
         "hue": [p.hue_shift[b], p.hue_sat[b], p.hue_lum[b]],
         "curves": curves,
         "samples": samples,
         "mixer": mixer,
+        "luma": rawvibes_core::grade::LUMA,
         "mixerMono": p.mixer_mono > 0.5,
         "mixerFree": p.mixer_free > 0.5,
         "matching": app.ui.matching,
@@ -142,6 +149,7 @@ pub fn state(app: &App) -> Value {
         "profiles": Profile::ALL.iter().map(|p| json!({ "key": p, "name": p.name() })).collect::<Vec<_>>(),
         "profileIndex": Profile::ALL.iter().position(|&q| q == app.profile).unwrap_or(0),
         "profileName": app.profile.name(),
+        "sourceProfileName": app.source_profile().name(),
         "profileHint": profile_hint(app.profile),
         "hdrPreview": app.hdr_preview,
         "headroom": app.headroom,
@@ -154,6 +162,7 @@ pub fn state(app: &App) -> Value {
             "wbRow": app.wb_row(),
             "wbPresets": wb_presets(),
             "detail": detail,
+            "defaults": defaults,
             "nrAi": app.develop.detail.nr_ai,
             "caCorrect": app.develop.detail.ca_correct,
             "lensTca": app.develop.detail.lens_tca,
@@ -202,11 +211,13 @@ pub fn state(app: &App) -> Value {
         "export": {
             "open": e.open,
             "format": e.format.unwrap_or(PhotoFormat::Jpeg).tag(),
-            "formats": PhotoFormat::ALL.iter().map(|&f| json!({ "tag": f.tag(), "name": format_label(f), "hdr": f.hdr() })).collect::<Vec<_>>(),
+            "formats": PhotoFormat::ALL.iter().map(|&f| json!({ "tag": f.tag(), "name": format_label(f), "hdr": f.hdr(), "lossy": f.lossy() })).collect::<Vec<_>>(),
             "quality": e.quality,
             "all": e.all,
             "roll": e.roll,
-            "size": format!("{} × {}", e.size.0, e.size.1),
+            "size": gettext!("{} × {} px", e.size.0, e.size.1),
+            "headroom": gettext!("{} stops above SDR white · set in the Photo tab", format!("{:.1}", app.headroom)),
+            "allSubtitle": gettext!("{} photos, each with its own edits, into a folder", e.roll),
             "estimate": e.estimate,
             "busy": e.busy,
             "progress": e.progress,
@@ -242,10 +253,10 @@ fn layers(list: &[LabLayer]) -> Value {
     Value::Array(
         list.iter()
             .map(|l| {
-                let (kind, title) = match &l.kind {
-                    LabKind::Lut(lut) => ("lut", lut.title.clone()),
-                    LabKind::Grade => ("grade", gettext("Current grade")),
-                    LabKind::Convert(p) => ("convert", gettext!("Conversion to {}", p.name())),
+                let (kind, badge, title) = match &l.kind {
+                    LabKind::Lut(lut) => ("lut", lut.format.badge(), lut.title.clone()),
+                    LabKind::Grade => ("grade", "GRADE", gettext("Current grade")),
+                    LabKind::Convert(_) => ("convert", "CONV", gettext("Conversion")),
                 };
                 let to = match &l.kind {
                     LabKind::Convert(p) => *p,
@@ -253,6 +264,7 @@ fn layers(list: &[LabLayer]) -> Value {
                 };
                 json!({
                     "kind": kind,
+                    "badge": badge,
                     "title": title,
                     "intensity": (l.intensity * 100.0).round(),
                     "input": to,
@@ -356,6 +368,17 @@ fn band_colours() -> Value {
     )
 }
 
+/// The hue curves' x axis: 72 steps around the OKLCh hue circle, as the shader sees it.
+fn hue_strip() -> Vec<String> {
+    (0..72)
+        .map(|i| {
+            let t = (i as f32 + 0.5) / 72.0;
+            let [r, g, b] = oklch_to_srgb(0.72, 0.13, t * std::f32::consts::TAU).map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+            format!("#{r:02x}{g:02x}{b:02x}")
+        })
+        .collect()
+}
+
 fn wb_presets() -> Vec<String> {
     std::iter::once(gettext("As shot"))
         // Same order as WB_PRESETS (literal calls, so xgettext finds them).
@@ -397,7 +420,7 @@ fn label_name(l: Label) -> String {
 /// The filmstrip filter's rows: all, at least n stars, then each colour label.
 fn roll_filters() -> Vec<String> {
     let mut rows = vec![gettext("All photos")];
-    rows.extend((1..=5).map(|n| "★".repeat(n) + &gettext(" and up")));
+    rows.extend((1..=5).map(|n| if n == 5 { "★".repeat(5) } else { format!("{} +", "★".repeat(n)) }));
     rows.extend(Label::ALL.iter().skip(1).map(|&l| label_name(l)));
     rows
 }

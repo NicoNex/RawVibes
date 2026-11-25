@@ -294,6 +294,8 @@ pub enum Msg {
     PresetSave,
     PresetSaveAs(String),
     PresetWrite(Box<Preset>, bool, bool),
+    /// The user confirmed replacing the preset of the same name.
+    PresetReplace,
     PresetApply(PathBuf),
     PresetDelete(PathBuf),
     PresetRestore(PathBuf, String),
@@ -341,6 +343,11 @@ pub enum Msg {
     CropSwap,
     CropAngle(f32),
     CropRect([f32; 4]),
+    /// Crop overlay: a press at a point of the frame (0–1) with a grab tolerance, a drag
+    /// from it, and a level line drawn on the frame (its screen delta).
+    CropPress([f32; 2], [f32; 2]),
+    CropDrag([f32; 2]),
+    CropLevel(f32, f32),
     CropReset,
     Undo,
     Redo,
@@ -506,6 +513,8 @@ pub struct App {
     /// While editing the crop: the crop, ratio and ratio row before editing (Escape restores them).
     pub editing: Option<(Crop, Ratio, u32)>,
     pub ratio_row: u32,
+    /// A crop drag: the handle (`None`: drawing a new crop), the crop at its start, the press point.
+    crop_grab: Option<(Option<crop::Handle>, Crop, [f32; 2])>,
     pub zoom: Option<Zoom>,
     canvas: [f32; 2],
     view_gen: u64,
@@ -534,6 +543,8 @@ pub struct App {
     undo_at: usize,
     pub clipboard: Option<Edits>,
     batch: Option<Batch>,
+    /// A preset waiting for "Replace Preset?", and whether to apply it once written.
+    pending_preset: Option<(Box<Preset>, bool)>,
     pub ui: UiState,
     tx: Tx,
     timers: Timers,
@@ -632,6 +643,7 @@ impl App {
             ratio: Ratio::Free,
             editing: None,
             ratio_row: 0,
+            crop_grab: None,
             zoom: None,
             canvas: [1.0, 1.0],
             view_gen: 0,
@@ -660,6 +672,7 @@ impl App {
             undo_at: 0,
             clipboard: None,
             batch: None,
+            pending_preset: None,
             ui: UiState {
                 tab: "grade".into(),
                 canvas: "empty",
@@ -1244,10 +1257,20 @@ impl App {
                 let path = settings::presets_dir().join(preset::file_name(&preset.name));
                 let existing = self.presets();
                 if !force && existing.iter().any(|(p, at)| *at == path || p.name == preset.name) {
-                    let name = preset.name.clone();
-                    let replace = move || Msg::PresetWrite(preset.clone(), true, apply);
-                    let title = gettext!("A preset named “{}” exists", name);
-                    return self.action_toast(&title, &gettext("Replace"), replace);
+                    let body = gettext!(
+                        "A preset named “{}” already exists. Replacing it overwrites its settings.",
+                        preset.name
+                    );
+                    self.pending_preset = Some((preset, apply));
+                    return self.dialog(
+                        "confirm",
+                        serde_json::json!({
+                            "title": gettext("Replace Preset?"),
+                            "body": body,
+                            "action": gettext("Replace"),
+                            "reply": "presetReplace",
+                        }),
+                    );
                 }
                 for (p, at) in existing {
                     if p.name == preset.name && at != path {
@@ -1260,6 +1283,11 @@ impl App {
                     Err(e) => self.toast(&gettext!("Cannot save the preset: {}", e)),
                 }
                 self.input(Msg::PresetsRefresh);
+            }
+            Msg::PresetReplace => {
+                if let Some((preset, apply)) = self.pending_preset.take() {
+                    self.input(Msg::PresetWrite(preset, true, apply));
+                }
             }
             Msg::PresetApply(path) => match Preset::load(&path) {
                 Ok(p) => {
@@ -1761,6 +1789,32 @@ impl App {
                 }
                 self.crop_changed();
             }
+            Msg::CropPress(p, tol) => {
+                let Some((w, h)) = self.size() else { return };
+                // On the crop: a handle or a move. Elsewhere: a new crop drawn from here.
+                // A crop filling the photo cannot move: a drag on it draws one too.
+                let handle = crop::hit(&self.crop, p, tol)
+                    .filter(|&k| k != crop::Handle::Move || crop::movable(&self.crop, w, h));
+                self.crop_grab = Some((handle, self.crop, p));
+            }
+            Msg::CropDrag(d) => {
+                let (Some((handle, start, p)), Some((w, h))) = (self.crop_grab, self.size()) else { return };
+                let aspect = self.ratio.aspect(w, h);
+                let c = match handle {
+                    Some(handle) => Some(crop::drag(start, handle, d, aspect, w, h)),
+                    None => crop::draw(start, p, [p[0] + d[0], p[1] + d[1]], aspect, w, h),
+                };
+                if let Some(c) = c {
+                    self.crop.rect = c.rect;
+                    self.crop_changed();
+                }
+            }
+            Msg::CropLevel(dx, dy) => {
+                if dx.hypot(dy) >= 10.0 {
+                    let a = self.crop.angle + level_turn(dx, dy);
+                    self.input(Msg::CropAngle(a));
+                }
+            }
             Msg::CropReset => {
                 self.restore_crop(Crop::default(), Ratio::Free, 0);
                 self.crop_changed();
@@ -1794,6 +1848,13 @@ impl App {
             }
         }
     }
+}
+
+/// Degrees to add to the straighten angle so a line drawn on the shown frame
+/// (screen y down) becomes level, or plumb when it is nearer vertical.
+fn level_turn(dx: f32, dy: f32) -> f32 {
+    let t = dy.atan2(dx).to_degrees();
+    t - (t / 90.0).round() * 90.0
 }
 
 /// The filmstrip copy of a decoded photo: small, and encoded for `profile`.
@@ -2006,3 +2067,18 @@ fn lens_db_path() -> PathBuf {
 
 #[allow(unused_imports)]
 use {lut as _, Source as _, Layer as _, MAX_LIBRARY as _};
+
+#[cfg(test)]
+mod tests {
+    use super::level_turn;
+
+    #[test]
+    fn level_turn_picks_the_nearest_axis() {
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        assert!(near(level_turn(100.0, 0.0), 0.0));
+        assert!(near(level_turn(-100.0, 0.0), 0.0));
+        assert!(near(level_turn(100.0, 100.0 * 5f32.to_radians().tan()), 5.0));
+        assert!(near(level_turn(-100.0, -100.0 * 5f32.to_radians().tan()), 5.0));
+        assert!(near(level_turn(100.0 * 5f32.to_radians().tan(), 100.0), -5.0));
+    }
+}

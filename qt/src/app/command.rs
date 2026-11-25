@@ -220,6 +220,9 @@ pub fn command(name: &str, a: &Value) -> Option<Msg> {
             Msg::CropRect(v.try_into().ok()?)
         }
         "cropReset" => Msg::CropReset,
+        "cropPress" => Msg::CropPress([f(a, "x") as f32, f(a, "y") as f32], [f(a, "tx") as f32, f(a, "ty") as f32]),
+        "cropDrag" => Msg::CropDrag([f(a, "dx") as f32, f(a, "dy") as f32]),
+        "cropLevel" => Msg::CropLevel(f(a, "dx") as f32, f(a, "dy") as f32),
         "canvasSize" => Msg::CanvasSize([f(a, "w") as f32, f(a, "h") as f32]),
         "zoom" => Msg::Zoom(match s(a, "cmd").as_str() {
             "fit" => ZoomCmd::Fit,
@@ -284,6 +287,7 @@ pub fn command(name: &str, a: &Value) -> Option<Msg> {
         // Presets
         "presetSave" => Msg::PresetSave,
         "presetSaveAs" => Msg::PresetSaveAs(s(a, "name")),
+        "presetReplace" => Msg::PresetReplace,
         "presetApply" => Msg::PresetApply(path(a)?),
         "presetDelete" => Msg::PresetDelete(path(a)?),
         "presetImport" => Msg::PresetImport,

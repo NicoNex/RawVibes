@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Controls.impl
 import QtQuick.Layouts
 import RawVibes
 
@@ -26,10 +27,10 @@ ColumnLayout {
         RowLayout {
             anchors { fill: parent; leftMargin: 8; rightMargin: 4 }
             spacing: 2
-            Image {
+            IconImage {
                 source: "qrc:/icons/pan-" + (sec.open ? "down" : "end") + "-symbolic.svg"
                 sourceSize: Qt.size(12, 12)
-                opacity: 0.6
+                color: Theme.dim
             }
             Label {
                 text: sec.title

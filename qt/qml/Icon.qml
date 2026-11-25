@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Controls.impl
 import RawVibes
 
 // A flat icon button; `name` is a bundled symbolic icon, `checkable` makes it a toggle lit in the accent.

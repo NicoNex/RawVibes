@@ -14,6 +14,12 @@ use cxx_qt_lib::QQuickStyle;
 fn main() {
     i18n::bind(&i18n::locale_dir());
     let mut app = QGuiApplication::new();
+    if let Some(mut app) = app.as_mut() {
+        // Where QML's own settings (panel sizes) live: ~/.config/rawvibes/rawvibes-qt.conf and the platform equivalents.
+        app.as_mut().set_organization_name(&QString::from("rawvibes"));
+        app.as_mut().set_organization_domain(&QString::from("io.github.rawvibes"));
+        app.as_mut().set_application_name(&QString::from("rawvibes-qt"));
+    }
     QQuickStyle::set_style(&QString::from("Basic"));
     let mut engine = QQmlApplicationEngine::new();
     if let Some(engine) = engine.as_mut() {

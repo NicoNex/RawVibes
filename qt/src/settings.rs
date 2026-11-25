@@ -32,11 +32,7 @@ pub const REFINE_IDLE: &str = "refine-idle";
 /// The canvas background: "default", "black" or "white".
 pub const BACKGROUND: &str = "background";
 
-/// "0": the scopes scroll with the sidebar instead of staying pinned on top.
-pub const SCOPES_PINNED: &str = "scopes-pinned";
 
-/// Height of the scopes in logical pixels.
-pub const SCOPES_HEIGHT: &str = "scopes-height";
 
 /// The stored value; until RawVibes stores its own, VibingLUT's (same keys).
 pub fn value(key: &str) -> Option<String> {
@@ -88,8 +84,4 @@ pub const COPYRIGHT: &str = "copyright";
 pub const AUTHOR_EMAIL: &str = "author-email";
 pub const AUTHOR_WEBSITE: &str = "author-website";
 
-/// Width of the editor's sidebar, in pixels, as last dragged.
-pub const SIDEBAR_WIDTH: &str = "sidebar-width";
 
-/// The filmstrip under the photo is collapsed ("1").
-pub const FILMSTRIP_HIDDEN: &str = "filmstrip-hidden";

@@ -94,7 +94,7 @@ Rectangle {
     HdrWindow {
         id: hdr
         color: "black"
-        onHdrChanged: Store.cmd("hdrWhite", { v: white })
+        onHdrChanged: Store.cmd("hdrWhite", { hdr: hdr, v: white })
         Image {
             anchors.fill: parent
             // The SDR frame until the swapchain turns out HDR: an SDR screen gets an SDR one.
@@ -105,13 +105,14 @@ Rectangle {
             retainWhileLoading: true
         }
         CanvasPointer { anchors.fill: parent; canvas: canvas; ox: canvas.shown.x; oy: canvas.shown.y }
+        DropArea { anchors.fill: parent; onDropped: (drop) => Store.cmd("rollAdd", { paths: drop.urls.map(Store.localPath) }) }
     }
     WindowContainer {
         window: hdr
         x: canvas.shown.x; y: canvas.shown.y
         width: canvas.shown.width; height: canvas.shown.height
         visible: s.hdrPreview === true && (s.hdrGen || 0) > 0 && s.canvas === "image"
-                 && !(s.crop && s.crop.editing) && !s.compare
+                 && !(s.crop && s.crop.editing) && !s.compare && !Store.covered
     }
 
     // The crop over the whole straightened frame, while editing it.

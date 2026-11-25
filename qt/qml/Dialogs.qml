@@ -9,13 +9,18 @@ Item {
     id: dl
     property var req: ({})
     function answer(args) {
+        if (req.id === undefined) return
         args.id = req.id
+        req = ({})
         Store.cmd("dialogAnswer", args)
     }
+    function cancel() { answer({ cancelled: true }) }
     function folderUrl(p) { return p ? "file://" + (p.startsWith("/") ? "" : "/") + p : "" }
     Connections {
         target: Backend
         function onDialog(kind, options) {
+            // One at a time: a new request closes the pending one, which answers as cancelled.
+            if (dl.req.id !== undefined) dl.answer({ cancelled: true })
             dl.req = JSON.parse(options)
             const r = dl.req
             if (kind === "folder") {
@@ -48,10 +53,12 @@ Item {
             Btn { id: confirmGo; highlighted: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
         }
         onAccepted: dl.answer({})
+        onRejected: dl.cancel()
         Label { id: confirmText; width: 340; wrapMode: Text.Wrap; color: Theme.text }
     }
     FileDialog {
         id: file
+        onRejected: dl.cancel()
         onAccepted: {
             if (fileMode === FileDialog.OpenFiles) dl.answer({ paths: selectedFiles.map(Store.localPath) })
             else dl.answer({ path: Store.localPath(selectedFile) })
@@ -59,13 +66,15 @@ Item {
     }
     FolderDialog {
         id: folder
+        onRejected: dl.cancel()
         onAccepted: dl.answer({ path: Store.localPath(selectedFolder) })
     }
     DialogShell {
         id: ask
         title: Store.tr("Save Preset")
         standardButtons: Dialog.Save | Dialog.Cancel
-        onAccepted: if (name.text.trim() !== "") dl.answer({ name: name.text })
+        onAccepted: name.text.trim() !== "" ? dl.answer({ name: name.text }) : dl.cancel()
+        onRejected: dl.cancel()
         Column {
             spacing: 10
             Label { width: 320; wrapMode: Text.Wrap; color: Theme.dim; text: Store.tr("The grade is saved with all its settings and can be applied to any photo.") }

@@ -7,6 +7,7 @@ import RawVibes
 ColumnLayout {
     id: toasts
     spacing: 8
+    readonly property int count: queue.count
     ListModel { id: queue }
     function show(text, action, id) {
         queue.append({ text: text, action: action, cmdId: id, at: Date.now() })

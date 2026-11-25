@@ -247,7 +247,12 @@ pub fn command(name: &str, a: &Value) -> Option<Msg> {
         "pasteEditsAll" => Msg::PasteEditsAll,
         // Dropped files, as Open would add them.
         "rollAdd" => Msg::RollAddPaths(paths(a), None),
-        "dialogAnswer" => Msg::DialogAnswer(u(a, "id") as i32, DialogAnswer { paths: paths(a), name: s(a, "name") }),
+        "dialogAnswer" => {
+            let mut chosen = paths(a);
+            chosen.extend(path(a));
+            let answer = DialogAnswer { paths: chosen, name: s(a, "name"), cancelled: b(a, "cancelled") };
+            Msg::DialogAnswer(u(a, "id") as i32, answer)
+        }
         "toastAction" => Msg::ToastAction(u(a, "id") as i32),
         // LUTs
         "chooseFolder" => Msg::ChooseFolder,
@@ -294,7 +299,7 @@ pub fn command(name: &str, a: &Value) -> Option<Msg> {
         ),
         "exportGo" => Msg::ExportGo,
         "exportClosed" => Msg::ExportClosed,
-        "hdrWhite" => Msg::HdrWhite(f(a, "v") as f32),
+        "hdrWhite" => Msg::HdrWhite(b(a, "hdr"), f(a, "v") as f32),
         "hdrPreview" => Msg::HdrPreview(b(a, "on")),
         "headroom" => Msg::Headroom(f(a, "v") as f32),
         // Metadata and preferences
@@ -335,5 +340,16 @@ mod tests {
         assert!(command("set", &serde_json::json!({ "key": "nope" })).is_none());
         assert!(matches!(command("mark", &serde_json::json!({ "label": "Red" })), Some(Msg::Mark(Label::Red))));
         assert!(command("nonsense", &Value::Null).is_none());
+    }
+
+    /// Single-file and folder dialogs answer with `path`, multi-file ones with `paths`.
+    #[test]
+    fn dialog_answers_carry_one_path_or_many() {
+        let one = command("dialogAnswer", &serde_json::json!({ "id": 3, "path": "/a.cube" }));
+        assert!(matches!(one, Some(Msg::DialogAnswer(3, a)) if a.paths == [PathBuf::from("/a.cube")]));
+        let many = command("dialogAnswer", &serde_json::json!({ "id": 4, "paths": ["/a", "/b"] }));
+        assert!(matches!(many, Some(Msg::DialogAnswer(4, a)) if a.paths.len() == 2));
+        let cancel = command("dialogAnswer", &serde_json::json!({ "id": 5, "cancelled": true }));
+        assert!(matches!(cancel, Some(Msg::DialogAnswer(5, a)) if a.cancelled));
     }
 }

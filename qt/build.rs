@@ -13,7 +13,15 @@ fn qmake(var: &str) -> String {
 
 fn main() {
     // The RHI (rhi/qrhi.h, for the HDR swapchain's info) is semi-public: in QtGui's versioned folder.
-    let rhi = format!("{}/QtGui/{}/QtGui", qmake("QT_INSTALL_HEADERS"), qmake("QT_VERSION"));
+    let version = qmake("QT_VERSION");
+    let rhi = [
+        format!("{}/QtGui/{version}/QtGui", qmake("QT_INSTALL_HEADERS")),
+        // macOS framework builds.
+        format!("{}/QtGui.framework/Headers/{version}/QtGui", qmake("QT_INSTALL_LIBS")),
+    ]
+    .into_iter()
+    .find(|d| std::path::Path::new(d).join("rhi/qrhi.h").exists())
+    .expect("Qt's RHI headers (rhi/qrhi.h)");
     let qml = std::fs::read_dir("qml")
         .expect("qml/ exists")
         .map(|e| e.expect("readable qml/").path())

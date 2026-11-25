@@ -12,11 +12,19 @@ mod view;
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
 use cxx_qt_lib::QQuickStyle;
 
+/// A Vulkan driver is installed (an ICD manifest where the loader looks): Qt Quick can render with it.
+#[cfg(target_os = "linux")]
+fn vulkan_driver() -> bool {
+    let has = |d: &str| std::fs::read_dir(d).is_ok_and(|mut e| e.next().is_some());
+    std::env::var_os("VK_ICD_FILENAMES").is_some()
+        || ["/usr/share/vulkan/icd.d", "/etc/vulkan/icd.d", "/usr/local/share/vulkan/icd.d"].into_iter().any(has)
+}
+
 fn main() {
     // HDR swapchains exist on Vulkan, Metal and D3D, not OpenGL (Qt Quick's default on Linux);
     // the GPU core already needs Vulkan there.
     #[cfg(target_os = "linux")]
-    if std::env::var_os("QSG_RHI_BACKEND").is_none() {
+    if std::env::var_os("QSG_RHI_BACKEND").is_none() && vulkan_driver() {
         // SAFETY: first thing in main, before Qt or any other thread starts.
         unsafe { std::env::set_var("QSG_RHI_BACKEND", "vulkan") };
     }

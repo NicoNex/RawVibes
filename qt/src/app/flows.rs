@@ -1253,7 +1253,7 @@ impl App {
     }
 
     pub(super) fn reset_crop(&mut self) {
-        self.editing = None;
+        (self.editing, self.levelling) = (None, false);
         self.restore_crop(Crop::default(), Ratio::Free, 0);
     }
 

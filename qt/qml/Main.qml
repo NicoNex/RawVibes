@@ -239,7 +239,12 @@ ApplicationWindow {
     }
     function toggleFull() { win.visibility = win.visibility === Window.FullScreen ? Window.Windowed : Window.FullScreen }
 
+    Binding {
+        target: Store; property: "covered"
+        value: (!!Overlay.overlay && Overlay.overlay.children.some(c => c.visible)) || toasts.count > 0
+    }
     Toasts {
+        id: toasts
         anchors { horizontalCenter: parent.horizontalCenter; bottom: parent.bottom; bottomMargin: strip.visible ? strip.height + 16 : 16 }
         z: 10
     }
@@ -300,7 +305,7 @@ ApplicationWindow {
         { keys: ["Ctrl+?"], shown: "Ctrl+?", label: Store.tr("Keyboard Shortcuts"), act: () => keys.open() },
     ]
     readonly property bool keysFree: !(activeFocusItem && ("cursorPosition" in activeFocusItem || activeFocusItem instanceof GridView))
-                                     && !Overlay.overlay.children.some(c => c.visible)
+                                     && !(Overlay.overlay && Overlay.overlay.children.some(c => c.visible))
     Repeater {
         model: win.shortcuts.length
         Item {

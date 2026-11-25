@@ -1,7 +1,7 @@
 //! The HDR preview for a Qt HDR surface: the core renders it in GTK's rec2100-linear
 //! (linear Rec.2020, 1 = SDR white); Qt's HDR swapchain takes extended linear sRGB (scRGB).
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use half::f16;
 
@@ -17,9 +17,18 @@ pub fn white() -> f32 {
     f32::from_bits(WHITE.load(Ordering::Relaxed))
 }
 
-pub fn set_white(w: f32) {
-    if w.is_finite() && w > 0.0 {
-        WHITE.store(w.to_bits(), Ordering::Relaxed);
+/// Whether the HDR window's swapchain is HDR: the rendition is converted only then.
+static SURFACE: AtomicBool = AtomicBool::new(false);
+
+pub fn surface() -> bool {
+    SURFACE.load(Ordering::Relaxed)
+}
+
+/// What the HDR window's swapchain turned out to be: HDR or not, and its scale for SDR white.
+pub fn set_surface(hdr: bool, white: f32) {
+    SURFACE.store(hdr, Ordering::Relaxed);
+    if white.is_finite() && white > 0.0 {
+        WHITE.store(white.to_bits(), Ordering::Relaxed);
     }
 }
 

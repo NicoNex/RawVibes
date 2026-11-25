@@ -309,7 +309,7 @@ pub enum Msg {
     ExportSettings(PhotoFormat, u8, bool),
     HdrPreview(bool),
     /// The HDR surface's scale for SDR white, as its swapchain reports it.
-    HdrWhite(f32),
+    HdrWhite(bool, f32),
     Headroom(f32),
     HeadroomSave(f32),
     ExportEstimateRun(u64, u32, u32),
@@ -379,6 +379,8 @@ pub enum Msg {
 pub struct DialogAnswer {
     pub paths: Vec<PathBuf>,
     pub name: String,
+    /// Closed without a choice: the request is forgotten.
+    pub cancelled: bool,
 }
 
 impl DialogAnswer {
@@ -639,8 +641,12 @@ impl App {
         let g = tx.clone();
         // The HDR rendition is converted for Qt's HDR surface here, on the GPU worker, not the GUI thread.
         let (jobs, gpu_thread) = gpu::spawn(move |mut d| {
-            if let Done::Graded { hdr: Some(hdr), .. } = &mut d {
-                crate::hdr::to_scrgb(hdr, crate::hdr::white());
+            if let Done::Graded { hdr, .. } = &mut d {
+                // Converted only for a surface that shows it; an SDR one gets the SDR frame.
+                match hdr.as_mut().filter(|_| crate::hdr::surface()) {
+                    Some(h) => crate::hdr::to_scrgb(h, crate::hdr::white()),
+                    None => *hdr = None,
+                }
             }
             g.send(Msg::Gpu(d))
         });
@@ -768,7 +774,7 @@ impl App {
         }
         // Files given on the command line (a file manager's "Open With"): added, the first opened.
         let files: Vec<PathBuf> =
-            std::env::args().skip(1).filter(|a| !a.starts_with("--")).map(PathBuf::from).filter(|p| p.is_file()).collect();
+            std::env::args_os().skip(1).filter(|a| !a.as_encoded_bytes().starts_with(b"--")).map(PathBuf::from).filter(|p| p.is_file()).collect();
         if let Some(first) = files.first().cloned() {
             app.queue.push_back(Msg::RollAddPaths(files, Some(first)));
         }
@@ -1083,7 +1089,7 @@ impl App {
                 if let Err(e) = settings::set_flag(settings::AS_IN_CAMERA, on) {
                     self.toast(&gettext!("Cannot save the setting: {}", e));
                 }
-                self.prefs = Prefs::load();
+                self.prefs.as_in_camera = on;
             }
             Msg::CanvasClick(p) => {
                 if let Some(at) = self.image_point(p).filter(|_| self.ui.picker) {
@@ -1460,7 +1466,8 @@ impl App {
                 Err(e) => self.toast(&gettext!("Cannot save the preset: {}", e)),
             },
             Msg::DialogAnswer(id, a) => {
-                if let Some(msg) = self.answers.remove(&id).and_then(|f| f(a)) {
+                let answer = self.answers.remove(&id).filter(|_| !a.cancelled);
+                if let Some(msg) = answer.and_then(|f| f(a)) {
                     self.input(msg);
                 }
             }
@@ -1550,13 +1557,16 @@ impl App {
                     _ => self.export_frame_request(),
                 }
             }
-            Msg::HdrWhite(w) => {
-                crate::hdr::set_white(w);
+            Msg::HdrWhite(hdr, w) => {
+                crate::hdr::set_surface(hdr, w);
                 self.sent = None;
                 self.render();
             }
             Msg::HdrPreview(on) => {
                 self.hdr_preview = on;
+                if !on {
+                    crate::bridge::rv_drop("hdr");
+                }
                 let _ = settings::set_flag(settings::HDR_PREVIEW, on);
                 self.render();
             }
@@ -1614,7 +1624,7 @@ impl App {
                 if let Err(e) = settings::set_folder(settings::LUT_FOLDER, &dir) {
                     self.toast(&gettext!("Cannot save the LUT folder: {}", e));
                 }
-                self.prefs = Prefs::load();
+                self.prefs.lut_folder = Some(dir.clone());
                 // Watched before the scan, so files added while it runs trigger another one.
                 self.watch_folder(&dir);
                 let s = self.tx.clone();
@@ -1852,7 +1862,7 @@ impl App {
             }
             Msg::CropEdit(false) => {
                 self.set_zoom(None);
-                self.editing = None;
+                (self.editing, self.levelling) = (None, false);
                 self.crop_changed();
             }
             Msg::CropCancel => {
@@ -1939,15 +1949,15 @@ impl App {
             }
             Msg::Background(name) => {
                 let _ = settings::set_value(settings::BACKGROUND, &name);
-                self.prefs = Prefs::load();
+                self.prefs.background = name;
             }
             Msg::MetaPolicy(tag) => {
                 let _ = settings::set_value(settings::METADATA_POLICY, &tag);
-                self.prefs = Prefs::load();
+                self.prefs.policy = export_policy();
             }
             Msg::ExportSuffix(s) => {
                 let _ = settings::set_value(settings::EXPORT_SUFFIX, &s);
-                self.prefs = Prefs::load();
+                self.prefs.suffix = s;
             }
             Msg::AuthorDefault(key, value) => {
                 let key = match key.as_str() {
@@ -1958,7 +1968,7 @@ impl App {
                     _ => return,
                 };
                 let _ = settings::set_value(key, value.trim());
-                self.prefs = Prefs::load();
+                self.prefs.author = author_defaults();
             }
         }
     }

@@ -24,7 +24,8 @@ signals:
     void hdrChanged();
 
 private:
-    // On the render thread, after each frame: what the swapchain turned out to be.
+    // On the render thread, after each frame: what the swapchain turned out to be. Compared with
+    // the render thread's own copy; the GUI thread's (read by QML) is set through the event queue.
     void check() {
         QRhiSwapChain *sc = swapChain();
         if (!sc) return;
@@ -32,7 +33,10 @@ private:
         const QRhiSwapChainHdrInfo info = sc->hdrInfo();
         const double white = info.luminanceBehavior == QRhiSwapChainHdrInfo::SceneReferred
             ? (info.sdrWhiteLevel > 0 ? info.sdrWhiteLevel : 203.0) / 80.0 : 1.0;
-        if (hdr == m_hdr && qFuzzyCompare(white, m_white)) return;
+        if (m_seen && hdr == m_rtHdr && qFuzzyCompare(white, m_rtWhite)) return;
+        m_seen = true;
+        m_rtHdr = hdr;
+        m_rtWhite = white;
         QMetaObject::invokeMethod(this, [this, hdr, white] {
             m_hdr = hdr;
             m_white = white;
@@ -41,4 +45,8 @@ private:
     }
     bool m_hdr = false;
     double m_white = 203.0 / 80.0;
+    // Render thread only.
+    bool m_seen = false;
+    bool m_rtHdr = false;
+    double m_rtWhite = 0;
 };

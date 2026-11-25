@@ -9,6 +9,9 @@ QtObject {
     readonly property var c: JSON.parse(Backend.constants || "{}")
     // The Metadata tab's link to Preferences.
     signal prefsRequested()
+    // Something is drawn over the photo (a menu, dialog, popup or toast): the HDR surface, a native
+    // window above every Qt Quick item, steps aside for it.
+    property bool covered: false
 
     function cmd(name, args) {
         Backend.cmd(name, JSON.stringify(args === undefined ? {} : args))

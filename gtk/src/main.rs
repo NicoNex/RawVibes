@@ -1615,7 +1615,7 @@ impl App {
         self.ui.sidebar.matching.camera.set_visible(raw);
         let ui = &self.ui.sidebar.develop;
         // Always there, so the editor looks the same before a photo opens; only RAWs develop.
-        for w in [&ui.root, &ui.lens] {
+        for w in [&ui.root, &ui.lens, &ui.detail_root] {
             w.set_sensitive(raw);
             w.set_tooltip_text((!raw).then(|| gettext("RAW development: open a RAW file to use it")).as_deref());
         }
@@ -2510,9 +2510,10 @@ struct Sidebar {
 struct DevelopUi {
     /// Set while `sync_develop` moves the controls: their signals are not edits.
     syncing: Rc<Cell<bool>>,
+    /// Light and colour; `lens` and the Detail phase are apart: geometry goes between them.
     root: gtk::Box,
-    /// The Lens section, apart from `root`: it goes above the crop.
     lens: gtk::Box,
+    detail_root: gtk::Box,
     /// Its profile row, the profile amounts (greyed without a profile) and the profile's CA switch.
     lens_profile: lens_ui::ProfileUi,
     lens_amounts: gtk::Box,
@@ -2672,8 +2673,9 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     detail_slider(&haze, &gettext("Local contrast"), (0.0, 100.0), |d| &mut d.local_contrast);
     root.append(&dev_section(&gettext("Presence"), &haze, &[], DevPart::Presence));
     // Noise first, then sharpening dosed on the cleaned photo; both judged at 100% at the end.
-    root.append(&phase_label(&gettext("Detail")));
-    root.append(&nr_sec);
+    let detail_root = vbox(12);
+    detail_root.append(&phase_label(&gettext("Detail")));
+    detail_root.append(&nr_sec);
     let sharp = vbox(4);
     // Capture restores the lens's softness; output sharpening is the visible, creative kind.
     detail_slider(&sharp, &gettext("Capture sharpening"), (0.0, 100.0), |d| &mut d.sharpen);
@@ -2681,7 +2683,7 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     detail_slider(&sharp, &gettext("Sharpening"), (0.0, 100.0), |d| &mut d.usm);
     detail_slider(&sharp, &gettext("Sharpening radius"), (0.5, 3.0), |d| &mut d.usm_radius);
     detail_slider(&sharp, &gettext("Sharpening threshold"), (0.0, 100.0), |d| &mut d.usm_threshold);
-    root.append(&dev_section(&gettext("Detail"), &sharp, &[], DevPart::Detail));
+    detail_root.append(&dev_section(&gettext("Detail"), &sharp, &[], DevPart::Detail));
     // The lensfun profile, how much of it applies, then the manual corrections on top.
     let lens = vbox(4);
     let lens_profile = lens_ui::ProfileUi::new(sender);
@@ -2721,10 +2723,10 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
     let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
     list.append(&ca);
     lens.append(&list);
-    // Placed above the crop by `build_sidebar`: lens and framing come first.
+    // Placed above the crop by `build_sidebar`.
     let lens = dev_section(&gettext("Lens"), &lens, &[], DevPart::Lens);
     // Greyed out until a RAW opens (`sync_develop`).
-    for w in [&root, &lens] {
+    for w in [&root, &lens, &detail_root] {
         w.set_sensitive(false);
         w.set_tooltip_text(Some(&gettext("RAW development: open a RAW file to use it")));
     }
@@ -2732,6 +2734,7 @@ fn build_develop(sender: &ComponentSender<App>) -> DevelopUi {
         syncing,
         root,
         lens,
+        detail_root,
         lens_profile,
         lens_amounts,
         lens_tca,
@@ -3039,14 +3042,15 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     // The Photo and Grade tabs show one of these each (`App::init` swaps them).
     let photo = vbox(12);
     photo.append(&section(&gettext("Input profile"), &profile_box));
-    photo.append(&section(&gettext("HDR"), &build_hdr(sender)));
     photo.append(&group_heading(&gettext("Not in the exported LUT")));
     let develop = build_develop(sender);
-    // Geometry (lens, crop), light and colour, detail, then the vignette effect.
+    // Most used first: light and colour, then geometry, detail judged at 100%, the vignette effect,
+    // and HDR, a display and export setting. The pipeline's order is its own.
+    photo.append(&develop.root);
     photo.append(&phase_label(&gettext("Geometry")));
     photo.append(&develop.lens);
     photo.append(crop);
-    photo.append(&develop.root);
+    photo.append(&develop.detail_root);
     let grade = vbox(12);
     grade.set_visible(false);
     grade.append(&group_heading(&gettext("In the exported LUT")));
@@ -3162,8 +3166,16 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     // Primaries: lift / gamma / gain / offset wheels with a master slider each.
     let wheels_row = gtk::Grid::builder().column_spacing(10).row_spacing(10).column_homogeneous(true).build();
     let mut wheels = Vec::new();
-    for (i, name) in ["Lift", "Gamma", "Gain", "Offset"].into_iter().enumerate() {
+    // What each wheel weighs most, as in DaVinci Resolve and the ASC CDL.
+    let tips = [
+        gettext("Lift: the shadows. Highlights barely move."),
+        gettext("Gamma: the midtones. Black and white stay put."),
+        gettext("Gain: the highlights. Black stays put."),
+        gettext("Offset: the whole image by the same amount."),
+    ];
+    for (i, (name, tip)) in ["Lift", "Gamma", "Gain", "Offset"].into_iter().zip(tips).enumerate() {
         let col = vbox(4);
+        col.set_tooltip_text(Some(&tip));
         col.append(&gtk::Label::builder().label(name).css_classes(["caption-heading"]).build());
         let snd = sender.clone();
         let wheel = ColorWheel::new(name, move |x, y| snd.input(Msg::Wheel(i, x, y)));
@@ -3175,8 +3187,13 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
         wheels_row.attach(&col, (i % 2) as i32, (i / 2) as i32, 1, 1);
         wheels.push((wheel, luma));
     }
+    let wheels_box = vbox(8);
+    wheels_box.append(&wheels_row);
+    wheels_box.append(&caption(&gettext(
+        "Drag a wheel's centre towards a colour to tint that range, away from it to remove it; Luma brightens or darkens it. Lift is the shadows, Gamma the midtones, Gain the highlights, Offset everything. Double-click a wheel to reset it.",
+    )));
     let wheels_sec =
-        eye_section(&gettext("Primary colour wheels"), &wheels_row, true, &[], sender, Off::Grade(Stage::Wheels));
+        eye_section(&gettext("Primary colour wheels"), &wheels_box, true, &[], sender, Off::Grade(Stage::Wheels));
 
     // Curves
     let snd = sender.clone();
@@ -3282,6 +3299,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     add(&vig, &gettext("Feather"), -100.0, 100.0, 0, None, |p| &mut p.vignette_feather);
     photo.append(&phase_label(&gettext("Effects")));
     photo.append(&eye_section(&gettext("Vignette"), &vig, false, &[], sender, Off::Grade(Stage::Vignette)));
+    photo.append(&section(&gettext("HDR"), &build_hdr(sender)));
     panel.append(&photo);
     panel.append(&grade);
     let meta = MetaUi::new(sender);

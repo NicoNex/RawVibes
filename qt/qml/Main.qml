@@ -154,6 +154,13 @@ ApplicationWindow {
                     MenuItem { text: Store.tr("HALD identity · .png"); onTriggered: Store.cmd("exportLut", { format: "png", size: 64, what: "identity" }) }
                 }
             }
+            Icon {
+                name: "go-down"
+                rotation: layout.stripHidden ? 180 : 0
+                visible: (s.roll || []).length > 0
+                tip: layout.stripHidden ? Store.tr("Show the filmstrip") : Store.tr("Hide the filmstrip")
+                onClicked: layout.stripHidden = !layout.stripHidden
+            }
             Icon { id: menuBtn; name: "open-menu"; tip: Store.tr("Main Menu"); onClicked: mainMenu.popup(menuBtn, 0, menuBtn.height) }
             Icon {
                 name: "sidebar-show-right"

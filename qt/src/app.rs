@@ -756,6 +756,12 @@ impl App {
             let last = settings::value(settings::LAST_PHOTO).map(PathBuf::from);
             app.queue.push_back(Msg::RollAddPaths(roll, last));
         }
+        // Files given on the command line (a file manager's "Open With"): added, the first opened.
+        let files: Vec<PathBuf> =
+            std::env::args().skip(1).filter(|a| !a.starts_with("--")).map(PathBuf::from).filter(|p| p.is_file()).collect();
+        if let Some(first) = files.first().cloned() {
+            app.queue.push_back(Msg::RollAddPaths(files, Some(first)));
+        }
         if let Some(dir) = settings::folder(settings::LUT_FOLDER) {
             app.queue.push_back(Msg::Folder(dir));
         }

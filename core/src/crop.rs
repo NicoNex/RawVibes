@@ -331,8 +331,11 @@ mod tests {
     fn fit_ratio_stays_in_the_frame() {
         for (w, h) in [(3008, 2000), (5776, 4336), (6000, 4000), (4000, 6000)] {
             for (a, b) in [(65.0, 24.0), (16.0, 9.0), (3.0, 2.0), (1.0, 1.0), (4.0, 5.0)] {
-                let c = fit_ratio(Ratio::Fixed(a, b), w, h, 0.0);
-                assert!(c.rect.iter().all(|v| (0.0..=1.0).contains(v)), "{w}x{h} {a}:{b} {:?}", c.rect);
+                for angle in [-10.0, -0.5, 0.0, 3.0, 45.0] {
+                    let c = fit_ratio(Ratio::Fixed(a, b), w, h, angle);
+                    assert!(c.rect.iter().all(|v| (0.0..=1.0).contains(v)), "{w}x{h} {a}:{b} {angle} {:?}", c.rect);
+                    refit(c, Ratio::Fixed(a, b), w, h); // its `clamp(0, 1 - fw)` panics if fw > 1
+                }
             }
         }
     }

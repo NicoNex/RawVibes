@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: RawVibes\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-25 18:52+0100\n"
+"POT-Creation-Date: 2026-11-25 19:05+0100\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -17,7 +17,7 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: gtk/src/crop_ui.rs:60 gtk/src/main.rs:6011
+#: gtk/src/crop_ui.rs:60 gtk/src/main.rs:6004
 msgid "Edit crop"
 msgstr ""
 
@@ -121,7 +121,7 @@ msgstr ""
 msgid "Export…"
 msgstr ""
 
-#: gtk/src/export_ui.rs:105 gtk/src/main.rs:5176
+#: gtk/src/export_ui.rs:105 gtk/src/main.rs:5168
 msgid "Export Photo"
 msgstr ""
 
@@ -156,7 +156,7 @@ msgstr ""
 msgid "No label"
 msgstr ""
 
-#: gtk/src/filmstrip.rs:67 gtk/src/main.rs:2783 gtk/src/main.rs:3206
+#: gtk/src/filmstrip.rs:67 gtk/src/main.rs:2783 gtk/src/main.rs:3198
 msgid "Red"
 msgstr ""
 
@@ -164,11 +164,11 @@ msgstr ""
 msgid "Yellow"
 msgstr ""
 
-#: gtk/src/filmstrip.rs:69 gtk/src/main.rs:2783 gtk/src/main.rs:3207
+#: gtk/src/filmstrip.rs:69 gtk/src/main.rs:2783 gtk/src/main.rs:3199
 msgid "Green"
 msgstr ""
 
-#: gtk/src/filmstrip.rs:70 gtk/src/main.rs:2783 gtk/src/main.rs:3208
+#: gtk/src/filmstrip.rs:70 gtk/src/main.rs:2783 gtk/src/main.rs:3200
 msgid "Blue"
 msgstr ""
 
@@ -451,7 +451,7 @@ msgstr ""
 msgid "GPU unavailable"
 msgstr ""
 
-#: gtk/src/main.rs:688 gtk/src/main.rs:6007
+#: gtk/src/main.rs:688 gtk/src/main.rs:6000
 msgid "Test chart"
 msgstr ""
 
@@ -460,7 +460,7 @@ msgstr ""
 msgid "Colour label: {}"
 msgstr ""
 
-#: gtk/src/main.rs:873 gtk/src/main.rs:5859
+#: gtk/src/main.rs:873 gtk/src/main.rs:5852
 msgid "Export stopped"
 msgstr ""
 
@@ -517,7 +517,7 @@ msgstr ""
 msgid "Matched by a preset"
 msgstr ""
 
-#: gtk/src/main.rs:1404 gtk/src/main.rs:5996
+#: gtk/src/main.rs:1404 gtk/src/main.rs:5989
 msgid "Undo"
 msgstr ""
 
@@ -567,7 +567,7 @@ msgstr ""
 msgid "File name suffix"
 msgstr ""
 
-#: gtk/src/main.rs:2002 gtk/src/main.rs:3855
+#: gtk/src/main.rs:2002 gtk/src/main.rs:3847
 msgid "Export"
 msgstr ""
 
@@ -605,7 +605,7 @@ msgstr ""
 msgid "Website"
 msgstr ""
 
-#: gtk/src/main.rs:2028 gtk/src/main.rs:3737
+#: gtk/src/main.rs:2028 gtk/src/main.rs:3729
 msgid "Metadata"
 msgstr ""
 
@@ -856,7 +856,7 @@ msgstr ""
 msgid "Manual corrections"
 msgstr ""
 
-#: gtk/src/main.rs:2716 gtk/src/main.rs:3298
+#: gtk/src/main.rs:2716 gtk/src/main.rs:3290
 msgid "Midpoint"
 msgstr ""
 
@@ -926,7 +926,7 @@ msgstr ""
 msgid "Choose Reference…"
 msgstr ""
 
-#: gtk/src/main.rs:2858 gtk/src/main.rs:4574
+#: gtk/src/main.rs:2858 gtk/src/main.rs:4566
 msgid "Camera JPEG"
 msgstr ""
 
@@ -977,11 +977,11 @@ msgstr ""
 msgid "Skin tone line (K)"
 msgstr ""
 
-#: gtk/src/main.rs:2965 gtk/src/main.rs:6009
+#: gtk/src/main.rs:2965 gtk/src/main.rs:6002
 msgid "Skin tone line"
 msgstr ""
 
-#: gtk/src/main.rs:2987 gtk/src/main.rs:3574
+#: gtk/src/main.rs:2987 gtk/src/main.rs:3566
 msgid "Drag to resize"
 msgstr ""
 
@@ -1124,23 +1124,7 @@ msgstr ""
 msgid "Hue curves"
 msgstr ""
 
-#: gtk/src/main.rs:3172
-msgid "Lift: the shadows. Highlights barely move."
-msgstr ""
-
-#: gtk/src/main.rs:3173
-msgid "Gamma: the midtones. Black and white stay put."
-msgstr ""
-
-#: gtk/src/main.rs:3174
-msgid "Gain: the highlights. Black stays put."
-msgstr ""
-
-#: gtk/src/main.rs:3175
-msgid "Offset: the whole image by the same amount."
-msgstr ""
-
-#: gtk/src/main.rs:3194
+#: gtk/src/main.rs:3186
 msgid ""
 "Drag a wheel's centre towards a colour to tint that range, away from it to "
 "remove it; Luma brightens or darkens it. Lift is the shadows, Gamma the "
@@ -1148,770 +1132,770 @@ msgid ""
 "reset it."
 msgstr ""
 
-#: gtk/src/main.rs:3197
+#: gtk/src/main.rs:3189
 msgid "Primary colour wheels"
 msgstr ""
 
-#: gtk/src/main.rs:3210
+#: gtk/src/main.rs:3202
 msgid "Click to add a point, double-click or right-click to remove it"
 msgstr ""
 
-#: gtk/src/main.rs:3213
+#: gtk/src/main.rs:3205
 msgid "Curves"
 msgstr ""
 
-#: gtk/src/main.rs:3218
+#: gtk/src/main.rs:3210
 msgid "No LUTs: the grade is exported as is."
 msgstr ""
 
-#: gtk/src/main.rs:3237 gtk/src/main.rs:6023
+#: gtk/src/main.rs:3229 gtk/src/main.rs:6016
 msgid "Browse LUTs"
 msgstr ""
 
-#: gtk/src/main.rs:3238
+#: gtk/src/main.rs:3230
 msgid "Browse the LUT library on this photo (B)"
 msgstr ""
 
-#: gtk/src/main.rs:3245 gtk/src/main.rs:3250
+#: gtk/src/main.rs:3237 gtk/src/main.rs:3242
 msgid "Add a LUT from a file"
 msgstr ""
 
-#: gtk/src/main.rs:3259
+#: gtk/src/main.rs:3251
 msgid "Back to the grade (B)"
 msgstr ""
 
-#: gtk/src/main.rs:3262
+#: gtk/src/main.rs:3254
 msgid "Back to the grade"
 msgstr ""
 
-#: gtk/src/main.rs:3267 gtk/src/main.rs:3281 gtk/src/main.rs:4537
+#: gtk/src/main.rs:3259 gtk/src/main.rs:3273 gtk/src/main.rs:4529
 msgid "LUTs"
 msgstr ""
 
-#: gtk/src/main.rs:3280
+#: gtk/src/main.rs:3272
 msgid ""
 "Applied after the grade, top to bottom, and included in the exported LUT."
 msgstr ""
 
-#: gtk/src/main.rs:3285
+#: gtk/src/main.rs:3277
 msgid "Look"
 msgstr ""
 
-#: gtk/src/main.rs:3286
+#: gtk/src/main.rs:3278
 msgid "Balance"
 msgstr ""
 
-#: gtk/src/main.rs:3287
+#: gtk/src/main.rs:3279
 msgid "Primaries"
 msgstr ""
 
-#: gtk/src/main.rs:3288
+#: gtk/src/main.rs:3280
 msgid "Secondaries"
 msgstr ""
 
-#: gtk/src/main.rs:3289
+#: gtk/src/main.rs:3281
 msgid "Finishing"
 msgstr ""
 
-#: gtk/src/main.rs:3297
+#: gtk/src/main.rs:3289
 msgid "Amount"
 msgstr ""
 
-#: gtk/src/main.rs:3299
+#: gtk/src/main.rs:3291
 msgid "Roundness"
 msgstr ""
 
-#: gtk/src/main.rs:3300
+#: gtk/src/main.rs:3292
 msgid "Feather"
 msgstr ""
 
-#: gtk/src/main.rs:3301
+#: gtk/src/main.rs:3293
 msgid "Effects"
 msgstr ""
 
-#: gtk/src/main.rs:3302
+#: gtk/src/main.rs:3294
 msgid "Vignette"
 msgstr ""
 
-#: gtk/src/main.rs:3312
+#: gtk/src/main.rs:3304
 msgid "Reset all"
 msgstr ""
 
-#: gtk/src/main.rs:3435
+#: gtk/src/main.rs:3427
 msgid "Grade preview"
 msgstr ""
 
-#: gtk/src/main.rs:3452
+#: gtk/src/main.rs:3444
 msgid "Show clipping (C)"
 msgstr ""
 
-#: gtk/src/main.rs:3454 gtk/src/main.rs:6008
+#: gtk/src/main.rs:3446 gtk/src/main.rs:6001
 msgid "Show clipping"
 msgstr ""
 
-#: gtk/src/main.rs:3459
+#: gtk/src/main.rs:3451
 msgid "All photos in the filmstrip (G)"
 msgstr ""
 
-#: gtk/src/main.rs:3462 gtk/src/main.rs:6010
+#: gtk/src/main.rs:3454 gtk/src/main.rs:6003
 msgid "Grid of all photos"
 msgstr ""
 
-#: gtk/src/main.rs:3477
+#: gtk/src/main.rs:3469
 msgid "Clipped highlights"
 msgstr ""
 
-#: gtk/src/main.rs:3478
+#: gtk/src/main.rs:3470
 msgid "Crushed blacks"
 msgstr ""
 
-#: gtk/src/main.rs:3479
+#: gtk/src/main.rs:3471
 msgid "Out of gamut"
 msgstr ""
 
-#: gtk/src/main.rs:3518
+#: gtk/src/main.rs:3510
 msgid "Show the filmstrip"
 msgstr ""
 
-#: gtk/src/main.rs:3518 gtk/src/main.rs:3523 gtk/src/main.rs:3524
+#: gtk/src/main.rs:3510 gtk/src/main.rs:3515 gtk/src/main.rs:3516
 msgid "Hide the filmstrip"
 msgstr ""
 
-#: gtk/src/main.rs:3546
+#: gtk/src/main.rs:3538
 msgid "Open a photo"
 msgstr ""
 
-#: gtk/src/main.rs:3547
+#: gtk/src/main.rs:3539
 msgid ""
 "Drop camera RAWs, JPEGs, TIFFs or PNGs here, or choose files. Open several "
 "to edit them together.\n"
 "Every grade can also be exported as a .cube LUT."
 msgstr ""
 
-#: gtk/src/main.rs:3548
+#: gtk/src/main.rs:3540
 msgid "Open Photo…"
 msgstr ""
 
-#: gtk/src/main.rs:3577
+#: gtk/src/main.rs:3569
 msgid "Resize the sidebar"
 msgstr ""
 
-#: gtk/src/main.rs:3643 gtk/src/main.rs:4031
+#: gtk/src/main.rs:3635 gtk/src/main.rs:4023
 msgid "No folder"
 msgstr ""
 
-#: gtk/src/main.rs:3651
+#: gtk/src/main.rs:3643
 msgid "Choose LUT folder"
 msgstr ""
 
-#: gtk/src/main.rs:3660
+#: gtk/src/main.rs:3652
 msgid "Open the selected LUT in LUT Lab (to convert or combine it)"
 msgstr ""
 
-#: gtk/src/main.rs:3669
+#: gtk/src/main.rs:3661
 msgid "Reload LUTs (F5)"
 msgstr ""
 
-#: gtk/src/main.rs:3677
+#: gtk/src/main.rs:3669
 msgid "Subfolder"
 msgstr ""
 
-#: gtk/src/main.rs:3681 gtk/src/main.rs:6024
+#: gtk/src/main.rs:3673 gtk/src/main.rs:6017
 msgid "Search LUTs"
 msgstr ""
 
-#: gtk/src/main.rs:3692
+#: gtk/src/main.rs:3684
 msgid "No LUTs"
 msgstr ""
 
-#: gtk/src/main.rs:3693
+#: gtk/src/main.rs:3685
 msgid "Choose a folder with .cube files"
 msgstr ""
 
-#: gtk/src/main.rs:3734 gtk/src/main.rs:5953
+#: gtk/src/main.rs:3726 gtk/src/main.rs:5946
 msgid "Photo"
 msgstr ""
 
-#: gtk/src/main.rs:3735
+#: gtk/src/main.rs:3727
 msgid "Grade"
 msgstr ""
 
-#: gtk/src/main.rs:3744
+#: gtk/src/main.rs:3736
 msgid "LUT Lab"
 msgstr ""
 
-#: gtk/src/main.rs:3778
+#: gtk/src/main.rs:3770
 msgid "Open Photo (Ctrl+O)"
 msgstr ""
 
-#: gtk/src/main.rs:3784
+#: gtk/src/main.rs:3776
 msgid "Undo (Ctrl+Z)"
 msgstr ""
 
-#: gtk/src/main.rs:3785
+#: gtk/src/main.rs:3777
 msgid "Redo (Ctrl+Shift+Z)"
 msgstr ""
 
-#: gtk/src/main.rs:3794
+#: gtk/src/main.rs:3786
 #, rust-format
 msgid "{} stars ({})"
 msgstr ""
 
-#: gtk/src/main.rs:3807
+#: gtk/src/main.rs:3799
 msgid "Test chart: shows what the LUT does to neutrals, hues and skin (T)"
 msgstr ""
 
-#: gtk/src/main.rs:3817
+#: gtk/src/main.rs:3809
 msgid "As in camera: white balance and exposure as shot"
 msgstr ""
 
-#: gtk/src/main.rs:3826
+#: gtk/src/main.rs:3818
 msgid "Default"
 msgstr ""
 
-#: gtk/src/main.rs:3827
+#: gtk/src/main.rs:3819
 msgid "Black"
 msgstr ""
 
-#: gtk/src/main.rs:3828
+#: gtk/src/main.rs:3820
 msgid "White"
 msgstr ""
 
-#: gtk/src/main.rs:3829
+#: gtk/src/main.rs:3821
 msgid "Preview background"
 msgstr ""
 
-#: gtk/src/main.rs:3831
+#: gtk/src/main.rs:3823
 msgid "Copy Edits"
 msgstr ""
 
-#: gtk/src/main.rs:3832
+#: gtk/src/main.rs:3824
 msgid "Paste Edits"
 msgstr ""
 
-#: gtk/src/main.rs:3833
+#: gtk/src/main.rs:3825
 msgid "Paste Edits to All Photos"
 msgstr ""
 
-#: gtk/src/main.rs:3834
+#: gtk/src/main.rs:3826
 msgid "Reset All Edits"
 msgstr ""
 
-#: gtk/src/main.rs:3837
+#: gtk/src/main.rs:3829
 msgid "Merge Brackets to HDR…"
 msgstr ""
 
-#: gtk/src/main.rs:3840 gtk/src/main.rs:6026 gtk/src/meta_ui.rs:145
+#: gtk/src/main.rs:3832 gtk/src/main.rs:6019 gtk/src/meta_ui.rs:145
 msgid "Preferences"
 msgstr ""
 
-#: gtk/src/main.rs:3841 gtk/src/main.rs:6027
+#: gtk/src/main.rs:3833 gtk/src/main.rs:6020
 msgid "Keyboard Shortcuts"
 msgstr ""
 
-#: gtk/src/main.rs:3842
+#: gtk/src/main.rs:3834
 msgid "About RawVibes"
 msgstr ""
 
-#: gtk/src/main.rs:3849
+#: gtk/src/main.rs:3841
 msgid "Main Menu"
 msgstr ""
 
-#: gtk/src/main.rs:3858
+#: gtk/src/main.rs:3850
 msgid "Export the edited photo (Ctrl+E)"
 msgstr ""
 
-#: gtk/src/main.rs:3859
+#: gtk/src/main.rs:3851
 msgid "Photo and LUT formats"
 msgstr ""
 
-#: gtk/src/main.rs:3868
+#: gtk/src/main.rs:3860
 msgid "Before / after (\\)"
 msgstr ""
 
-#: gtk/src/main.rs:3873
+#: gtk/src/main.rs:3865
 msgid "Copy edits (Ctrl+Shift+C)"
 msgstr ""
 
-#: gtk/src/main.rs:3875
+#: gtk/src/main.rs:3867
 msgid "Paste edits (Ctrl+Shift+V)"
 msgstr ""
 
-#: gtk/src/main.rs:3878
+#: gtk/src/main.rs:3870
 msgid "Paste edits to every photo in the filmstrip, crops kept"
 msgstr ""
 
-#: gtk/src/main.rs:3884
+#: gtk/src/main.rs:3876
 msgid "Fullscreen (F11)"
 msgstr ""
 
-#: gtk/src/main.rs:3900
+#: gtk/src/main.rs:3892
 msgid "Show panel"
 msgstr ""
 
-#: gtk/src/main.rs:4008
+#: gtk/src/main.rs:4000
 msgid ""
 "RAW development, colour grading and 3D .cube LUT creation, GPU accelerated "
 "(Vulkan/Metal)."
 msgstr ""
 
-#: gtk/src/main.rs:4022
+#: gtk/src/main.rs:4014
 msgid "Choose folder"
 msgstr ""
 
-#: gtk/src/main.rs:4030 gtk/src/main.rs:5206
+#: gtk/src/main.rs:4022 gtk/src/main.rs:5198
 msgid "LUT folder"
 msgstr ""
 
-#: gtk/src/main.rs:4036
+#: gtk/src/main.rs:4028
 msgid "LUT library"
 msgstr ""
 
-#: gtk/src/main.rs:4037
+#: gtk/src/main.rs:4029
 msgid "LUT files in this folder and its subfolders appear in the LUT browser."
 msgstr ""
 
-#: gtk/src/main.rs:4043
+#: gtk/src/main.rs:4035
 msgid "Preview while editing"
 msgstr ""
 
-#: gtk/src/main.rs:4045
+#: gtk/src/main.rs:4037
 msgid ""
 "Faster previews are softer while you drag. Automatic measures this "
 "computer's graphics card and keeps dragging smooth."
 msgstr ""
 
-#: gtk/src/main.rs:4052
+#: gtk/src/main.rs:4044
 msgid "RAW development"
 msgstr ""
 
-#: gtk/src/main.rs:4055
+#: gtk/src/main.rs:4047
 msgid "Sharpen the preview when you stop"
 msgstr ""
 
-#: gtk/src/main.rs:4057
+#: gtk/src/main.rs:4049
 msgid ""
 "Renders the full-quality frame after each change. Turn off on slower "
 "computers to keep editing responsive."
 msgstr ""
 
-#: gtk/src/main.rs:4065
+#: gtk/src/main.rs:4057
 msgid "Open RAWs as in camera"
 msgstr ""
 
-#: gtk/src/main.rs:4066
+#: gtk/src/main.rs:4058
 msgid ""
 "A RAW you have not edited yet starts from the camera's white balance and "
 "exposure."
 msgstr ""
 
-#: gtk/src/main.rs:4073
+#: gtk/src/main.rs:4065
 msgid "General"
 msgstr ""
 
-#: gtk/src/main.rs:4355 gtk/src/main.rs:5995 gtk/src/main.rs:6236
+#: gtk/src/main.rs:4347 gtk/src/main.rs:5988 gtk/src/main.rs:6229
 msgid "Open Photo"
 msgstr ""
 
-#: gtk/src/main.rs:4368
+#: gtk/src/main.rs:4360
 msgid "Merge Brackets to HDR"
 msgstr ""
 
-#: gtk/src/main.rs:4378
+#: gtk/src/main.rs:4370
 msgid "Pick two or more RAWs of the same scene at different exposures"
 msgstr ""
 
-#: gtk/src/main.rs:4384
+#: gtk/src/main.rs:4376
 #, rust-format
 msgid "Merging {} photos to HDR…"
 msgstr ""
 
-#: gtk/src/main.rs:4392
+#: gtk/src/main.rs:4384
 #, rust-format
 msgid "HDR merge saved: {}"
 msgstr ""
 
-#: gtk/src/main.rs:4395
+#: gtk/src/main.rs:4387
 #, rust-format
 msgid "HDR merge failed: {}"
 msgstr ""
 
-#: gtk/src/main.rs:4428 gtk/src/main.rs:4922
+#: gtk/src/main.rs:4420 gtk/src/main.rs:4914
 #, rust-format
 msgid "Cannot open {}: {}"
 msgstr ""
 
-#: gtk/src/main.rs:4500
+#: gtk/src/main.rs:4492
 #, rust-format
 msgid "{} LUTs of this photo are missing"
 msgstr ""
 
-#: gtk/src/main.rs:4513
+#: gtk/src/main.rs:4505
 msgid "No camera JPEG to match the tone curve to"
 msgstr ""
 
-#: gtk/src/main.rs:4520
+#: gtk/src/main.rs:4512
 msgid "Tone curve matched to the camera JPEG"
 msgstr ""
 
-#: gtk/src/main.rs:4526
+#: gtk/src/main.rs:4518
 #, rust-format
 msgid "The camera applied the LUT “{}” at {}%"
 msgstr ""
 
-#: gtk/src/main.rs:4528
+#: gtk/src/main.rs:4520
 msgid "Use LUT"
 msgstr ""
 
-#: gtk/src/main.rs:4531
+#: gtk/src/main.rs:4523
 #, rust-format
 msgid "The camera applied the LUT “{}”: not in your LUT folder"
 msgstr ""
 
-#: gtk/src/main.rs:4532
+#: gtk/src/main.rs:4524
 msgid "Find…"
 msgstr ""
 
-#: gtk/src/main.rs:4536
+#: gtk/src/main.rs:4528
 #, rust-format
 msgid "Find the LUT “{}”"
 msgstr ""
 
-#: gtk/src/main.rs:4582
+#: gtk/src/main.rs:4574
 msgid "This RAW has no camera JPEG to match"
 msgstr ""
 
-#: gtk/src/main.rs:4586 gtk/src/main.rs:4607 gtk/src/main.rs:4617
+#: gtk/src/main.rs:4578 gtk/src/main.rs:4599 gtk/src/main.rs:4609
 #, rust-format
 msgid "Cannot save the setting: {}"
 msgstr ""
 
-#: gtk/src/main.rs:4671
+#: gtk/src/main.rs:4663
 #, rust-format
 msgid "Cannot read the edits saved for {}: {}"
 msgstr ""
 
-#: gtk/src/main.rs:4760
+#: gtk/src/main.rs:4752
 msgid "All edits cleared"
 msgstr ""
 
-#: gtk/src/main.rs:4826
+#: gtk/src/main.rs:4818
 msgid "Edits copied"
 msgstr ""
 
-#: gtk/src/main.rs:4834
+#: gtk/src/main.rs:4826
 msgid "Edits pasted: Ctrl+Z undoes it"
 msgstr ""
 
-#: gtk/src/main.rs:4844
+#: gtk/src/main.rs:4836
 #, rust-format
 msgid "Edits pasted onto {} more photos (crops kept)"
 msgstr ""
 
-#: gtk/src/main.rs:4847
+#: gtk/src/main.rs:4839
 #, rust-format
 msgid "Edits pasted onto {} more photos, {} failed: {}"
 msgstr ""
 
-#: gtk/src/main.rs:4892
+#: gtk/src/main.rs:4884
 msgid "Choose Reference"
 msgstr ""
 
-#: gtk/src/main.rs:4965
+#: gtk/src/main.rs:4957
 #, rust-format
 msgid "Preset “{}” saved"
 msgstr ""
 
-#: gtk/src/main.rs:4966 gtk/src/main.rs:5023
+#: gtk/src/main.rs:4958 gtk/src/main.rs:5015
 #, rust-format
 msgid "Cannot save the preset: {}"
 msgstr ""
 
-#: gtk/src/main.rs:4974
+#: gtk/src/main.rs:4966
 #, rust-format
 msgid "Preset “{}” applied"
 msgstr ""
 
-#: gtk/src/main.rs:4978
+#: gtk/src/main.rs:4970
 #, rust-format
 msgid "Cannot read the preset: {}"
 msgstr ""
 
-#: gtk/src/main.rs:4984
+#: gtk/src/main.rs:4976
 #, rust-format
 msgid "Cannot delete the preset: {}"
 msgstr ""
 
-#: gtk/src/main.rs:4988
+#: gtk/src/main.rs:4980
 #, rust-format
 msgid "Preset “{}” deleted"
 msgstr ""
 
-#: gtk/src/main.rs:4994
+#: gtk/src/main.rs:4986
 #, rust-format
 msgid "Cannot restore the preset: {}"
 msgstr ""
 
-#: gtk/src/main.rs:4999
+#: gtk/src/main.rs:4991
 msgid "Import Preset"
 msgstr ""
 
-#: gtk/src/main.rs:5006
+#: gtk/src/main.rs:4998
 #, rust-format
 msgid "Not a valid preset: {}"
 msgstr ""
 
-#: gtk/src/main.rs:5011
+#: gtk/src/main.rs:5003
 msgid "Export Preset"
 msgstr ""
 
-#: gtk/src/main.rs:5022
+#: gtk/src/main.rs:5014
 #, rust-format
 msgid "Preset saved: {}"
 msgstr ""
 
-#: gtk/src/main.rs:5051
+#: gtk/src/main.rs:5043
 #, rust-format
 msgid "Export {}"
 msgstr ""
 
-#: gtk/src/main.rs:5092
+#: gtk/src/main.rs:5084
 msgid "Open a photo to export it"
 msgstr ""
 
-#: gtk/src/main.rs:5146
+#: gtk/src/main.rs:5138
 #, rust-format
 msgid "about {}"
 msgstr ""
 
-#: gtk/src/main.rs:5161
+#: gtk/src/main.rs:5153
 msgid "Export Photos To"
 msgstr ""
 
-#: gtk/src/main.rs:5217
+#: gtk/src/main.rs:5209
 #, rust-format
 msgid "Cannot save the LUT folder: {}"
 msgstr ""
 
-#: gtk/src/main.rs:5233
+#: gtk/src/main.rs:5225
 #, rust-format
 msgid "{} files skipped: {}"
 msgstr ""
 
-#: gtk/src/main.rs:5249
+#: gtk/src/main.rs:5241
 #, rust-format
 msgid "Very large library: showing the first {} LUTs"
 msgstr ""
 
-#: gtk/src/main.rs:5289
+#: gtk/src/main.rs:5281
 msgid "All folders"
 msgstr ""
 
-#: gtk/src/main.rs:5291
+#: gtk/src/main.rs:5283
 msgid "Main folder"
 msgstr ""
 
-#: gtk/src/main.rs:5397 gtk/src/main.rs:5503
+#: gtk/src/main.rs:5389 gtk/src/main.rs:5495
 #, rust-format
 msgid "Cannot read {}: {}"
 msgstr ""
 
-#: gtk/src/main.rs:5473
+#: gtk/src/main.rs:5465
 msgid "Select a LUT in the browser first"
 msgstr ""
 
-#: gtk/src/main.rs:5477
+#: gtk/src/main.rs:5469
 msgid "Add LUT"
 msgstr ""
 
-#: gtk/src/main.rs:5478
+#: gtk/src/main.rs:5470
 msgid "LUTs (.cube, .vlt, HALD .png)"
 msgstr ""
 
-#: gtk/src/main.rs:5558
+#: gtk/src/main.rs:5550
 msgid "The LUT folder was moved or deleted: press F5 to choose it again"
 msgstr ""
 
-#: gtk/src/main.rs:5804
+#: gtk/src/main.rs:5797
 #, rust-format
 msgid "GPU unavailable: {}"
 msgstr ""
 
-#: gtk/src/main.rs:5827
+#: gtk/src/main.rs:5820
 #, rust-format
 msgid "LUT saved: {}"
 msgstr ""
 
-#: gtk/src/main.rs:5829 gtk/src/main.rs:5860
+#: gtk/src/main.rs:5822 gtk/src/main.rs:5853
 #, rust-format
 msgid "Export failed: {}"
 msgstr ""
 
-#: gtk/src/main.rs:5857
+#: gtk/src/main.rs:5850
 #, rust-format
 msgid "Photo saved: {}"
 msgstr ""
 
-#: gtk/src/main.rs:5905
+#: gtk/src/main.rs:5898
 #, rust-format
 msgid "AI noise reduction unavailable: {}"
 msgstr ""
 
-#: gtk/src/main.rs:5911
+#: gtk/src/main.rs:5904
 msgid "Pick a grey area that is not too dark or too bright"
 msgstr ""
 
-#: gtk/src/main.rs:5926
+#: gtk/src/main.rs:5919
 #, rust-format
 msgid "Exported LUT input: <b>{}</b>. <a href=\"photo\">Change in Photo</a>"
 msgstr ""
 
-#: gtk/src/main.rs:5932
+#: gtk/src/main.rs:5925
 #, rust-format
 msgid ""
 "The photo's signal: RAWs are developed into {}, a JPEG or TIFF must already "
 "be in it. The exported LUT goes from this log to Rec.709."
 msgstr ""
 
-#: gtk/src/main.rs:5937
+#: gtk/src/main.rs:5930
 msgid ""
 "The photo's signal and the exported LUT's input. Standard: a normal picture "
 "(Rec.709), like a camera's standard picture profile."
 msgstr ""
 
-#: gtk/src/main.rs:5957
+#: gtk/src/main.rs:5950
 msgid "33³ .cube · cameras and monitors"
 msgstr ""
 
-#: gtk/src/main.rs:5958
+#: gtk/src/main.rs:5951
 msgid "65³ .cube · grading and editing"
 msgstr ""
 
-#: gtk/src/main.rs:5959
+#: gtk/src/main.rs:5952
 msgid "129³ .cube · maximum precision"
 msgstr ""
 
-#: gtk/src/main.rs:5960
+#: gtk/src/main.rs:5953
 msgid "LUT · .cube"
 msgstr ""
 
-#: gtk/src/main.rs:5962
+#: gtk/src/main.rs:5955
 msgid "Panasonic VLT · 17³ .vlt"
 msgstr ""
 
-#: gtk/src/main.rs:5963
+#: gtk/src/main.rs:5956
 msgid "HALD CLUT · 64³ .png"
 msgstr ""
 
-#: gtk/src/main.rs:5964
+#: gtk/src/main.rs:5957
 msgid "LUT · other formats"
 msgstr ""
 
-#: gtk/src/main.rs:5967
+#: gtk/src/main.rs:5960
 msgid "HALD identity · .png"
 msgstr ""
 
-#: gtk/src/main.rs:5968
+#: gtk/src/main.rs:5961
 msgid "Tools"
 msgstr ""
 
-#: gtk/src/main.rs:5997
+#: gtk/src/main.rs:5990
 msgid "Redo"
 msgstr ""
 
-#: gtk/src/main.rs:5998
+#: gtk/src/main.rs:5991
 msgid "Copy edits"
 msgstr ""
 
-#: gtk/src/main.rs:5999
+#: gtk/src/main.rs:5992
 msgid "Paste edits"
 msgstr ""
 
-#: gtk/src/main.rs:6000
+#: gtk/src/main.rs:5993
 msgid "Stars"
 msgstr ""
 
-#: gtk/src/main.rs:6001
+#: gtk/src/main.rs:5994
 msgid "No stars"
 msgstr ""
 
-#: gtk/src/main.rs:6002
+#: gtk/src/main.rs:5995
 msgid "Colour label: red, yellow, green, blue"
 msgstr ""
 
-#: gtk/src/main.rs:6003
+#: gtk/src/main.rs:5996
 msgid "Fullscreen"
 msgstr ""
 
-#: gtk/src/main.rs:6004
+#: gtk/src/main.rs:5997
 msgid "Export photo"
 msgstr ""
 
-#: gtk/src/main.rs:6005
+#: gtk/src/main.rs:5998
 msgid "Export LUT · 33³ .cube"
 msgstr ""
 
-#: gtk/src/main.rs:6006
+#: gtk/src/main.rs:5999
 msgid "Before / after"
 msgstr ""
 
-#: gtk/src/main.rs:6012
+#: gtk/src/main.rs:6005
 msgid "Cancel crop"
 msgstr ""
 
-#: gtk/src/main.rs:6013
+#: gtk/src/main.rs:6006
 msgid "Apply crop"
 msgstr ""
 
-#: gtk/src/main.rs:6014
+#: gtk/src/main.rs:6007
 msgid "Zoom to fit"
 msgstr ""
 
-#: gtk/src/main.rs:6015
+#: gtk/src/main.rs:6008
 msgid "Actual size"
 msgstr ""
 
-#: gtk/src/main.rs:6016
+#: gtk/src/main.rs:6009
 msgid "Zoom in"
 msgstr ""
 
-#: gtk/src/main.rs:6017
+#: gtk/src/main.rs:6010
 msgid "Zoom out"
 msgstr ""
 
-#: gtk/src/main.rs:6018
+#: gtk/src/main.rs:6011
 msgid "Save preset"
 msgstr ""
 
-#: gtk/src/main.rs:6019
+#: gtk/src/main.rs:6012
 msgid "Photo view"
 msgstr ""
 
-#: gtk/src/main.rs:6020
+#: gtk/src/main.rs:6013
 msgid "Grade view"
 msgstr ""
 
-#: gtk/src/main.rs:6021
+#: gtk/src/main.rs:6014
 msgid "Metadata view"
 msgstr ""
 
-#: gtk/src/main.rs:6022
+#: gtk/src/main.rs:6015
 msgid "LUT Lab view"
 msgstr ""
 
-#: gtk/src/main.rs:6025
+#: gtk/src/main.rs:6018
 msgid "Reload LUTs"
 msgstr ""
 
-#: gtk/src/main.rs:6175
+#: gtk/src/main.rs:6168
 msgid "Photos and RAWs"
 msgstr ""
 
-#: gtk/src/main.rs:6183
+#: gtk/src/main.rs:6176
 msgid "RawVibes presets"
 msgstr ""
 
-#: gtk/src/main.rs:6188
+#: gtk/src/main.rs:6181
 msgid "Open a photo first: the match is computed on it"
 msgstr ""
 

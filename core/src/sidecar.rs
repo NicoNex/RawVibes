@@ -205,16 +205,14 @@ impl Sidecar {
             exposure: d.exposure.clamp(-EXPOSURE, EXPOSURE),
             detail: detail.expect("checked above"),
         };
-        let mut c = f.crop;
-        let [x, y, w, h] = c.rect;
-        // Float rounding leaves edges a hair outside the frame (-2e-7): tolerated, then clamped.
-        let crop_ok = c.rect.iter().all(|v| (-1e-4..=1.0 + 1e-4).contains(v))
+        let c = f.crop;
+        let [_, _, w, h] = c.rect;
+        // Rotated, the rect is in the turned frame and may leave [0, 1]: only the
+        // image's size can judge it, so the editor fits it in on load (`crop::clamp`).
+        let crop_ok = c.rect.iter().all(|v| v.is_finite())
             && w >= 0.01
             && h >= 0.01
-            && x + w <= 1.0 + 1e-4
-            && y + h <= 1.0 + 1e-4
             && (-90.0..=90.0).contains(&c.angle);
-        c.rect = c.rect.map(|v| v.clamp(0.0, 1.0));
         let ratio_ok = match f.ratio {
             Ratio::Fixed(a, b) => a > 0.0 && b > 0.0 && a.is_finite() && b.is_finite(),
             _ => true,
@@ -344,18 +342,19 @@ mod tests {
 
     #[test]
     fn degenerate_crops_are_rejected() {
-        for rect in [[0.5, 0.5, 0.0, 0.0], [0.9, 0.0, 0.5, 1.0]] {
+        for rect in [[0.5, 0.5, 0.0, 0.0], [f32::NAN, 0.0, 0.5, 1.0]] {
             let mut s = sample();
             s.crop.rect = rect;
             assert!(Sidecar::from_json(&s.to_json()).is_err(), "{rect:?}");
         }
     }
-    /// A full-width 65:24 crop came out at x = -1.9e-7 and the whole sidecar was lost.
+    /// A rect off [0, 1] (rounding, or a rotated crop by an edge) loaded no edits at all.
     #[test]
-    fn rounding_off_the_frame_loads_clamped() {
-        let mut s = sample();
-        s.crop.rect = [-1.9370997e-7, 0.18197213, 1.0, 0.5538462];
-        let back = Sidecar::from_json(&s.to_json()).expect("loads");
-        assert_eq!(back.crop.rect[0], 0.0);
+    fn crops_off_the_unit_square_load() {
+        for rect in [[-1.9370997e-7, 0.18197213, 1.0, 0.5538462], [-0.01, 0.1, 0.05, 0.05]] {
+            let mut s = sample();
+            s.crop = Crop { rect, angle: 5.0 };
+            assert_eq!(Sidecar::from_json(&s.to_json()).expect("loads").crop.rect, rect);
+        }
     }
 }

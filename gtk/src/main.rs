@@ -3167,16 +3167,8 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     // Primaries: lift / gamma / gain / offset wheels with a master slider each.
     let wheels_row = gtk::Grid::builder().column_spacing(10).row_spacing(10).column_homogeneous(true).build();
     let mut wheels = Vec::new();
-    // What each wheel weighs most, as in DaVinci Resolve and the ASC CDL.
-    let tips = [
-        gettext("Lift: the shadows. Highlights barely move."),
-        gettext("Gamma: the midtones. Black and white stay put."),
-        gettext("Gain: the highlights. Black stays put."),
-        gettext("Offset: the whole image by the same amount."),
-    ];
-    for (i, (name, tip)) in ["Lift", "Gamma", "Gain", "Offset"].into_iter().zip(tips).enumerate() {
+    for (i, name) in ["Lift", "Gamma", "Gain", "Offset"].into_iter().enumerate() {
         let col = vbox(4);
-        col.set_tooltip_text(Some(&tip));
         col.append(&gtk::Label::builder().label(name).css_classes(["caption-heading"]).build());
         let snd = sender.clone();
         let wheel = ColorWheel::new(name, move |x, y| snd.input(Msg::Wheel(i, x, y)));
@@ -5683,7 +5675,8 @@ impl App {
     /// Crop state and its controls, state first so the controls' echoes
     /// (CropRatio, CropAngle) find nothing to change.
     fn restore_crop(&mut self, crop: Crop, ratio: Ratio, row: u32) {
-        self.crop = crop;
+        // A sidecar's or a paste's crop, fitted into this photo.
+        self.crop = self.size().map_or(crop, |(w, h)| crop::clamp(crop, w, h));
         self.ratio = ratio;
         self.ui.crop.ratio.set_selected(row);
         self.ui.crop.angle.adj.set_value(crop.angle as f64);

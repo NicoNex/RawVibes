@@ -1,0 +1,25 @@
+[package]
+name = "rawvibes-qt"
+description = "RawVibes: RAW photo editor with colour grading and 3D LUT export (Qt 6 / QML)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rawvibes-qt"
+path = "src/main.rs"
+
+[dependencies]
+rawvibes-core = { path = "../core" }
+cxx = "1"
+cxx-qt = "0.10"
+cxx-qt-lib = { version = "0.10", features = ["full"] }
+dirs = "6"
+gettext-sys = { version = "0.27", features = ["gettext-system"] }
+notify = "8"
+serde = "1"
+serde_json = "1"
+
+[build-dependencies]
+cxx-qt-build = "0.10"
+qt-build-utils = "0.10"

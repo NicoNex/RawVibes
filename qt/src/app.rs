@@ -266,6 +266,10 @@ pub enum Msg {
     LayerAdd(Layers, LabAdd),
     OpenInLab,
     LayerLoaded(Layers, PathBuf, Option<(Profile, f32)>, Result<Lut3d, String>),
+    /// A LUT file chosen for a stack: read off the GUI thread.
+    LayerFile(Layers, PathBuf),
+    /// The newly added look has flashed long enough.
+    FlashDone,
     LayerRemove(Layers, usize),
     LayerMove(Layers, usize, bool),
     LayerIntensity(Layers, usize, f64),
@@ -403,6 +407,31 @@ pub struct RollItem {
     pub encoded: Option<(Profile, Arc<Photo>)>,
     /// Bumped with each frame the GPU renders for it (QML reloads image://rv/roll/<i>/<gen>).
     pub frame: u64,
+    /// Stable across removals: its frames are stored under image://rv/roll/<id>.
+    pub id: u64,
+}
+
+/// Preferences the view shows, read once and kept as they are changed: not read from disk per publish.
+pub struct Prefs {
+    pub as_in_camera: bool,
+    pub lut_folder: Option<PathBuf>,
+    pub policy: rawvibes_core::meta::Policy,
+    pub suffix: String,
+    pub author: Meta,
+    pub background: String,
+}
+
+impl Prefs {
+    fn load() -> Self {
+        Prefs {
+            as_in_camera: settings::value(settings::AS_IN_CAMERA).as_deref() == Some("1"),
+            lut_folder: settings::folder(settings::LUT_FOLDER),
+            policy: export_policy(),
+            suffix: export_suffix(),
+            author: author_defaults(),
+            background: settings::value(settings::BACKGROUND).unwrap_or_else(|| "default".into()),
+        }
+    }
 }
 
 /// What the GTK UI kept in its widgets: plain state QML draws from.
@@ -546,6 +575,10 @@ pub struct App {
     /// A preset waiting for "Replace Preset?", and whether to apply it once written.
     pending_preset: Option<(Box<Preset>, bool)>,
     pub ui: UiState,
+    pub prefs: Prefs,
+    next_roll_id: u64,
+    /// The state as QML last got it: an unchanged one is not sent again.
+    published: String,
     tx: Tx,
     timers: Timers,
     /// Messages the update itself queued (GTK's `sender.input`), run before publishing.
@@ -680,6 +713,9 @@ impl App {
                 export: ExportState { format: Some(format), quality, ..Default::default() },
                 ..Default::default()
             },
+            prefs: Prefs::load(),
+            next_roll_id: 0,
+            published: String::new(),
             timers: Timers::new(tx.clone()),
             tx,
             queue: VecDeque::new(),
@@ -720,7 +756,10 @@ impl App {
 
     /// The state for QML when it changed, and the toasts and dialogs to show.
     pub fn publish(&mut self) -> (Option<String>, Vec<(String, String, i32)>, Vec<(String, String)>) {
-        let state = std::mem::take(&mut self.dirty).then(|| crate::view::state(self).to_string());
+        let state = std::mem::take(&mut self.dirty)
+            .then(|| crate::view::state(self).to_string())
+            .filter(|s| *s != self.published)
+            .inspect(|s| self.published.clone_from(s));
         (state, std::mem::take(&mut self.toasts), std::mem::take(&mut self.dialogs))
     }
 
@@ -967,6 +1006,7 @@ impl App {
                 self.toast(&gettext("This RAW has no camera JPEG to match"));
             }
             Msg::AsInCameraOnOpen(on) => {
+                self.prefs.as_in_camera = on;
                 if let Err(e) = settings::set_value(settings::AS_IN_CAMERA, if on { "1" } else { "0" }) {
                     self.toast(&gettext!("Cannot save the setting: {}", e));
                 }
@@ -1498,6 +1538,7 @@ impl App {
                 if let Err(e) = settings::set_folder(settings::LUT_FOLDER, &dir) {
                     self.toast(&gettext!("Cannot save the LUT folder: {}", e));
                 }
+                self.prefs.lut_folder = Some(dir.clone());
                 // Watched before the scan, so files added while it runs trigger another one.
                 self.watch_folder(&dir);
                 let s = self.tx.clone();
@@ -1657,6 +1698,8 @@ impl App {
                 }
                 self.input(Msg::LayerAdd(Layers::Lab, LabAdd::Selected));
             }
+            Msg::LayerFile(which, p) => self.load_layer(which, p, None),
+            Msg::FlashDone => self.ui.flash_look = None,
             Msg::LayerLoaded(which, p, known, Ok(lut)) => self.push_lut(which, Arc::new(lut), Some(p), known),
             Msg::LayerLoaded(_, p, _, Err(e)) => {
                 self.flash_new_look = false;
@@ -1829,12 +1872,15 @@ impl App {
             }
             Msg::Background(name) => {
                 let _ = settings::set_value(settings::BACKGROUND, &name);
+                self.prefs.background = name;
             }
             Msg::MetaPolicy(tag) => {
                 let _ = settings::set_value(settings::METADATA_POLICY, &tag);
+                self.prefs.policy = export_policy();
             }
             Msg::ExportSuffix(s) => {
                 let _ = settings::set_value(settings::EXPORT_SUFFIX, &s);
+                self.prefs.suffix = s;
             }
             Msg::AuthorDefault(key, value) => {
                 let key = match key.as_str() {
@@ -1845,6 +1891,7 @@ impl App {
                     _ => return,
                 };
                 let _ = settings::set_value(key, value.trim());
+                self.prefs.author = author_defaults();
             }
         }
     }

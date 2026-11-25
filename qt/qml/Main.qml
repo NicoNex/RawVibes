@@ -35,10 +35,24 @@ ApplicationWindow {
     Component.onCompleted: {
         const tab = (Qt.application.arguments.find(a => a.startsWith("--tab=")) || "").substring(6)
         if (tab) Store.cmd("tab", { tab: tab })
+        // `--do=<command>:<json>`: commands run once the photo has loaded (screenshots of a state).
+        acts.list = Qt.application.arguments.filter(a => a.startsWith("--do=")).map(a => a.substring(5))
+    }
+    Timer {
+        id: acts
+        property var list: []
+        running: list.length > 0
+        interval: 3500
+        onTriggered: {
+            for (const a of list) {
+                const i = a.indexOf(":")
+                Store.cmd(i < 0 ? a : a.substring(0, i), i < 0 ? {} : JSON.parse(a.substring(i + 1)))
+            }
+        }
     }
     Timer {
         running: win.shot !== ""
-        interval: 6000
+        interval: Number((Qt.application.arguments.find(a => a.startsWith("--wait=")) || "--wait=6000").substring(7))
         onTriggered: root.grabToImage(r => { r.saveToFile(win.shot); Store.cmd("close"); Qt.quit() })
     }
     Connections { target: Store; function onPrefsRequested() { prefs.open() } }
@@ -272,8 +286,11 @@ ApplicationWindow {
     Key { sequence: "B"; onActivated: Store.cmd("browse", { on: !s.browsing }) }
     Key { sequence: "Ctrl+,"; onActivated: prefs.open() }
     Key { sequence: "R"; onActivated: Store.cmd("cropEdit", { on: !(s.crop && s.crop.editing) }) }
-    Key { sequence: "Escape"; onActivated: { Store.levelling = false; Store.cmd("escape") } }
-    Key { sequence: "Return"; onActivated: Store.cmd("cropEdit", { on: false }) }
+    // Escape and Enter belong to a focused field, list or open dialog first (Qt gives shortcuts these keys before them).
+    readonly property bool keysFree: !(activeFocusItem && ("cursorPosition" in activeFocusItem || activeFocusItem instanceof GridView))
+                                     && !Overlay.overlay.children.some(c => c.visible)
+    Key { sequence: "Escape"; enabled: win.keysFree; onActivated: { Store.levelling = false; Store.cmd("escape") } }
+    Key { sequences: ["Return", "Enter"]; enabled: win.keysFree && !!(s.crop && s.crop.editing); onActivated: Store.cmd("cropEdit", { on: false }) }
     Key { sequence: "Ctrl+0"; onActivated: Store.cmd("zoom", { cmd: "fit" }) }
     Key { sequence: "Ctrl+1"; onActivated: Store.cmd("zoom", { cmd: "actual" }) }
     Key { sequences: [StandardKey.ZoomIn, "Ctrl+="]; onActivated: Store.cmd("zoom", { cmd: "in" }) }

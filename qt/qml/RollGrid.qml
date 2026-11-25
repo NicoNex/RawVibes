@@ -27,7 +27,7 @@ Rectangle {
                 border.width: 2
                 Image {
                     anchors { fill: parent; margins: 4; bottomMargin: 22 }
-                    source: it.frame ? "image://rv/roll/" + index + "/" + it.frame : ""
+                    source: it.frame ? "image://rv/roll/" + it.id + "/" + it.frame : ""
                     fillMode: Image.PreserveAspectFit
                     cache: false
                     retainWhileLoading: true

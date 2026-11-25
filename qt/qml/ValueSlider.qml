@@ -77,13 +77,21 @@ Item {
                 color: Theme.line
                 visible: root.track.length === 0
             }
-            Rectangle {
+            // The groove's colours: one two-stop segment per pair, so nothing is created per update.
+            Row {
                 anchors.fill: parent
-                radius: 2
-                visible: root.track.length > 0
-                gradient: Gradient {
-                    orientation: Gradient.Horizontal
-                    stops: root.track.map((c, i) => stop.createObject(null, { position: i / Math.max(1, root.track.length - 1), color: c }))
+                visible: root.track.length > 1
+                Repeater {
+                    model: Math.max(0, root.track.length - 1)
+                    Rectangle {
+                        required property int index
+                        width: parent.width / (root.track.length - 1); height: parent.height
+                        gradient: Gradient {
+                            orientation: Gradient.Horizontal
+                            GradientStop { position: 0; color: root.track[index] || "transparent" }
+                            GradientStop { position: 1; color: root.track[index + 1] || "transparent" }
+                        }
+                    }
                 }
             }
             // Neutral → value, so how far a control has moved reads at a glance.
@@ -109,7 +117,6 @@ Item {
             Behavior on width { NumberAnimation { duration: 80 } }
         }
     }
-    Component { id: stop; GradientStop {} }
 
     TapHandler {
         acceptedButtons: Qt.LeftButton

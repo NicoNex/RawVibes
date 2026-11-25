@@ -104,8 +104,11 @@ Rectangle {
         cursorShape: s.picker ? Qt.CrossCursor : (s.zoomed ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.ArrowCursor)
         property point last
         property bool splitting: false
+        // A press that became a pan or a split drag is not a click (no grey picked where it ends).
+        property real travelled: 0
         onPressed: (e) => {
             last = Qt.point(e.x, e.y)
+            travelled = 0
             splitting = s.compare && e.button === Qt.LeftButton
             if (splitting) setSplit(e.x)
         }
@@ -114,12 +117,17 @@ Rectangle {
         }
         onPositionChanged: (e) => {
             if (!pressed) return
-            if (splitting) return setSplit(e.x)
+            travelled += Math.abs(e.x - last.x) + Math.abs(e.y - last.y)
+            if (splitting) { last = Qt.point(e.x, e.y); return setSplit(e.x) }
             const d = { dx: (e.x - last.x) * canvas.dpr, dy: (e.y - last.y) * canvas.dpr }
             last = Qt.point(e.x, e.y)
             Store.cmd("zoom", { cmd: "pan", dx: d.dx, dy: d.dy, button: e.buttons & Qt.MiddleButton ? 2 : 1 })
         }
-        onClicked: (e) => { const p = canvas.area(e.x, e.y); Store.cmd("canvasClick", { x: p.x, y: p.y }) }
+        onClicked: (e) => {
+            if (travelled > 4) return
+            const p = canvas.area(e.x, e.y)
+            Store.cmd("canvasClick", { x: p.x, y: p.y })
+        }
         onDoubleClicked: (e) => { const p = canvas.area(e.x, e.y); Store.cmd("zoom", { cmd: "toggle", x: p.x, y: p.y }) }
     }
 

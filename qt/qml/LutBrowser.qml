@@ -68,9 +68,15 @@ ColumnLayout {
         readonly property var shown: br.cards.map((c, i) => c.shown ? i : -1).filter(i => i >= 0)
         model: shown.length
         keyNavigationEnabled: true
+        // Nothing selected until the user picks a card.
+        currentIndex: -1
         focus: true
         Keys.onReturnPressed: if (currentItem) Store.cmd("commit", { i: currentItem.card.i })
-        onCurrentIndexChanged: if (currentItem) Store.cmd("selectLut", { i: currentItem.card.i })
+        // The selection follows the keyboard, never a model reset (which moves currentIndex by itself).
+        Keys.onReleased: (e) => {
+            if ([Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down].includes(e.key) && currentItem)
+                Store.cmd("selectLut", { i: currentItem.card.i })
+        }
         ScrollBar.vertical: ScrollBar {}
         delegate: Item {
             id: cell
@@ -119,6 +125,8 @@ ColumnLayout {
         }
         HoverHandler { onHoveredChanged: if (!hovered) Store.cmd("hover", {}) }
     }
+
+    Item { Layout.fillHeight: true; visible: !grid.visible }
 
     // The applied looks under the grid, so a LUT added by mistake goes without leaving the browser.
     ScrollView {

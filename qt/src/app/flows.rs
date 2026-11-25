@@ -476,8 +476,14 @@ impl App {
         (self.rating, self.label, self.meta) = (sc.rating, sc.label, sc.meta);
         self.lens_profile = sc.lens_profile;
         self.set_offs(&sc.off);
-        if let Some(p) = sc.profile {
+        // Another profile re-encodes what is shown in it (GTK's dropdown echo did this).
+        if let Some(p) = sc.profile.filter(|&p| p != self.profile) {
             self.profile = p;
+            self.reencode_roll();
+            if self.show_chart {
+                self.input(Msg::Chart(true));
+            }
+            self.encode_photo();
         }
         self.develop = sc.develop;
         // The profile is the photo's, never the snapshot's (undo, paste): found again.
@@ -641,7 +647,9 @@ impl App {
                         small: None,
                         encoded: None,
                         frame: 0,
+                        id: self.next_roll_id,
                     });
+                    self.next_roll_id += 1;
                     fresh.push(p);
                 }
                 None => {
@@ -1125,6 +1133,7 @@ impl App {
             Layers::Look => {
                 if structure && std::mem::take(&mut self.flash_new_look) {
                     self.ui.flash_look = self.looks.len().checked_sub(1);
+                    self.timers.after(std::time::Duration::from_millis(900), Msg::FlashDone);
                 }
                 self.show_looks();
             }
@@ -1399,7 +1408,7 @@ impl App {
                 if generation == self.roll_gen
                     && let Some(it) = self.roll.get_mut(index)
                 {
-                    rv_set_image(&format!("roll/{index}"), &rgba, width, height, false);
+                    rv_set_image(&format!("roll/{}", it.id), &rgba, width, height, false);
                     it.frame += 1;
                 }
             }

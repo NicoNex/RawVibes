@@ -268,7 +268,7 @@ pub fn command(name: &str, a: &Value) -> Option<Msg> {
         ),
         "layerFile" => {
             let which = if extra.get("which").and_then(Value::as_str) == Some("lab") { Layers::Lab } else { Layers::Look };
-            return Some(Msg::LayerLoaded(which, path(a)?.clone(), None, Lut3d::load(&path(a)?)));
+            Msg::LayerFile(which, path(a)?)
         }
         "layerRemove" => Msg::LayerRemove(layers(a), u(a, "i")),
         "layerMove" => Msg::LayerMove(layers(a), u(a, "i"), b(a, "up")),

@@ -11,10 +11,9 @@ use rawvibes_core::sidecar::{Label, Meta};
 use serde_json::{Value, json};
 
 use crate::app::command::{DETAILS, PARAMS, off_key};
-use crate::app::{App, LabKind, LabLayer, LensStatus, author_defaults, export_policy, export_suffix, mixer_value_mut, wheel_mut};
+use crate::app::{App, LabKind, LabLayer, LensStatus, mixer_value_mut, wheel_mut};
 use crate::gettext;
 use crate::i18n::gettext;
-use crate::settings;
 
 pub fn state(app: &App) -> Value {
     let p = app.grade.params;
@@ -64,6 +63,7 @@ pub fn state(app: &App) -> Value {
                 "rating": it.rating,
                 "label": label_key(it.label),
                 "frame": it.frame,
+                "id": it.id,
                 "active": app.active == Some(i),
                 "shown": app.shows(it.rating, it.label),
             })
@@ -92,8 +92,8 @@ pub fn state(app: &App) -> Value {
     let camera = app.camera_meta();
     let raw = app.camera().is_some();
     let e = &app.ui.export;
-    let policy = export_policy();
-    let defaults = author_defaults();
+    let policy = app.prefs.policy;
+    let defaults = &app.prefs.author;
     json!({
         "tab": app.ui.tab,
         "title": app.path.as_deref().map(crate::app::file_label).unwrap_or_else(|| "RawVibes".into()),
@@ -178,7 +178,7 @@ pub fn state(app: &App) -> Value {
         },
         "quality": crate::app::PreviewQuality::ALL.iter().position(|&q| q == app.quality).unwrap_or(0),
         "refine": app.refine,
-        "asInCameraOnOpen": settings::value(settings::AS_IN_CAMERA).as_deref() == Some("1"),
+        "asInCameraOnOpen": app.prefs.as_in_camera,
         // Crop
         "crop": {
             "rect": app.crop.rect,
@@ -205,7 +205,7 @@ pub fn state(app: &App) -> Value {
         "groupIndex": group,
         "selected": app.selected,
         "candidate": app.candidate.as_ref().map(|c| c.0),
-        "lutFolder": settings::folder(settings::LUT_FOLDER),
+        "lutFolder": app.prefs.lut_folder,
         "presets": app.ui.presets.iter().map(|(n, p)| json!({ "name": n, "path": p })).collect::<Vec<_>>(),
         // Photo export
         "export": {
@@ -224,18 +224,18 @@ pub fn state(app: &App) -> Value {
             "step": e.step,
         },
         // Metadata
-        "meta": meta_view(&app.meta, &defaults),
+        "meta": meta_view(&app.meta, defaults),
         "camera": camera_card(camera),
         "policyNote": gettext!("On export: {} — {}.", policy_name(policy), policy_hint(policy)),
         "prefs": {
             "policies": Policy::ALL.iter().map(|&p| json!({ "tag": p.tag(), "name": policy_name(p), "hint": policy_hint(p) })).collect::<Vec<_>>(),
             "policy": Policy::ALL.iter().position(|&p| p == policy).unwrap_or(1),
-            "suffix": export_suffix(),
+            "suffix": app.prefs.suffix,
             "author": defaults.creator,
             "copyright": defaults.copyright,
             "email": defaults.email,
             "website": defaults.website,
-            "background": settings::value(settings::BACKGROUND).unwrap_or_else(|| "default".into()),
+            "background": app.prefs.background,
             "qualities": [gettext("Automatic"), gettext("Fast"), gettext("Balanced"), gettext("Best")],
         },
         "stages": stage_keys(),

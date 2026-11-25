@@ -16,7 +16,6 @@ Rectangle {
     radius: Theme.radius
     color: flash ? Qt.rgba(0.88, 0.63, 0.25, 0.25) : Theme.raised
     Behavior on color { ColorAnimation { duration: 600 } }
-    Timer { running: row.flash; interval: 900; onTriggered: row.flash = false }
     function send(name, args) { args.which = row.which; args.i = row.row; Store.cmd(name, args) }
     ColumnLayout {
         id: col

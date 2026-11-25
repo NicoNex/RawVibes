@@ -51,7 +51,7 @@ Rectangle {
                 border.width: 2
                 Image {
                     anchors { fill: parent; margins: 3; bottomMargin: 20 }
-                    source: card.it.frame ? "image://rv/roll/" + card.index + "/" + card.it.frame : ""
+                    source: card.it.frame ? "image://rv/roll/" + card.it.id + "/" + card.it.frame : ""
                     fillMode: Image.PreserveAspectFit
                     cache: false
                     retainWhileLoading: true

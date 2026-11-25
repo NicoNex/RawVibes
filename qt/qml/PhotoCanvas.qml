@@ -31,7 +31,8 @@ Rectangle {
         id: photo
         anchors { fill: parent; margins: canvas.margin }
         source: s.photoGen ? "image://rv/photo/" + s.photoGen : ""
-        visible: s.canvas === "image"
+        // Under the HDR surface it would only be drawn over.
+        visible: s.canvas === "image" && !hdrView.visible
         fillMode: Image.PreserveAspectFit
         cache: false
         smooth: true
@@ -94,7 +95,7 @@ Rectangle {
     HdrWindow {
         id: hdr
         color: "black"
-        onHdrChanged: Store.cmd("hdrWhite", { hdr: hdr, v: white })
+        onHdrChanged: Store.cmd("hdrWhite", { hdr: hdr.hdr, v: hdr.white })
         Image {
             anchors.fill: parent
             // The SDR frame until the swapchain turns out HDR: an SDR screen gets an SDR one.
@@ -105,13 +106,14 @@ Rectangle {
             retainWhileLoading: true
         }
         CanvasPointer { anchors.fill: parent; canvas: canvas; ox: canvas.shown.x; oy: canvas.shown.y }
-        DropArea { anchors.fill: parent; onDropped: (drop) => Store.cmd("rollAdd", { paths: drop.urls.map(Store.localPath) }) }
+        DropArea { anchors.fill: parent; onDropped: (drop) => Store.dropPaths(drop.urls) }
     }
     WindowContainer {
+        id: hdrView
         window: hdr
         x: canvas.shown.x; y: canvas.shown.y
         width: canvas.shown.width; height: canvas.shown.height
-        visible: s.hdrPreview === true && (s.hdrGen || 0) > 0 && s.canvas === "image"
+        visible: s.hdrPreview && s.hdrGen > 0 && s.canvas === "image"
                  && !(s.crop && s.crop.editing) && !s.compare && !Store.covered
     }
 
@@ -234,7 +236,7 @@ Rectangle {
     DropArea {
         anchors.fill: parent
         onDropped: (drop) => {
-            Store.cmd("rollAdd", { paths: drop.urls.map(Store.localPath) })
+            Store.dropPaths(drop.urls)
         }
     }
 }

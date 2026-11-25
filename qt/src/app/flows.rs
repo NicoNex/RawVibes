@@ -1352,7 +1352,7 @@ impl App {
             }
             Done::Graded { width, height, rgba, hdr, scopes: Scopes { histogram, waveform, vectorscope } } => {
                 // The HDR rendition goes to the HDR surface; the SDR one always backs the canvas.
-                if let Some(hdr) = hdr {
+                if let Some(hdr) = hdr.filter(|_| self.hdr_preview) {
                     rv_set_image("hdr", hdr, width, height, true);
                     self.ui.hdr_gen += 1;
                 }

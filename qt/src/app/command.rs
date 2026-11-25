@@ -248,9 +248,7 @@ pub fn command(name: &str, a: &Value) -> Option<Msg> {
         // Dropped files, as Open would add them.
         "rollAdd" => Msg::RollAddPaths(paths(a), None),
         "dialogAnswer" => {
-            let mut chosen = paths(a);
-            chosen.extend(path(a));
-            let answer = DialogAnswer { paths: chosen, name: s(a, "name"), cancelled: b(a, "cancelled") };
+            let answer = DialogAnswer { paths: paths(a), name: s(a, "name"), cancelled: b(a, "cancelled") };
             Msg::DialogAnswer(u(a, "id") as i32, answer)
         }
         "toastAction" => Msg::ToastAction(u(a, "id") as i32),
@@ -342,10 +340,10 @@ mod tests {
         assert!(command("nonsense", &Value::Null).is_none());
     }
 
-    /// Single-file and folder dialogs answer with `path`, multi-file ones with `paths`.
+    /// Every dialog answers with `paths` (one for single-file and folder dialogs).
     #[test]
-    fn dialog_answers_carry_one_path_or_many() {
-        let one = command("dialogAnswer", &serde_json::json!({ "id": 3, "path": "/a.cube" }));
+    fn dialog_answers_carry_paths() {
+        let one = command("dialogAnswer", &serde_json::json!({ "id": 3, "paths": ["/a.cube"] }));
         assert!(matches!(one, Some(Msg::DialogAnswer(3, a)) if a.paths == [PathBuf::from("/a.cube")]));
         let many = command("dialogAnswer", &serde_json::json!({ "id": 4, "paths": ["/a", "/b"] }));
         assert!(matches!(many, Some(Msg::DialogAnswer(4, a)) if a.paths.len() == 2));

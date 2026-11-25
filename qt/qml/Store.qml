@@ -21,6 +21,10 @@ QtObject {
         let p = decodeURIComponent(url.toString().replace(/^file:\/\//, ""))
         return /^\/[A-Za-z]:/.test(p) ? p.substring(1) : p
     }
+    // Files dropped on the window: added to the filmstrip, the first opened.
+    function dropPaths(urls) {
+        cmd("rollAdd", { paths: urls.map(localPath) })
+    }
     function tr(text) {
         return Backend.tr(text)
     }

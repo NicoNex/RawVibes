@@ -1089,7 +1089,7 @@ impl App {
                 if let Err(e) = settings::set_flag(settings::AS_IN_CAMERA, on) {
                     self.toast(&gettext!("Cannot save the setting: {}", e));
                 }
-                self.prefs.as_in_camera = on;
+                self.prefs = Prefs::load();
             }
             Msg::CanvasClick(p) => {
                 if let Some(at) = self.image_point(p).filter(|_| self.ui.picker) {
@@ -1565,6 +1565,8 @@ impl App {
             Msg::HdrPreview(on) => {
                 self.hdr_preview = on;
                 if !on {
+                    // Nothing more to convert or keep until it is on again.
+                    crate::hdr::set_surface(false, crate::hdr::white());
                     crate::bridge::rv_drop("hdr");
                 }
                 let _ = settings::set_flag(settings::HDR_PREVIEW, on);
@@ -1624,7 +1626,7 @@ impl App {
                 if let Err(e) = settings::set_folder(settings::LUT_FOLDER, &dir) {
                     self.toast(&gettext!("Cannot save the LUT folder: {}", e));
                 }
-                self.prefs.lut_folder = Some(dir.clone());
+                self.prefs = Prefs::load();
                 // Watched before the scan, so files added while it runs trigger another one.
                 self.watch_folder(&dir);
                 let s = self.tx.clone();
@@ -1949,15 +1951,15 @@ impl App {
             }
             Msg::Background(name) => {
                 let _ = settings::set_value(settings::BACKGROUND, &name);
-                self.prefs.background = name;
+                self.prefs = Prefs::load();
             }
             Msg::MetaPolicy(tag) => {
                 let _ = settings::set_value(settings::METADATA_POLICY, &tag);
-                self.prefs.policy = export_policy();
+                self.prefs = Prefs::load();
             }
             Msg::ExportSuffix(s) => {
                 let _ = settings::set_value(settings::EXPORT_SUFFIX, &s);
-                self.prefs.suffix = s;
+                self.prefs = Prefs::load();
             }
             Msg::AuthorDefault(key, value) => {
                 let key = match key.as_str() {
@@ -1968,7 +1970,7 @@ impl App {
                     _ => return,
                 };
                 let _ = settings::set_value(key, value.trim());
-                self.prefs.author = author_defaults();
+                self.prefs = Prefs::load();
             }
         }
     }

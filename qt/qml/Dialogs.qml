@@ -20,7 +20,7 @@ Item {
         target: Backend
         function onDialog(kind, options) {
             // One at a time: a new request closes the pending one, which answers as cancelled.
-            if (dl.req.id !== undefined) dl.answer({ cancelled: true })
+            dl.cancel()
             dl.req = JSON.parse(options)
             const r = dl.req
             if (kind === "folder") {
@@ -61,13 +61,13 @@ Item {
         onRejected: dl.cancel()
         onAccepted: {
             if (fileMode === FileDialog.OpenFiles) dl.answer({ paths: selectedFiles.map(Store.localPath) })
-            else dl.answer({ path: Store.localPath(selectedFile) })
+            else dl.answer({ paths: [Store.localPath(selectedFile)] })
         }
     }
     FolderDialog {
         id: folder
         onRejected: dl.cancel()
-        onAccepted: dl.answer({ path: Store.localPath(selectedFolder) })
+        onAccepted: dl.answer({ paths: [Store.localPath(selectedFolder)] })
     }
     DialogShell {
         id: ask

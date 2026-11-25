@@ -112,7 +112,7 @@ ColumnLayout {
         wrapMode: Text.Wrap
         color: Theme.dim; font.pixelSize: Theme.small + 1
         linkColor: Theme.accent
-        text: s.policyNote || ""
+        text: s.policyNote
         onLinkActivated: Store.prefsRequested()
     }
 }

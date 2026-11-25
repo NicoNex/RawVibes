@@ -33,8 +33,7 @@ private:
         const QRhiSwapChainHdrInfo info = sc->hdrInfo();
         const double white = info.luminanceBehavior == QRhiSwapChainHdrInfo::SceneReferred
             ? (info.sdrWhiteLevel > 0 ? info.sdrWhiteLevel : 203.0) / 80.0 : 1.0;
-        if (m_seen && hdr == m_rtHdr && qFuzzyCompare(white, m_rtWhite)) return;
-        m_seen = true;
+        if (hdr == m_rtHdr && qFuzzyCompare(white, m_rtWhite)) return;
         m_rtHdr = hdr;
         m_rtWhite = white;
         QMetaObject::invokeMethod(this, [this, hdr, white] {
@@ -45,8 +44,7 @@ private:
     }
     bool m_hdr = false;
     double m_white = 203.0 / 80.0;
-    // Render thread only.
-    bool m_seen = false;
+    // Render thread only; a first frame equal to the GUI's defaults has nothing to tell it.
     bool m_rtHdr = false;
-    double m_rtWhite = 0;
+    double m_rtWhite = 203.0 / 80.0;
 };

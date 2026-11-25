@@ -241,7 +241,7 @@ ApplicationWindow {
 
     Binding {
         target: Store; property: "covered"
-        value: (!!Overlay.overlay && Overlay.overlay.children.some(c => c.visible)) || toasts.count > 0
+        value: win.overlayOpen || toasts.count > 0
     }
     Toasts {
         id: toasts
@@ -304,8 +304,10 @@ ApplicationWindow {
         { keys: ["Ctrl+,"], shown: "Ctrl+,", label: Store.tr("Preferences"), act: () => prefs.open() },
         { keys: ["Ctrl+?"], shown: "Ctrl+?", label: Store.tr("Keyboard Shortcuts"), act: () => keys.open() },
     ]
+    // A menu, popup or dialog is open.
+    readonly property bool overlayOpen: !!Overlay.overlay && Overlay.overlay.children.some(c => c.visible)
     readonly property bool keysFree: !(activeFocusItem && ("cursorPosition" in activeFocusItem || activeFocusItem instanceof GridView))
-                                     && !(Overlay.overlay && Overlay.overlay.children.some(c => c.visible))
+                                     && !win.overlayOpen
     Repeater {
         model: win.shortcuts.length
         Item {

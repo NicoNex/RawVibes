@@ -239,12 +239,10 @@ fn load_raster(path: &Path, max: Option<u32>) -> Result<Photo, String> {
     if let Some(max) = max {
         img = img.thumbnail(max, max);
     }
-    let img = img.into_rgba32f();
-    let (width, height) = img.dimensions();
-    // Reused in place, not collected again: a 50 MP RGBA32F image is ~800 MB.
-    let mut pixels: Vec<[f32; 4]> = bytemuck::allocation::cast_vec(img.into_raw());
-    pixels.iter_mut().for_each(|p| p[3] = 1.0);
-    Ok(Photo { width, height, pixels })
+    // Reused in place, not collected again (a 50 MP RGBA32F image is ~800 MB); alpha is opaque here.
+    let mut photo = Photo::from_image(img.into_rgba32f());
+    photo.pixels.iter_mut().for_each(|p| p[3] = 1.0);
+    Ok(photo)
 }
 
 /// The JPEG the camera embedded in a RAW, display-encoded, fitting 1024 px.

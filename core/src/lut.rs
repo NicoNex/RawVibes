@@ -87,6 +87,9 @@ pub struct LutEntry {
 /// Libraries larger than this are truncated (the UI says so).
 pub const MAX_LIBRARY: usize = 3000;
 
+/// The largest lattice a .cube or .vlt may declare: 256³ is ~200 MB on the GPU, beyond any real LUT.
+const MAX_CUBE: usize = 256;
+
 impl Lut3d {
     /// The neutral N³ lattice.
     pub fn identity(size: usize, format: Format) -> Self {
@@ -163,7 +166,7 @@ impl Lut3d {
             data.push([v[0] / VLT_MAX, v[1] / VLT_MAX, v[2] / VLT_MAX]);
         }
         // Checked: a huge size must not wrap round to a small cube in release builds.
-        if size < 2 || size.checked_pow(3) != Some(data.len()) {
+        if !(2..=MAX_CUBE).contains(&size) || size.checked_pow(3) != Some(data.len()) {
             return Err(format!("expected {size}³ entries, found {}", data.len()));
         }
         Ok(Self { title: String::new(), size, data, format: Format::Vlt })
@@ -242,7 +245,7 @@ impl Lut3d {
             }
         }
         // Checked: a huge size must not wrap round to a small cube in release builds.
-        if size < 2 || size.checked_pow(3) != Some(data.len()) {
+        if !(2..=MAX_CUBE).contains(&size) || size.checked_pow(3) != Some(data.len()) {
             return Err(format!("expected {}³ entries, found {}", size, data.len()));
         }
         Ok(Self { title, size, data, format: Format::Cube })

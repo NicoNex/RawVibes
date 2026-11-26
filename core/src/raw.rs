@@ -1506,8 +1506,7 @@ impl Gpu {
         for yy in 0..=(y1 - y0) {
             for xx in x0..=x1 {
                 let i = (yy * w + xx) as usize * 2;
-                let c =
-                    [f16_to_f32(words[i] as u16), f16_to_f32((words[i] >> 16) as u16), f16_to_f32(words[i + 1] as u16)];
+                let c = unpack(&[words[i], words[i + 1]]);
                 (0..3).for_each(|k| sum[k] += c[k]);
             }
         }
@@ -1536,8 +1535,10 @@ impl Gpu {
 
     /// A mip level as f32 RGB.
     fn read_level(&self, raw: &GpuRaw, k: usize) -> Vec<[f32; 3]> {
-        let words: Vec<u32> = bytemuck::cast_slice(&self.read_f32(&raw.levels[k].0)).to_vec();
-        words.as_chunks::<2>().0.iter().map(unpack).collect()
+        use rayon::prelude::*;
+        // Read as f32 (aligned) and seen as words in place: no second copy of a ~48 MB level.
+        let f = self.read_f32(&raw.levels[k].0);
+        bytemuck::cast_slice::<f32, u32>(&f).as_chunks::<2>().0.par_iter().map(unpack).collect()
     }
 
     /// The mosaic white-balanced as shot, with clipped highlights rebuilt.

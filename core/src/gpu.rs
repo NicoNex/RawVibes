@@ -428,7 +428,6 @@ pub enum Job {
     /// The filmstrip photos (already preview-sized); `generation` lets the
     /// UI drop frames of an older strip.
     SetRoll(u64, Vec<Arc<Photo>>),
-    /// Every filmstrip photo through the grade and the look LUTs.
     /// Each frame's grade; the look LUT only on the frame of the open photo.
     RenderRoll(Vec<Grade>, Option<usize>),
     /// Colour transfer from `source` (decoded by `input`, otherwise ungraded)
@@ -664,6 +663,8 @@ const EXPORT_ROWS_BYTES: u64 = 192 << 20;
 
 /// Lattice the look LUTs are composed on for export (the preview uses 33³).
 const EXPORT_LOOK: usize = 65;
+/// The lattice the preview, the LUT Lab and the thumbnails compose looks at.
+const PREVIEW_LOOK: usize = 33;
 
 impl Worker {
     /// The thumbnails' source: downscaled and uploaded only when it is another photo.
@@ -945,16 +946,16 @@ impl Worker {
                 gpu.upload_into(&mut self.view, &p);
             }
             Job::SetLook(stack) => {
-                // ponytail: 33³ preview composite, like the Lab; exports compose exactly.
+                // ponytail: preview composite, like the Lab; exports compose at EXPORT_LOOK.
                 self.look = (!stack.layers.is_empty())
-                    .then(|| gpu.upload_lut(&lab::compose(&stack, 33, &|g| self.bake_cached(gpu, g))));
+                    .then(|| gpu.upload_lut(&lab::compose(&stack, PREVIEW_LOOK, &|g| self.bake_cached(gpu, g))));
                 // The filmstrip shows the looks too: every frame is stale.
                 self.roll.1.iter_mut().for_each(|f| f.last = None);
             }
             Job::SetThumbBase(base) => {
                 self.base = base.map(|b| {
                     let bake = |g: &Grade| self.bake_cached(gpu, g);
-                    b.compose(33, &bake)
+                    b.compose(PREVIEW_LOOK, &bake)
                 });
             }
             Job::Render(grade, split) => {
@@ -1009,8 +1010,8 @@ impl Worker {
             Job::Gallery(generation, paths) => self.gallery = Some((generation, paths, 0)),
             Job::Lab { stack, split } => {
                 let Some(ph) = self.shown() else { return };
-                // ponytail: 33³ preview lattice; exports compose at full size.
-                let lut = lab::compose(&stack, 33, &|g| self.bake_cached(gpu, g));
+                // ponytail: preview lattice; exports compose at EXPORT_LOOK.
+                let lut = lab::compose(&stack, PREVIEW_LOOK, &|g| self.bake_cached(gpu, g));
                 let rgba = gpu.apply_lut(ph, &gpu.upload_lut(&lut), split);
                 notify(Done::Lab { width: ph.width, height: ph.height, rgba });
             }

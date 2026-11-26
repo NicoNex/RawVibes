@@ -346,7 +346,7 @@ pub fn gamut_compress(rgb: [f32; 3]) -> [f32; 3] {
     if min >= 0.0 {
         return rgb;
     }
-    let y = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+    let y = crate::grade::LUMA.iter().zip(rgb).map(|(w, c)| w * c).sum::<f32>();
     if y <= 0.0 {
         return [0.0; 3];
     }

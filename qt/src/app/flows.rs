@@ -125,7 +125,7 @@ impl App {
     /// Adds the open photo's edits to its undo history when they changed since the step shown.
     /// Stars, labels and metadata are not edits: they never make a step.
     pub(super) fn record_edits(&mut self) {
-        if self.path.is_none() || self.saved.is_none() || self.looks_loading || self.camera_pending {
+        if self.path.is_none() || self.saved.is_none() || self.looks_loading {
             return;
         }
         let now = self.sidecar_state();
@@ -445,8 +445,7 @@ impl App {
 
     /// Writes the open photo's sidecar if its edits changed since it was read or written.
     pub(super) fn save_now(&mut self) {
-        // Not halfway through loading: the looks or the camera's tone curve still to come.
-        let Some(path) = self.path.clone().filter(|_| !self.looks_loading && !self.camera_pending) else { return };
+        let Some(path) = self.path.clone().filter(|_| !self.looks_loading) else { return };
         let now = self.sidecar_state();
         if self.saved.as_ref().is_none_or(|s| *s == now) {
             return;
@@ -972,8 +971,9 @@ impl App {
                 Some(&(_, k, t)) => dev.wb = Some([k, t]),
                 None => return, // Custom: whatever the sliders say
             },
-            DevelopEdit::Kelvin(v) => dev.wb = Some([v, t]),
-            DevelopEdit::Tint(v) => dev.wb = Some([k, v]),
+            // Both sliders back on the camera's values (a reset): As shot again, not a Custom copy of it.
+            DevelopEdit::Kelvin(v) => dev.wb = Some([v, t]).filter(|w| !same_wb(*w, cam.as_shot_kelvin_tint())),
+            DevelopEdit::Tint(v) => dev.wb = Some([k, v]).filter(|w| !same_wb(*w, cam.as_shot_kelvin_tint())),
             DevelopEdit::Exposure(v) => dev.exposure = v,
             DevelopEdit::CameraExposure => dev.exposure = cam.baseline_ev,
             DevelopEdit::Detail(field, v) => *field(&mut dev.detail) = v,
@@ -1049,12 +1049,17 @@ impl App {
             let cached = self.camera_jpeg.clone().filter(|c| c.0 == path).map(|c| c.1);
             let s = self.tx.clone();
             std::thread::spawn(move || {
-                let jpeg = cached.or_else(|| rawvibes_core::photo::embedded_preview(&path).ok().map(Arc::new));
-                let curve = jpeg.as_ref().and_then(|jpeg| {
-                    // The master curve works on display values: Standard whatever the input profile.
-                    let neutral = as_shot_render(&d, &develop, Profile::Standard);
-                    rawvibes_core::histmatch::auto_tone_curve(&neutral, jpeg, d.size().0)
-                });
+                // Answered even if a decode panics: the photo waits on it to save and export.
+                let (jpeg, curve) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let jpeg = cached.or_else(|| rawvibes_core::photo::embedded_preview(&path).ok().map(Arc::new));
+                    let curve = jpeg.as_ref().and_then(|jpeg| {
+                        // The master curve works on display values: Standard whatever the input profile.
+                        let neutral = as_shot_render(&d, &develop, Profile::Standard);
+                        rawvibes_core::histmatch::auto_tone_curve(&neutral, jpeg, d.size().0)
+                    });
+                    (jpeg, curve)
+                }))
+                .unwrap_or_default();
                 s.send(Msg::CameraCurve(path.clone(), jpeg, curve));
                 // The Real Time LUTs are offered in place of the curve, not on top of it.
                 for l in rawvibes_core::makernote::real_time_luts(&path) {
@@ -1483,4 +1488,9 @@ fn rgba8(pixels: &[[f32; 4]]) -> Vec<u8> {
 pub(super) fn strip_copy(path: PathBuf, profile: Profile) -> Msg {
     let small = Decoded::load_max(&path, Some(ROLL_PX)).map(|d| roll_copy(&d, profile));
     Msg::RollLoaded(path, small)
+}
+
+/// Two white balances the sliders cannot tell apart (Kelvin and tint to a thousandth).
+fn same_wb(a: [f32; 2], b: [f32; 2]) -> bool {
+    (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3
 }

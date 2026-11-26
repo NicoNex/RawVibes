@@ -46,6 +46,7 @@ MouseArea {
     property real wheelSteps: 0
     property point wheelAt
     onWheel: (e) => {
+        if (e.angleDelta.y === 0) return
         wheelSteps -= e.angleDelta.y / 120
         wheelAt = at(e)
         wheelSend.start()

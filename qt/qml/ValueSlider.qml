@@ -18,9 +18,7 @@ Item {
     // Gradient stops drawn in the groove (temperature, hue bands…) instead of the fill.
     property var track: []
     signal moved(real value)
-    // Called by reset (button, double-click) in place of moving to `neutral`, when set.
-    property var resetTo: null
-    function reset() { if (resetTo) resetTo(); else send(neutral) }
+    function reset() { send(neutral) }
 
     implicitHeight: 38
     implicitWidth: 240

@@ -1029,6 +1029,9 @@ impl App {
                 self.record_edits();
                 self.save_now();
             }
+            // Not before the camera's tone curve: a sidecar with its white balance but no curve would stop
+            // "as in camera" from ever applying. Leaving the photo or closing saves anyway.
+            Msg::WriteSidecar if self.camera_pending => {}
             Msg::WriteSidecar => self.save_now(),
             Msg::Close => {
                 self.save_now();

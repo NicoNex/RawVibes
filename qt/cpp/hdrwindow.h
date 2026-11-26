@@ -32,8 +32,8 @@ public:
 #ifdef Q_OS_LINUX
         // NVIDIA's Vulkan driver gives Wayland an HDR10 swapchain but never tags the surface PQ, so the
         // compositor reads the codes as sRGB (washed out); Qt tags it from the format's colour space.
-        // shortcut: only when every GPU is NVIDIA, since Mesa tags the surface itself and a second tag is a
-        // protocol error (a hybrid laptop may render on Mesa); drop it once NVIDIA's driver tags HDR10 swapchains.
+        // shortcut: only on NVIDIA's own driver driving every monitor, since Mesa tags the surface itself and a
+        // second tag is a protocol error; drop it once NVIDIA's driver tags its HDR10 swapchains.
         if (QGuiApplication::platformName() == QLatin1String("wayland") && onlyNvidia()) {
             QSurfaceFormat f = requestedFormat();
             f.setColorSpace(QColorSpace(QColorSpace::Primaries::Bt2020, QColorSpace::TransferFunction::St2084));
@@ -47,14 +47,18 @@ public:
             }, Qt::QueuedConnection);
     }
 #ifdef Q_OS_LINUX
-    // Every DRM card's PCI vendor is NVIDIA's (0x10de), and there is at least one.
+    // NVIDIA's own driver (not nouveau/NVK, which tag themselves) drives every connected monitor: the
+    // compositor's GPU, which Qt renders on too. A hybrid laptop's panel on the iGPU fails this.
     static bool onlyNvidia() {
-        const QStringList cards = QDir(QStringLiteral("/sys/class/drm")).entryList({QStringLiteral("card?")}, QDir::Dirs);
+        if (!QFile::exists(QStringLiteral("/proc/driver/nvidia/version"))) return false;
+        const QString drm = QStringLiteral("/sys/class/drm/");
         bool any = false;
-        for (const QString &c : cards) {
-            QFile f(QStringLiteral("/sys/class/drm/%1/device/vendor").arg(c));
-            if (!f.open(QIODevice::ReadOnly)) continue;
-            if (f.readAll().trimmed() != "0x10de") return false;
+        // Connectors are cardN-<name>; their card's PCI vendor is in cardN/device/vendor.
+        for (const QString &c : QDir(drm).entryList({QStringLiteral("card*-*")}, QDir::Dirs)) {
+            QFile status(drm + c + QStringLiteral("/status"));
+            if (!status.open(QIODevice::ReadOnly) || status.readAll().trimmed() != "connected") continue;
+            QFile vendor(drm + c.section(QLatin1Char('-'), 0, 0) + QStringLiteral("/device/vendor"));
+            if (!vendor.open(QIODevice::ReadOnly) || vendor.readAll().trimmed() != "0x10de") return false;
             any = true;
         }
         return any;

@@ -85,8 +85,6 @@ ColumnLayout {
             label: Store.tr("Temperature")
             from: (Store.c.kelvinRange || [2000, 12000])[0]; to: (Store.c.kelvinRange || [2000, 12000])[1]
             neutral: ws[0]
-            // Back to as shot only once both are: else just this one, the other kept.
-            resetTo: () => Math.abs((dev.tint || 0) - ws[1]) < 1e-6 ? Store.cmd("asShot") : Store.cmd("kelvin", { v: ws[0] })
             unit: " K"
             track: Theme.temperatureTrack
             value: dev.kelvin || 5500
@@ -97,7 +95,6 @@ ColumnLayout {
             label: Store.tr("Tint")
             track: Theme.tintTrack
             neutral: ws[1]
-            resetTo: () => Math.abs((dev.kelvin || 5500) - ws[0]) < 1e-6 ? Store.cmd("asShot") : Store.cmd("tint", { v: ws[1] })
             value: dev.tint || 0
             onMoved: (v) => Store.cmd("tint", { v: v })
         }

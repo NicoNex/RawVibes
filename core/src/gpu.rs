@@ -665,6 +665,16 @@ const SMALL_COPY: u32 = 512;
 // shortcut: the caches never hit across strips; a no-cache develop would allow larger strips (less margin re-developed).
 const EXPORT_ROWS_BYTES: u64 = 192 << 20;
 
+/// The strip budget for `e`: EXPORT_ROWS_BYTES, raised until each strip keeps at least twice the
+/// detail tools' margin as rows of its own. Below that a strip is mostly margin, developed again by
+/// its neighbours: a 6000 px RAW with local contrast (865 px margin) took 10.8 s instead of 0.4 s.
+/// `export_photo` still caps it at the GPU's buffer limits.
+fn export_budget(e: &PhotoExport) -> u64 {
+    let margin = if e.decoded.is_raw() { e.develop.detail.support().ceil() as u64 } else { 0 };
+    let (w, _) = Decoded::fit_size(&e.crop, u32::MAX);
+    EXPORT_ROWS_BYTES.max((w as u64 + 2 * margin) * 16 * (4 * margin + 16))
+}
+
 /// Lattice the look LUTs are composed on for export (the preview uses 33³).
 const EXPORT_LOOK: usize = 65;
 /// The lattice the preview, the LUT Lab and the thumbnails compose looks at.
@@ -1034,7 +1044,7 @@ impl Worker {
             }
             Job::ExportPhoto(e) => {
                 let cancelled = || e.cancel.load(Ordering::Relaxed);
-                let r = self.export_photo(gpu, &e, EXPORT_ROWS_BYTES, notify).and_then(|done| match done {
+                let r = self.export_photo(gpu, &e, export_budget(&e), notify).and_then(|done| match done {
                     Some(img) => export::save(&e.path, img, e.format, e.quality, &e.tags, cancelled)
                         .map(|saved| saved.then_some(e.path.clone())),
                     None => Ok(None),
@@ -1362,6 +1372,41 @@ mod tests {
         let ph = gpu.upload(&Photo { width: w, height: h, pixels: vec![[0.5, 0.5, 0.5, 1.0]; (w * h) as usize] });
         let rgba = gpu.render(&ph, &Grade::default(), None, 0.0);
         assert_eq!(&rgba[rgba.len() - 4..], &rgba[..4], "the last pixel is graded like the first");
+    }
+
+    /// A full-size export with the detail tools' widest margin, at three strip budgets, timed:
+    /// `RAWVIBES_RAW=x.RW2 cargo test --release -p rawvibes-core heavy_export_time -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn heavy_export_time() {
+        let Ok(raw) = std::env::var("RAWVIBES_RAW") else { return };
+        let gpu = Gpu::new().unwrap();
+        let path = PathBuf::from(raw);
+        let mut worker = Worker::default();
+        let notify = |_: Done| {};
+        let decoded = load_raw(&mut worker, &gpu, path.clone(), Arc::new(crate::raw::read_raw(&path).unwrap()));
+        let size = [decoded.size().0 as f32, decoded.size().1 as f32];
+        let detail = crate::develop::Detail { local_contrast: 40.0, shadows: 35.0, highlights: -30.0, sharpen: 30.0, usm: 70.0, ..Default::default() };
+        let e = PhotoExport {
+            decoded,
+            crop: Region { center: size.map(|v| v / 2.0), size, angle: 0.0 },
+            develop: Develop { detail, ..Develop::default() },
+            profile: Profile::Standard,
+            grade: Grade::default(),
+            look: Stack { input: Profile::Standard, layers: Vec::new(), blend: Blend::Chain },
+            format: PhotoFormat::Tiff16,
+            quality: 90,
+            headroom: 0.0,
+            path: PathBuf::new(),
+            cancel: Arc::default(),
+            tags: Default::default(),
+        };
+        eprintln!("margin {}", e.develop.detail.support().ceil());
+        for budget in [EXPORT_ROWS_BYTES, export_budget(&e), 4 * EXPORT_ROWS_BYTES] {
+            let t = std::time::Instant::now();
+            worker.export_photo(&gpu, &e, budget, &notify).unwrap();
+            eprintln!("budget {} MB: {:?}", budget >> 20, t.elapsed());
+        }
     }
 
     /// Loads `data` as the worker does and returns the `Decoded` it hands the UI.

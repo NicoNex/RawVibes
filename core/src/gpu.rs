@@ -1071,7 +1071,7 @@ pub fn spawn(notify: impl Fn(Done) + Send + 'static) -> (mpsc::Sender<Job>, std:
                 Err(e) => return notify(Done::Failed(e)),
             };
             let mut worker = Worker::default();
-            let (mut thumbs_left, mut ai_left) = (false, false);
+            let (mut thumbs_left, mut ai_left, mut failures) = (false, false, 0);
             loop {
                 // Block for work only when no thumbnail pass or AI run is pending.
                 let first = if thumbs_left || ai_left {
@@ -1092,14 +1092,29 @@ pub fn spawn(notify: impl Fn(Done) + Send + 'static) -> (mpsc::Sender<Job>, std:
                 batch.reverse();
                 batch.retain(|j| j.slot().is_none_or(|s| !std::mem::replace(&mut seen[s as usize], true)));
                 batch.reverse();
-                // A device loss or validation error panics inside wgpu: report it instead of dying silently.
+                // A bad input or a validation error panics inside wgpu: that job is dropped and reported, the
+                // worker starts afresh (its state may be half-updated) and serves the next ones. Only a run
+                // of failures, a lost device, stops it.
                 let ok = catch_unwind(AssertUnwindSafe(|| {
                     batch.into_iter().for_each(|job| worker.handle(&gpu, job, &notify));
                     thumbs_left = worker.gallery_step(&gpu, &notify);
                     ai_left = worker.ai_step(&gpu, &notify);
                 }));
-                if ok.is_err() {
-                    return notify(Done::Failed("GPU error, restart the application".into()));
+                match ok {
+                    Ok(()) => failures = 0,
+                    Err(e) => {
+                        failures += 1;
+                        if failures >= 3 {
+                            return notify(Done::Failed("GPU error, restart the application".into()));
+                        }
+                        let why = e.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| e.downcast_ref::<String>().cloned());
+                        worker = Worker::default();
+                        (thumbs_left, ai_left) = (false, false);
+                        notify(Done::Failed(format!(
+                            "GPU job failed ({}): open the photo again",
+                            why.unwrap_or_else(|| "unknown error".into())
+                        )));
+                    }
                 }
             }
         })

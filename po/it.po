@@ -1825,8 +1825,8 @@ msgstr ""
 
 #: gtk/src/main.rs:5797 qt/src/app/flows.rs:1334
 #, rust-format
-msgid "GPU unavailable: {}"
-msgstr "GPU non disponibile: {}"
+msgid "GPU error: {}"
+msgstr "Errore GPU: {}"
 
 #: gtk/src/main.rs:5820 qt/src/app/flows.rs:1355
 #, rust-format

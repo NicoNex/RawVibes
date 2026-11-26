@@ -1761,7 +1761,7 @@ msgstr ""
 
 #: gtk/src/main.rs:5797 qt/src/app/flows.rs:1334
 #, rust-format
-msgid "GPU unavailable: {}"
+msgid "GPU error: {}"
 msgstr ""
 
 #: gtk/src/main.rs:5820 qt/src/app/flows.rs:1355

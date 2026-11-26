@@ -5823,11 +5823,11 @@ impl App {
     fn on_gpu(&mut self, done: Done, sender: &ComponentSender<Self>) {
         match done {
             Done::Failed(e) => {
-                // The worker is gone: an export in progress never reports back.
+                // The job died with its worker state: an export in progress never reports back.
                 if self.exporting.take().is_some() {
                     self.ui.export_photo.set_busy(false);
                 }
-                self.toast(&gettext!("GPU unavailable: {}", e))
+                self.toast(&gettext!("GPU error: {}", e))
             }
             Done::Graded { width, height, rgba, hdr, scopes: Scopes { histogram, waveform, vectorscope } } => {
                 let shown = match hdr {

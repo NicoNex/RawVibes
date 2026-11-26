@@ -359,7 +359,7 @@ fn app1(payload: &[u8]) -> Vec<u8> {
 }
 
 mod hdr;
-pub use hdr::{SDR_WHITE, pq_encode};
+pub use hdr::pq_encode;
 
 #[cfg(test)]
 mod tests {

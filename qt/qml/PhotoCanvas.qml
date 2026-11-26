@@ -31,8 +31,7 @@ Rectangle {
         id: photo
         anchors { fill: parent; margins: canvas.margin }
         source: Store.img("photo")
-        // Under the HDR surface it would only be drawn over.
-        // Under the HDR window too, until that one turns out to show HDR.
+        // Hidden only under an HDR window that shows HDR: while it checks its swapchain, the photo stays.
         visible: s.canvas === "image" && !(hdrView.visible && hdr.hdr)
         fillMode: Image.PreserveAspectFit
         cache: false
@@ -95,11 +94,14 @@ Rectangle {
     HdrWindow {
         id: hdr
         color: "black"
-        onHdrChanged: Store.cmd("hdrWhite", { hdr: hdr.hdr, v: hdr.white, pq: hdr.pq })
+        onHdrChanged: {
+            probe.running = false
+            Store.cmd("hdrWhite", { hdr: hdr.hdr, v: hdr.white, pq: hdr.pq })
+        }
         Image {
             anchors.fill: parent
-            // The SDR frame until the swapchain turns out HDR: an SDR screen gets an SDR one.
-            source: Store.img(hdr.hdr ? "hdr" : "photo")
+            // Only the HDR rendition: an SDR frame on an HDR10 swapchain would read as PQ.
+            source: hdr.hdr ? Store.img("hdr") : ""
             fillMode: Image.Stretch
             cache: false
             smooth: true
@@ -113,26 +115,26 @@ Rectangle {
         window: hdr
         x: canvas.shown.x; y: canvas.shown.y
         width: canvas.shown.width; height: canvas.shown.height
-        // Shown until its first frame tells whether its swapchain is HDR; an SDR one then steps aside,
-        // and the photo under it is the same SDR frame.
-        visible: s.hdrPreview && Store.f.photo > 0 && (hdr.hdr || !(hdr.probed || probe.gaveUp)) && s.canvas === "image"
+        // Shown while it checks its swapchain (one frame), then only with HDR frames to show:
+        // an SDR swapchain steps aside for the SDR photo under it.
+        visible: s.hdrPreview && s.canvas === "image" && (probe.running || (hdr.hdr && Store.f.hdr > 0))
                  && !(s.crop && s.crop.editing) && !s.compare && !Store.covered
     }
-    // A window that never draws (no screen to show it on) never tells: after a while it counts as SDR.
-    Timer {
-        id: probe
-        property bool gaveUp: false
-        interval: 2000
-        running: hdrView.visible && !hdr.probed
-        onTriggered: gaveUp = true
+    // Checks the swapchain when the preview is switched on and when the window changes screen;
+    // a window that never draws (no screen to show it on) never answers and counts as SDR.
+    Timer { id: probe; interval: 2000 }
+    function reprobe() {
+        if (!s.hdrPreview || !(Store.f.photo > 0)) return
+        hdr.reprobe()
+        probe.restart()
     }
-    // On Wayland the HDR window is a subsurface its parent commits: a new frame shows once the
-    // editor's window draws too, so it draws with every frame.
-    Connections {
-        target: Store
-        enabled: hdrView.visible
-        function onFChanged() { if (canvas.Window.window) canvas.Window.window.update() }
-    }
+    readonly property bool previewOn: s.hdrPreview && Store.f.photo > 0
+    onPreviewOnChanged: reprobe()
+    Connections { target: canvas.Window.window; function onScreenChanged() { canvas.reprobe() } }
+    // On Wayland the HDR window is a subsurface its parent commits: a new HDR frame shows once the
+    // editor's window draws too.
+    readonly property real hdrFrame: Store.f.hdr || 0
+    onHdrFrameChanged: if (Qt.platform.os === "linux" && hdrView.visible && canvas.Window.window) canvas.Window.window.update()
 
     // The crop over the whole straightened frame, while editing it.
     Item {

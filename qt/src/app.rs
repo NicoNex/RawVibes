@@ -1605,7 +1605,7 @@ impl App {
                 self.hdr_preview = on;
                 if !on {
                     // Nothing more to convert or keep until it is on again.
-                    crate::hdr::set_surface(false, crate::hdr::white(), false);
+                    crate::hdr::off();
                     self.drop_image("hdr");
                 }
                 let _ = settings::set_flag(settings::HDR_PREVIEW, on);

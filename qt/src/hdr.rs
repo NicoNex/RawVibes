@@ -2,6 +2,7 @@
 //! (linear Rec.2020, 1 = SDR white). Qt's HDR swapchain takes HDR10 (Rec.2020 PQ: Linux,
 //! Windows) or extended linear sRGB (scRGB: macOS EDR), as hdrwindow.h asked for.
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use half::f16;
@@ -35,6 +36,11 @@ pub fn set_surface(hdr: bool, white: f32, pq: bool) {
     SURFACE.store(hdr, Ordering::Release);
 }
 
+/// The preview is off: nothing to convert. White and PQ keep matching each other.
+pub fn off() {
+    SURFACE.store(false, Ordering::Release);
+}
+
 /// `rgba16f` (rec2100-linear) converted in place for the surface: HDR10 or scRGB.
 pub fn convert(rgba16f: &mut [u8]) {
     if PQ.load(Ordering::Relaxed) { to_pq(rgba16f, white()) } else { to_scrgb(rgba16f, white()) }
@@ -43,11 +49,21 @@ pub fn convert(rgba16f: &mut [u8]) {
 /// `rgba16f` (rec2100-linear, half floats) converted in place to Rec.2100 PQ code values,
 /// SDR white at `white` cd/m²; the swapchain shows them as they are.
 pub fn to_pq(rgba16f: &mut [u8], white: f32) {
+    // Every half float in, its PQ code out: 65536 encodes per white, not three per pixel per frame.
+    static TABLE: Mutex<(u32, Vec<u16>)> = Mutex::new((0, Vec::new()));
+    let mut table = TABLE.lock().unwrap_or_else(|e| e.into_inner());
+    if table.0 != white.to_bits() || table.1.is_empty() {
+        let encode = |bits: u16| {
+            let v = f16::from_bits(bits).to_f32();
+            if v.is_finite() && v > 0.0 { f16::from_f32(pq_encode(v * white)).to_bits() } else { 0 }
+        };
+        *table = (white.to_bits(), (0..=u16::MAX).map(encode).collect());
+    }
+    let lut = &table.1;
     rgba16f.par_chunks_mut(8 * 1024).for_each(|chunk| {
         for px in chunk.as_chunks_mut::<8>().0 {
             for c in px.as_chunks_mut::<2>().0.iter_mut().take(3) {
-                let v = f16::from_le_bytes(*c).to_f32().max(0.0);
-                *c = f16::from_f32(pq_encode(v * white)).to_le_bytes();
+                *c = lut[u16::from_le_bytes(*c) as usize].to_le_bytes();
             }
         }
     });

@@ -28,6 +28,8 @@ DTMODEL    := target/models/rawdenoise-nind.dtmodel
 # macOS: shasum (its sha256sum -c reads no stdin); Linux: sha256sum.
 SHA256     := $(shell command -v shasum >/dev/null && echo shasum -a 256 || echo sha256sum)
 
+# The binaries are phony: cargo knows when they are stale, make does not.
+.PHONY: target/release/$(BIN) target/release/$(BIN)-qt
 .PHONY: all build run release run-release qt run-qt qt-debug run-qt-debug test check fmt clean install install-data install-gtk install-qt uninstall arch dmg dmg-qt zip-qt pot locale models lensfun
 
 all: release
@@ -89,7 +91,7 @@ pot:
 	for l in $(LINGUAS); do msgmerge -U --backup=none po/$$l.po po/$(BIN).pot; done
 
 target/release/$(BIN):
-	$(CARGO) build --release
+	$(CARGO) build --release -p $(BIN)
 
 models: $(MODELS)
 

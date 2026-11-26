@@ -5,6 +5,7 @@
 
 #include <QtQuick/QQuickWindow>
 #include <rhi/qrhi.h>
+#include <atomic>
 
 class RvHdrWindow : public QQuickWindow {
     Q_OBJECT
@@ -12,8 +13,6 @@ class RvHdrWindow : public QQuickWindow {
     // in units of SDR white: scene-referred scRGB is 80 nits, display-referred (macOS EDR) is SDR white.
     Q_PROPERTY(bool hdr READ hdr NOTIFY hdrChanged)
     Q_PROPERTY(double white READ white NOTIFY hdrChanged)
-    // A frame has been rendered, so `hdr` is known: an SDR window steps aside after it.
-    Q_PROPERTY(bool probed READ probed NOTIFY hdrChanged)
     // HDR10 (Rec.2020 PQ, `white` in cd/m²) rather than scRGB (`white` a multiplier).
     Q_PROPERTY(bool pq READ pq NOTIFY hdrChanged)
 public:
@@ -29,7 +28,9 @@ public:
     }
     bool hdr() const { return m_hdr; }
     double white() const { return m_white; }
-    bool probed() const { return m_probed; }
+    // Tells hdrChanged again after the next frame, changed or not: the preview was switched on, or
+    // the window moved to another screen.
+    Q_INVOKABLE void reprobe() { m_reprobe.store(true); update(); }
     bool pq() const { return m_pq; }
 signals:
     void hdrChanged();
@@ -48,14 +49,10 @@ private:
             ? info.sdrWhiteLevel : 203.0;
         const double white = pq ? nits
             : info.luminanceBehavior == QRhiSwapChainHdrInfo::SceneReferred ? nits / 80.0 : 1.0;
-        if (m_rtProbed && hdr == m_rtHdr && qFuzzyCompare(white, m_rtWhite)) return;
-        if (!m_rtProbed)
-            qInfo("rawvibes-qt: HDR window swapchain format %d", int(sc->format()));
-        m_rtProbed = true;
+        if (!m_reprobe.exchange(false) && hdr == m_rtHdr && qFuzzyCompare(white, m_rtWhite)) return;
         m_rtHdr = hdr;
         m_rtWhite = white;
         QMetaObject::invokeMethod(this, [this, hdr, pq, white] {
-            m_probed = true;
             m_pq = pq;
             m_hdr = hdr;
             m_white = white;
@@ -63,11 +60,11 @@ private:
         }, Qt::QueuedConnection);
     }
     bool m_hdr = false;
-    bool m_probed = false;
     bool m_pq = false;
     double m_white = 203.0 / 80.0;
+    // Set from the GUI thread, taken by the render thread's next frame.
+    std::atomic<bool> m_reprobe{true};
     // Render thread only.
-    bool m_rtProbed = false;
     bool m_rtHdr = false;
     double m_rtWhite = 203.0 / 80.0;
 };

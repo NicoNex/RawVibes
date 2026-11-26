@@ -1035,6 +1035,10 @@ impl App {
         let _ = settings::set_value(settings::EXPORT_FORMAT, ui.format().tag());
         let _ = settings::set_value(settings::JPEG_QUALITY, &ui.quality().to_string());
         let (format, quality, headroom) = (ui.format(), ui.quality(), self.headroom);
+        let mut grade = self.graded();
+        if format.hdr() {
+            grade.params.hdr_stops = headroom;
+        }
         let tags = self.export_tags(&crop);
         if matches!(format, PhotoFormat::Jpeg | PhotoFormat::UltraHdr)
             && tags.xmp.as_deref().is_some_and(|x| !export::xmp_fits_jpeg(x))
@@ -1046,11 +1050,10 @@ impl App {
             crop,
             develop: self.applied_develop(),
             profile: self.profile,
-            grade: self.graded(),
+            grade,
             look: self.look_stack(self.look_layers()),
             format,
             quality,
-            headroom,
             path,
             cancel,
             tags,

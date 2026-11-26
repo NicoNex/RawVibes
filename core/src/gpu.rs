@@ -482,13 +482,12 @@ pub struct PhotoExport {
     pub crop: Region,
     pub develop: Develop,
     pub profile: Profile,
-    /// The grade as previewed (input set to `profile`), and its look LUTs.
+    /// The grade as previewed (input set to `profile`), and its look LUTs. For the HDR formats,
+    /// `grade.params.hdr_stops` is the headroom in stops over SDR white (as for `Job::ExportFrame`).
     pub grade: Grade,
     pub look: Stack,
     pub format: PhotoFormat,
     pub quality: u8,
-    /// HDR headroom in stops over SDR white, for the HDR formats.
-    pub headroom: f32,
     pub path: PathBuf,
     /// Set by the UI to stop between strips.
     pub cancel: Arc<AtomicBool>,
@@ -866,13 +865,14 @@ impl Worker {
             }
             let mut grade = e.grade.clone();
             grade.params.frame(&strip, &e.crop);
-            if e.format.hdr() {
-                grade.params.hdr_stops = e.headroom;
+            if !e.format.hdr() {
+                grade.params.hdr_stops = 0.0;
             }
             gpu.render16(slot.as_ref().expect("developed above"), &grade, look.as_ref(), &mut out, &mut gains);
             notify(Done::ExportProgress(start + (1.0 - start) * y1 as f32 / h as f32));
         }
-        Ok(Some(Exported { w, h, rgb: out, gains, headroom: e.headroom }))
+        let headroom = if e.format.hdr() { e.grade.params.hdr_stops } else { 0.0 };
+        Ok(Some(Exported { w, h, rgb: out, gains, headroom }))
     }
 
     fn handle(&mut self, gpu: &Gpu, job: Job, notify: &impl Fn(Done)) {
@@ -1338,7 +1338,6 @@ mod tests {
             look: Stack { input: Profile::Standard, layers: Vec::new(), blend: Blend::Chain },
             format: PhotoFormat::Tiff16,
             quality: 90,
-            headroom: 0.0,
             path: PathBuf::new(),
             cancel: Arc::default(),
             tags: Default::default(),
@@ -1353,7 +1352,8 @@ mod tests {
         let worst = one.iter().zip(&many).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
         assert!(worst <= 64, "strip seams differ by {worst}/65535");
         // HDR: the developed RAW hands its scene to the gain, one per pixel, above 1 (log2 > 0).
-        let hdr = PhotoExport { format: PhotoFormat::UltraHdr, headroom: 2.0, ..e };
+        let mut hdr = PhotoExport { format: PhotoFormat::UltraHdr, ..e };
+        hdr.grade.params.hdr_stops = 2.0;
         let img = worker.export_photo(&gpu, &hdr, budget, &notify).unwrap().unwrap();
         assert_eq!(img.gains.len(), 240 * 160);
         assert!(img.gains.iter().all(|&g| g > 0 && g < 65535), "{:?}", &img.gains[..8]);
@@ -1396,7 +1396,6 @@ mod tests {
             look: Stack { input: Profile::Standard, layers: Vec::new(), blend: Blend::Chain },
             format: PhotoFormat::Tiff16,
             quality: 90,
-            headroom: 0.0,
             path: PathBuf::new(),
             cancel: Arc::default(),
             tags: Default::default(),
@@ -1442,11 +1441,14 @@ mod tests {
                 crop,
                 develop: Develop { detail, ..Develop::default() },
                 profile: Profile::Standard,
-                grade: Grade::default(),
+                grade: {
+                    let mut g = Grade::default();
+                    g.params.hdr_stops = export::HDR_HEADROOM;
+                    g
+                },
                 look: Stack { input: Profile::Standard, layers: Vec::new(), blend: Blend::Chain },
                 format,
                 quality: 90,
-                headroom: export::HDR_HEADROOM,
                 path: PathBuf::from(&out).join(format!("export-{}.{}", format.tag(), format.ext())),
                 cancel: Arc::default(),
                 tags: crate::meta::tags(

@@ -366,6 +366,10 @@ impl App {
         }
         let format = self.ui.export.format.unwrap_or(PhotoFormat::Jpeg);
         let (quality, headroom) = (self.ui.export.quality, self.headroom);
+        let mut grade = self.graded();
+        if format.hdr() {
+            grade.params.hdr_stops = headroom;
+        }
         // Remembered as used, not per spin tick.
         let _ = settings::set_value(settings::EXPORT_FORMAT, format.tag());
         let _ = settings::set_value(settings::JPEG_QUALITY, &quality.to_string());
@@ -380,11 +384,10 @@ impl App {
             crop,
             develop: self.applied_develop(),
             profile: self.profile,
-            grade: self.graded(),
+            grade,
             look: self.look_stack(self.look_layers()),
             format,
             quality,
-            headroom,
             path,
             cancel,
             tags,

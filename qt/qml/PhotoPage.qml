@@ -81,7 +81,9 @@ ColumnLayout {
         ValueSlider {
             Layout.fillWidth: true
             label: Store.tr("Temperature")
-            from: (Store.c.kelvinRange || [2000, 12000])[0]; to: (Store.c.kelvinRange || [2000, 12000])[1]; neutral: 5500
+            from: (Store.c.kelvinRange || [2000, 12000])[0]; to: (Store.c.kelvinRange || [2000, 12000])[1]
+            neutral: (dev.asShot || [5500, 0])[0]
+            resetTo: () => Store.cmd("asShot")
             unit: " K"
             track: Theme.temperatureTrack
             value: dev.kelvin || 5500
@@ -91,6 +93,8 @@ ColumnLayout {
             Layout.fillWidth: true
             label: Store.tr("Tint")
             track: Theme.tintTrack
+            neutral: (dev.asShot || [5500, 0])[1]
+            resetTo: () => Store.cmd("asShot")
             value: dev.tint || 0
             onMoved: (v) => Store.cmd("tint", { v: v })
         }

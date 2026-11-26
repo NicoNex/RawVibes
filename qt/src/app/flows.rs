@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rawvibes_core::crop::{self, Crop, Ratio};
 use rawvibes_core::develop::{Camera, Detail, Develop, WB_PRESETS};
@@ -269,7 +269,8 @@ impl App {
     /// Exports the batch's photo once it is open, its looks loaded.
     pub(super) fn batch_ready(&mut self) {
         let Some(b) = self.batch.as_mut() else { return };
-        if b.waiting.is_none() || b.waiting != self.path || self.looks_loading || self.decoded.is_none() {
+        if b.waiting.is_none() || b.waiting != self.path || self.looks_loading || self.camera_pending || self.decoded.is_none()
+        {
             return;
         }
         let path = b.waiting.take().expect("checked above");
@@ -675,12 +676,24 @@ impl App {
         self.ui.canvas = if self.has_source() { "image" } else { "loading" };
         self.load_gen += 1;
         let (s, generation, profile) = (self.tx.clone(), self.load_gen, self.profile);
+        let has_small = self.roll.get(i).is_some_and(|it| it.small.is_some());
+        // The photo last asked for: a decode queued behind others for one clicked past is skipped.
+        static WANTED: AtomicU64 = AtomicU64::new(0);
+        WANTED.store(generation, Ordering::Relaxed);
         std::thread::spawn(move || {
             // Headers only, before queuing behind another decode.
             s.send(Msg::SourceMeta(generation, path.clone(), meta::read(&path).map(Arc::new)));
             // One full-resolution decode at a time: each peaks above 1 GB on a 24 MP RAW.
             static FULL_DECODE: std::sync::Mutex<()> = std::sync::Mutex::new(());
             let _one = FULL_DECODE.lock().unwrap_or_else(|e| e.into_inner());
+            if WANTED.load(Ordering::Relaxed) != generation {
+                // Clicked past: only the strip copy, if the card has none yet.
+                if !has_small {
+                    let small = Decoded::load_max(&path, Some(ROLL_PX)).map(|d| roll_copy(&d, profile));
+                    s.send(Msg::RollLoaded(path, small));
+                }
+                return;
+            }
             if is_raw(&path) {
                 // Developed on the GPU: the strip copy comes back with it (Done::RawLoaded).
                 return s.send(Msg::RawRead(generation, path.clone(), read_raw(&path).map(Arc::new)));
@@ -716,11 +729,13 @@ impl App {
         self.drafting = false;
         self.ui.ai_msg = None;
         // The sidecar sets the eyes itself.
+        self.camera_pending = false;
         match Sidecar::load(&path) {
             Ok(Some(sc)) => self.restore_sidecar(sc),
             Ok(None) => {
                 self.set_offs(&[]);
-                if self.camera().is_some() && self.prefs.as_in_camera {
+                self.camera_pending = self.camera().is_some() && self.prefs.as_in_camera;
+                if self.camera_pending {
                     self.input(Msg::AsInCamera(CameraPart::All));
                 }
             }
@@ -1027,7 +1042,10 @@ impl App {
         if matches!(part, CameraPart::All) {
             self.edit_develop(DevelopEdit::AsShot);
             self.edit_develop(DevelopEdit::CameraExposure);
-            let (Some(d), Some(develop)) = (self.decoded.clone(), self.as_shot()) else { return };
+            let (Some(d), Some(develop)) = (self.decoded.clone(), self.as_shot()) else {
+                self.camera_pending = false;
+                return self.batch_ready();
+            };
             let library: Vec<PathBuf> = self.luts.iter().map(|l| l.path.clone()).collect();
             let cached = self.camera_jpeg.clone().filter(|c| c.0 == path).map(|c| c.1);
             let s = self.tx.clone();

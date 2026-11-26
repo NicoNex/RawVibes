@@ -15,7 +15,12 @@ Item {
         Store.cmd("dialogAnswer", args)
     }
     function cancel() { answer({ cancelled: true }) }
-    function folderUrl(p) { return p ? "file://" + (p.startsWith("/") ? "" : "/") + p : "" }
+    // Each part percent-encoded, so '#', '?' or '%' in a name stay part of the path (the drive's ':' kept).
+    function folderUrl(p) {
+        if (!p) return ""
+        const enc = p.replace(/\\/g, "/").split("/").map(x => encodeURIComponent(x).replace(/%3A/g, ":")).join("/")
+        return "file://" + (enc.startsWith("/") ? "" : "/") + enc
+    }
     Connections {
         target: Backend
         function onDialog(kind, options) {

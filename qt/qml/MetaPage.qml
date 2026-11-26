@@ -24,7 +24,8 @@ ColumnLayout {
             Layout.fillWidth: true
             text: mp.m[parent.key] || ""
             Accessible.name: parent.title
-            onEditingFinished: Store.cmd("meta", { field: parent.key, text: text })
+            // Each keystroke, not on focus out: a click on the filmstrip or closing the window keeps it.
+            onTextEdited: Store.cmd("meta", { field: parent.key, text: text })
         }
     }
     component Fact: ColumnLayout {

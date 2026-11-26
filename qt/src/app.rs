@@ -576,6 +576,8 @@ pub struct App {
     camera_job: Option<PathBuf>,
     saved: Option<Sidecar>,
     looks_loading: bool,
+    /// "As in camera" was asked on open and its tone curve has not come back yet: a batch export waits for it.
+    camera_pending: bool,
     looks_gen: u64,
     save_failed: bool,
     encode_again: bool,
@@ -720,6 +722,7 @@ impl App {
             camera_job: None,
             saved: None,
             looks_loading: false,
+            camera_pending: false,
             looks_gen: 0,
             save_failed: false,
             encode_again: false,
@@ -1000,6 +1003,8 @@ impl App {
                 if i >= self.roll.len() {
                     return;
                 }
+                // The open photo's last edits reach its sidecar before it may close.
+                self.save_now();
                 let was_active = self.drop_from_roll(i);
                 if was_active && self.roll.is_empty() {
                     self.load_gen += 1;
@@ -1049,25 +1054,34 @@ impl App {
                 }
                 self.layers_changed(Layers::Look, true);
                 self.looks_loading = false;
-                self.saved = Some(self.sidecar_state());
+                // The looks join what was read; edits made while they loaded stay unsaved, so they are written.
+                let looks = self.sidecar_state().looks;
+                if let Some(saved) = self.saved.as_mut() {
+                    saved.looks = looks;
+                }
                 self.reset_history();
+                self.schedule_save();
                 self.batch_ready();
             }
             Msg::AsInCamera(part) => self.as_in_camera(part),
             Msg::CameraCurve(path, ..) if Some(&path) != self.path.as_ref() => {}
             Msg::CameraCurve(photo, jpeg, curve) => {
                 self.camera_jpeg = jpeg.map(|j| (photo.clone(), j));
-                let Some(curve) = curve else {
-                    return self.toast(&gettext("No camera JPEG to match the tone curve to"));
-                };
-                let before = self.grade.clone();
-                let mut grade = self.grade.clone();
-                grade.curves[MASTER] = curve.clone();
-                self.camera_curve = Some((photo, curve));
-                self.apply_grade(grade);
-                self.undo_toast(&gettext("Tone curve matched to the camera JPEG"), move || {
-                    Msg::RestoreGrade(Box::new(before.clone()))
-                });
+                match curve {
+                    None => self.toast(&gettext("No camera JPEG to match the tone curve to")),
+                    Some(curve) => {
+                        let before = self.grade.clone();
+                        let mut grade = self.grade.clone();
+                        grade.curves[MASTER] = curve.clone();
+                        self.camera_curve = Some((photo, curve));
+                        self.apply_grade(grade);
+                        self.undo_toast(&gettext("Tone curve matched to the camera JPEG"), move || {
+                            Msg::RestoreGrade(Box::new(before.clone()))
+                        });
+                    }
+                }
+                self.camera_pending = false;
+                self.batch_ready();
             }
             Msg::CameraLut(path, _, _) if Some(&path) != self.path.as_ref() => {}
             Msg::CameraLut(photo, l, Some(file)) => {
@@ -1155,6 +1169,9 @@ impl App {
             }
             // Superseded: not loaded on the GPU, but the strip still needs its copy.
             Msg::RawRead(generation, path, _) if generation != self.load_gen => {
+                if self.roll.iter().any(|it| it.path == path && it.small.is_some()) {
+                    return;
+                }
                 let (s, profile) = (self.tx.clone(), self.profile);
                 std::thread::spawn(move || {
                     let small = Decoded::load_max(&path, Some(ROLL_PX)).map(|d| roll_copy(&d, profile));
@@ -1832,7 +1849,8 @@ impl App {
             }
             Msg::LayerMove(which, i, up) => {
                 let j = if up { i.checked_sub(1) } else { Some(i + 1) };
-                if let Some(j) = j.filter(|&j| j < self.layers_mut(which).len()) {
+                let n = self.layers_mut(which).len();
+                if let Some(j) = j.filter(|&j| i < n && j < n) {
                     self.layers_mut(which).swap(i, j);
                     self.layers_changed(which, true);
                 }

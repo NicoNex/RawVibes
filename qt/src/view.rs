@@ -147,6 +147,8 @@ pub fn state(app: &App) -> Value {
         "develop": {
             "kelvin": app.kelvin_tint().map_or(5500.0, |kt| kt[0]),
             "tint": app.kelvin_tint().map_or(0.0, |kt| kt[1]),
+            // The white balance's neutral: the camera's, not a fixed daylight.
+            "asShot": app.camera().map_or([5500.0, 0.0], |c| c.as_shot_kelvin_tint()),
             "exposure": app.develop.exposure,
             "wbRow": app.wb_row(),
             "detail": app.develop.detail,

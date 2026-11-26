@@ -357,8 +357,8 @@ ApplicationWindow {
         { keys: ["Ctrl+,"], shown: "Ctrl+,", label: Store.tr("Preferences"), act: () => prefs.open() },
         { keys: ["Ctrl+?"], shown: "Ctrl+?", label: Store.tr("Keyboard Shortcuts"), act: () => keys.open() },
     ]
-    // A menu, popup or dialog is open.
-    readonly property bool overlayOpen: !!Overlay.overlay && Overlay.overlay.children.some(c => c.visible)
+    // A menu, popup or dialog is open (a tooltip is not: keys still work under it).
+    readonly property bool overlayOpen: !!Overlay.overlay && Overlay.overlay.children.some(c => c.visible && c.objectName !== "ToolTip")
     readonly property bool keysFree: !(activeFocusItem && ("cursorPosition" in activeFocusItem || activeFocusItem instanceof GridView))
                                      && !win.overlayOpen
     Repeater {

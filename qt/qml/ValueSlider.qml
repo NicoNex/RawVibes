@@ -18,6 +18,9 @@ Item {
     // Gradient stops drawn in the groove (temperature, hue bands…) instead of the fill.
     property var track: []
     signal moved(real value)
+    // Called by reset (button, double-click) in place of moving to `neutral`, when set.
+    property var resetTo: null
+    function reset() { if (resetTo) resetTo(); else send(neutral) }
 
     implicitHeight: 38
     implicitWidth: 240
@@ -50,7 +53,7 @@ Item {
             readonly property bool moved: Math.abs(root.value - root.neutral) > 1e-9
             opacity: moved ? 1 : 0
             enabled: moved
-            onClicked: root.send(root.neutral)
+            onClicked: root.reset()
         }
         TextInput {
             id: entry
@@ -132,6 +135,6 @@ Item {
 
     TapHandler {
         acceptedButtons: Qt.LeftButton
-        onDoubleTapped: root.send(root.neutral)
+        onDoubleTapped: root.reset()
     }
 }

@@ -3,7 +3,7 @@ name: Packages
 # master publishes the "latest" release; a manual run on another branch only builds.
 on:
   push:
-    branches: [master]
+    branches: [master, qt6-ui]
   workflow_dispatch:
 
 env:

@@ -63,6 +63,7 @@ ColumnLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 clip: true
+                WheelScroll {}
                 // A count, not a fresh array per publish: the rows are kept while the state changes.
                 model: 2 + (dev.lensResults || []).length
                 delegate: ItemDelegate {

@@ -58,6 +58,7 @@ ColumnLayout {
 
     GridView {
         id: grid
+        WheelScroll {}
         Layout.fillWidth: true
         Layout.fillHeight: true
         Layout.minimumHeight: 200
@@ -132,10 +133,11 @@ ColumnLayout {
 
     // The applied looks under the grid, so a LUT added by mistake goes without leaving the browser.
     ScrollView {
+        id: dockScroll
         Layout.fillWidth: true
         Layout.preferredHeight: Math.min(320, docked.implicitHeight)
         visible: (s.looks || []).length > 0
         clip: true
-        Looks { id: docked; width: parent.width; docked: true }
+        Looks { id: docked; width: parent.width; docked: true; WheelScroll { flick: dockScroll.contentItem } }
     }
 }

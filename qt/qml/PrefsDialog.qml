@@ -38,12 +38,14 @@ DialogShell {
     }
 
     ScrollView {
+        id: prefsScroll
         anchors.fill: parent
         anchors.margins: 20
         contentWidth: availableWidth
         StackLayout {
             id: pages
             width: parent.width
+            WheelScroll { flick: prefsScroll.contentItem }
             ColumnLayout {
                 spacing: 10
                 Group { text: Store.tr("LUT library") }

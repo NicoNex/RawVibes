@@ -597,6 +597,8 @@ pub struct App {
     frames: std::collections::BTreeMap<String, u64>,
     frame_count: u64,
     frames_dirty: bool,
+    /// A zoomed view was asked for since the last publish (`request_view`).
+    view_wanted: bool,
     /// The curves as last published, with their points and samples as JSON: sampled again only when they change.
     curve_cache: std::cell::RefCell<Option<(Vec<Curve>, serde_json::Value, serde_json::Value)>>,
     tx: Tx,
@@ -746,6 +748,7 @@ impl App {
             frames: Default::default(),
             frame_count: 0,
             frames_dirty: false,
+            view_wanted: false,
             curve_cache: Default::default(),
             timers: Timers::new(tx.clone()),
             tx,
@@ -798,6 +801,9 @@ impl App {
 
     /// What QML needs to hear: the state and the frames when they changed, and the toasts and dialogs to show.
     pub fn publish(&mut self) -> Published {
+        if std::mem::take(&mut self.view_wanted) {
+            self.request_view_now();
+        }
         let state = std::mem::take(&mut self.dirty)
             .then(|| crate::view::state(self).to_string())
             .filter(|s| *s != self.published)

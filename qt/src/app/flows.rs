@@ -1288,7 +1288,13 @@ impl App {
     }
 
     /// Re-renders the zoomed view (if any) at full resolution, off the main thread.
+    /// Asks for the zoomed view once the messages queued now have run: a pan or a wheel burst
+    /// develops the view once per flush, not once per event.
     pub(super) fn request_view(&mut self) {
+        self.view_wanted = true;
+    }
+
+    pub(super) fn request_view_now(&mut self) {
         let (Some(z), Some(d), Some(crop)) = (self.view_zoom(), self.decoded.clone(), self.shown_region()) else {
             return;
         };

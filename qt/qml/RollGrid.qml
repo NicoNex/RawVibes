@@ -10,6 +10,7 @@ Rectangle {
     color: Theme.canvas
     GridView {
         id: g
+        WheelScroll {}
         anchors { fill: parent; margins: 16 }
         readonly property int cols: Math.max(2, Math.ceil(Math.sqrt(shown.length * width / Math.max(1, height))))
         cellWidth: width / cols

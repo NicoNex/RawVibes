@@ -15,6 +15,7 @@ DialogShell {
     ListView {
         anchors.fill: parent
         clip: true
+        WheelScroll {}
         model: dlg.table.length
         delegate: RowLayout {
             required property int index

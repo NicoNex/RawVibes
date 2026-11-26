@@ -31,6 +31,7 @@ Rectangle {
         }
         ListView {
             id: list
+            WheelScroll {}
             Layout.fillWidth: true
             Layout.fillHeight: true
             orientation: ListView.Horizontal

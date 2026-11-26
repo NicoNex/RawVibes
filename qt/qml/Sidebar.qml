@@ -73,15 +73,7 @@ ColumnLayout {
             width: scroll.availableWidth - 24
             x: 12
             spacing: 6
-            // Qt's wheel flick trails behind the notches; this scrolls at once, as GTK does.
-            WheelHandler {
-                target: null
-                onWheel: (e) => {
-                    const f = scroll.contentItem
-                    const dy = e.pixelDelta.y !== 0 ? e.pixelDelta.y : e.angleDelta.y / 120 * 60
-                    f.contentY = Math.max(0, Math.min(f.contentHeight - f.height, f.contentY - dy))
-                }
-            }
+            WheelScroll { flick: scroll.contentItem }
             Item { height: 6 }
             ColumnLayout {
                 Layout.fillWidth: true

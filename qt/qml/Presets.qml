@@ -28,6 +28,7 @@ Icon {
                 Layout.fillWidth: true
                 Layout.preferredHeight: Math.min(300, contentHeight)
                 clip: true
+                WheelScroll {}
                 model: (Store.s.presets || []).length
                 delegate: ItemDelegate {
                     required property int index

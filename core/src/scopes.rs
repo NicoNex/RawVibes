@@ -29,13 +29,22 @@ impl Scopes {
         let mut wave = vec![[0u32; 3]; HIST_W * HIST_H];
         let mut vec = vec![[0u32; 4]; VEC_SIZE * VEC_SIZE];
         let mut samples = 0u32;
+        // The column and the waveform column follow `i` by addition: no division per sample.
+        let w = width as usize;
+        let cols: Vec<usize> = (0..w).map(|x| x * HIST_W / w).collect();
+        let mut x = 0usize;
         for i in (0..n).step_by(step) {
-            let x = i % width as usize;
+            if i > 0 {
+                x += step;
+                while x >= w {
+                    x -= w;
+                }
+            }
             if x < skip_cols {
                 continue;
             }
             let px = &rgba[i * 4..i * 4 + 3];
-            let col = x * HIST_W / width as usize;
+            let col = cols[x];
             for c in 0..3 {
                 hist[c][px[c] as usize] += 1;
                 let row = HIST_H - 1 - px[c] as usize * (HIST_H - 1) / 255;

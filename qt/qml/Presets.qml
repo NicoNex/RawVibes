@@ -19,7 +19,7 @@ Icon {
         ColumnLayout {
             anchors.fill: parent
             spacing: 8
-            Label { text: Store.tr("Presets"); color: Theme.text; font.pixelSize: Theme.heading; font.weight: Font.DemiBold }
+            Heading { text: Store.tr("Presets") }
             Caption {
                 visible: (Store.s.presets || []).length === 0
                 text: Store.tr("No presets yet. Save the current grade to reuse it on other photos.")

@@ -12,6 +12,12 @@ ApplicationWindow {
     visible: true
     title: (s.hasPhoto ? s.title + " — " : "") + "RawVibes"
     color: Theme.canvas
+    // Linux: the header bar is the title bar, as in GTK. Qt draws no decorations on a Vulkan window
+    // (the HDR swapchain needs Vulkan), and GNOME none of its own.
+    readonly property bool ownFrame: Qt.platform.os === "linux"
+    flags: ownFrame ? Qt.Window | Qt.FramelessWindowHint : Qt.Window
+    readonly property bool maximized: visibility === Window.Maximized || visibility === Window.FullScreen
+    function toggleMaximized() { if (win.maximized) win.showNormal(); else win.showMaximized() }
     palette {
         window: Theme.panel; windowText: Theme.text; base: Theme.canvas; text: Theme.text
         button: Theme.raised; buttonText: Theme.text; highlight: Theme.accent; highlightedText: Theme.accentInk
@@ -69,6 +75,13 @@ ApplicationWindow {
         height: 48
         color: Theme.panel
         Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.line }
+        // Under the buttons: dragging the bar moves the window, a double-click maximizes it.
+        Item {
+            anchors.fill: parent
+            enabled: win.ownFrame
+            DragHandler { target: null; onActiveChanged: if (active) win.startSystemMove() }
+            TapHandler { onDoubleTapped: win.toggleMaximized() }
+        }
         RowLayout {
             anchors { fill: parent; leftMargin: 8; rightMargin: 8 }
             spacing: 2
@@ -154,19 +167,24 @@ ApplicationWindow {
                     MenuItem { text: Store.tr("HALD identity · .png"); onTriggered: Store.cmd("exportLut", { format: "png", size: 64, what: "identity" }) }
                 }
             }
-            Icon {
-                name: "go-down"
-                rotation: layout.stripHidden ? 180 : 0
-                visible: (s.roll || []).length > 0
-                tip: layout.stripHidden ? Store.tr("Show the filmstrip") : Store.tr("Hide the filmstrip")
-                onClicked: layout.stripHidden = !layout.stripHidden
-            }
             Icon { id: menuBtn; name: "open-menu"; tip: Store.tr("Main Menu"); onClicked: mainMenu.popup(menuBtn, 0, menuBtn.height) }
             Icon {
                 name: "sidebar-show-right"
                 tip: Store.tr("Show panel")
                 checkable: true; checked: sidebar.visible
                 onClicked: sidebar.visible = !sidebar.visible
+            }
+            Row {
+                visible: win.ownFrame
+                leftPadding: 8
+                spacing: 4
+                Icon { name: "window-minimize"; tip: Store.tr("Minimize"); onClicked: win.showMinimized() }
+                Icon {
+                    name: win.maximized ? "window-restore" : "window-maximize"
+                    tip: win.maximized ? Store.tr("Restore") : Store.tr("Maximize")
+                    onClicked: win.toggleMaximized()
+                }
+                Icon { name: "window-close"; tip: Store.tr("Close"); onClicked: win.close() }
             }
             Menu {
                 id: mainMenu
@@ -218,7 +236,21 @@ ApplicationWindow {
                 RollGrid {}
                 LabCanvas {}
             }
-            Rectangle { Layout.fillWidth: true; height: 1; color: Theme.line; visible: strip.visible }
+            // Under the photo, as in GTK: the filmstrip's collapse toggle.
+            Rectangle {
+                Layout.fillWidth: true
+                height: 26
+                visible: (s.roll || []).length > 0
+                color: Theme.panel
+                Rectangle { width: parent.width; height: 1; color: Theme.line }
+                Icon {
+                    anchors { right: parent.right; rightMargin: 8; verticalCenter: parent.verticalCenter }
+                    implicitWidth: 24; implicitHeight: 24; size: 14
+                    name: layout.stripHidden ? "go-up" : "go-down"
+                    tip: layout.stripHidden ? Store.tr("Show the filmstrip") : Store.tr("Hide the filmstrip")
+                    onClicked: layout.stripHidden = !layout.stripHidden
+                }
+            }
             Filmstrip {
                 id: strip
                 Layout.fillWidth: true
@@ -237,6 +269,27 @@ ApplicationWindow {
     }
 
     }
+    // Without the system's frame: its edges and corners resize the window.
+    component Grip: Item {
+        property int edges
+        z: 100
+        visible: win.ownFrame && !win.maximized
+        HoverHandler {
+            cursorShape: edges === (Qt.LeftEdge | Qt.TopEdge) || edges === (Qt.RightEdge | Qt.BottomEdge) ? Qt.SizeFDiagCursor
+                       : edges === (Qt.RightEdge | Qt.TopEdge) || edges === (Qt.LeftEdge | Qt.BottomEdge) ? Qt.SizeBDiagCursor
+                       : edges & (Qt.LeftEdge | Qt.RightEdge) ? Qt.SizeHorCursor : Qt.SizeVerCursor
+        }
+        DragHandler { target: null; onActiveChanged: if (active) win.startSystemResize(parent.edges) }
+    }
+    Grip { edges: Qt.LeftEdge; width: 5; anchors { left: parent.left; top: parent.top; bottom: parent.bottom } }
+    Grip { edges: Qt.RightEdge; width: 5; anchors { right: parent.right; top: parent.top; bottom: parent.bottom } }
+    Grip { edges: Qt.TopEdge; height: 5; anchors { left: parent.left; right: parent.right; top: parent.top } }
+    Grip { edges: Qt.BottomEdge; height: 5; anchors { left: parent.left; right: parent.right; bottom: parent.bottom } }
+    Grip { edges: Qt.LeftEdge | Qt.TopEdge; width: 10; height: 10; anchors { left: parent.left; top: parent.top } }
+    Grip { edges: Qt.RightEdge | Qt.TopEdge; width: 10; height: 10; anchors { right: parent.right; top: parent.top } }
+    Grip { edges: Qt.LeftEdge | Qt.BottomEdge; width: 10; height: 10; anchors { left: parent.left; bottom: parent.bottom } }
+    Grip { edges: Qt.RightEdge | Qt.BottomEdge; width: 10; height: 10; anchors { right: parent.right; bottom: parent.bottom } }
+
     function toggleFull() { win.visibility = win.visibility === Window.FullScreen ? Window.Windowed : Window.FullScreen }
 
     Binding {

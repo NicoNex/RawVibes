@@ -31,14 +31,21 @@ pub fn set_surface(hdr: bool, white: f32) {
 /// `rgba16f` (rec2100-linear, half floats) converted in place to scRGB, SDR white at `white`;
 /// out-of-709 colours go negative, as scRGB allows.
 pub fn to_scrgb(rgba16f: &mut [u8], white: f32) {
+    use half::slice::HalfFloatSliceExt;
     let m = rec2020_to_rec709().map(|row| row.map(|v| v * white));
-    for px in rgba16f.chunks_exact_mut(8) {
-        let c = |i: usize| f16::from_le_bytes([px[2 * i], px[2 * i + 1]]).to_f32();
-        let rgb = [c(0), c(1), c(2)];
+    // Bit copies, then half's batched conversions (SIMD where the CPU has it), not one value at a time.
+    let mut halves: Vec<f16> = rgba16f.as_chunks::<2>().0.iter().map(|&b| f16::from_le_bytes(b)).collect();
+    let mut f = vec![0f32; halves.len()];
+    halves.convert_to_f32_slice(&mut f);
+    for px in f.as_chunks_mut::<4>().0 {
+        let rgb = [px[0], px[1], px[2]];
         for (i, row) in m.iter().enumerate() {
-            let v = row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2];
-            px[2 * i..2 * i + 2].copy_from_slice(&f16::from_f32(v).to_le_bytes());
+            px[i] = row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2];
         }
+    }
+    halves.convert_from_f32_slice(&f);
+    for (out, h) in rgba16f.as_chunks_mut::<2>().0.iter_mut().zip(halves) {
+        *out = h.to_le_bytes();
     }
 }
 
@@ -53,9 +60,9 @@ mod tests {
     #[test]
     fn the_conversion_undoes_the_shaders_matrix() {
         let m = rec2020_to_rec709();
-        for i in 0..3 {
+        for (i, row) in m.iter().enumerate() {
             for j in 0..3 {
-                let v: f32 = (0..3).map(|k| m[i][k] * SHADER_709_TO_2020[k][j]).sum();
+                let v: f32 = row.iter().zip(&SHADER_709_TO_2020).map(|(a, col)| a * col[j]).sum();
                 assert!((v - if i == j { 1.0 } else { 0.0 }).abs() < 1e-3, "{i},{j}: {v}");
             }
         }

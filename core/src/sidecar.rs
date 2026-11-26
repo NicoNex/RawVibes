@@ -209,10 +209,8 @@ impl Sidecar {
         let [_, _, w, h] = c.rect;
         // Rotated, the rect is in the turned frame and may leave [0, 1]: only the
         // image's size can judge it, so the editor fits it in on load (`crop::clamp`).
-        let crop_ok = c.rect.iter().all(|v| v.is_finite())
-            && w >= 0.01
-            && h >= 0.01
-            && (-90.0..=90.0).contains(&c.angle);
+        let crop_ok =
+            c.rect.iter().all(|v| v.is_finite()) && w >= 0.01 && h >= 0.01 && (-90.0..=90.0).contains(&c.angle);
         let ratio_ok = match f.ratio {
             Ratio::Fixed(a, b) => a > 0.0 && b > 0.0 && a.is_finite() && b.is_finite(),
             _ => true,

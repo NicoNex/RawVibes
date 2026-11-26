@@ -10,12 +10,11 @@ ColumnLayout {
     readonly property var looks: s.looks || []
     property bool docked: false
     spacing: 8
-    Label {
+    Caption {
         visible: lk.looks.length === 0
-        Layout.fillWidth: true
         Layout.margins: 8
         text: Store.tr("No LUTs: the grade is exported as is.")
-        color: Theme.dim; font.pixelSize: Theme.small + 1; wrapMode: Text.Wrap; horizontalAlignment: Text.AlignHCenter
+        horizontalAlignment: Text.AlignHCenter
     }
     // How looks combine: shown with two or more, and while Mix is on so it can be switched back.
     ColumnLayout {

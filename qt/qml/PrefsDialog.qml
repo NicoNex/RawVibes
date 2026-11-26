@@ -22,7 +22,7 @@ DialogShell {
             onPicked: (i) => pages.currentIndex = i
         }
     }
-    component Group: Label { color: Theme.text; font.pixelSize: Theme.heading; font.weight: Font.DemiBold; Layout.topMargin: 10 }
+    component Group: Heading { Layout.topMargin: 10 }
     component Entry: ColumnLayout {
         property string title
         property string key

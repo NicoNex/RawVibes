@@ -7,6 +7,8 @@ QtObject {
     readonly property var s: JSON.parse(Backend.state || "{}")
     // What never changes while RawVibes runs (names, colours, choices): parsed once.
     readonly property var c: JSON.parse(Backend.constants || "{}")
+    // The image provider's frames (key → generation): a new frame touches only the images showing it.
+    readonly property var f: JSON.parse(Backend.frames || "{}")
     // The Metadata tab's link to Preferences.
     signal prefsRequested()
     // Something is drawn over the photo (a menu, dialog, popup or toast): the HDR surface, a native
@@ -24,6 +26,11 @@ QtObject {
     // Files dropped on the window: added to the filmstrip, the first opened.
     function dropPaths(urls) {
         cmd("rollAdd", { paths: urls.map(localPath) })
+    }
+    // The URL of frame `key`, "" until there is one.
+    function img(key) {
+        const g = f[key]
+        return g ? "image://rv/" + key + "/" + g : ""
     }
     function tr(text) {
         return Backend.tr(text)

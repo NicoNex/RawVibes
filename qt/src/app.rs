@@ -54,12 +54,6 @@ pub enum What {
     Lab,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Page {
-    Grade,
-    Lab,
-}
-
 #[derive(Clone, Debug)]
 pub enum LabKind {
     Lut(Arc<Lut3d>),
@@ -123,9 +117,15 @@ pub enum ZoomCmd {
     In,
     Out,
     /// Wheel/touchpad scroll of `dy` steps about a point.
-    Scroll { dy: f64, at: [f32; 2] },
+    Scroll {
+        dy: f64,
+        at: [f32; 2],
+    },
     /// Drag by `d` with mouse `button` (1 primary, 2 middle).
-    Pan { d: [f32; 2], button: u32 },
+    Pan {
+        d: [f32; 2],
+        button: u32,
+    },
     /// Double-click: fit ↔ 100% about a point.
     Toggle([f32; 2]),
 }
@@ -226,12 +226,12 @@ pub enum Msg {
     /// The user found the camera LUT's file: remembered by name, then used.
     CameraLutFound(PathBuf, CameraLut, PathBuf),
     AsInCameraOnOpen(bool),
-    SaveSidecar(u64),
-    WriteSidecar(u64),
+    SaveSidecar,
+    WriteSidecar,
     Close,
     SidecarLooks(u64, Vec<(LookRef, Result<Arc<Lut3d>, String>)>),
     CanvasClick([f32; 2]),
-    DevelopSettled(u64),
+    DevelopSettled,
     AiReady,
     Quality(u32),
     RawRead(u64, PathBuf, Result<Arc<RawData>, String>),
@@ -258,10 +258,9 @@ pub enum Msg {
     Preview(Option<usize>),
     PreviewLoaded(usize, Result<Arc<Lut3d>, String>),
     Hover(Option<usize>),
-    HoverSettled(u64, Option<usize>),
+    HoverSettled(Option<usize>),
     Commit(usize),
     Escape,
-    Page(Page),
     Tab(String),
     LayerAdd(Layers, LabAdd),
     OpenInLab,
@@ -279,7 +278,7 @@ pub enum Msg {
     LookBlend(Blend),
     LayerOn(Layers, usize, bool),
     FolderChanged,
-    FolderSettled(u64),
+    FolderSettled,
     Chart(bool),
     ChartReady(Profile, Arc<Photo>),
     Profile(Profile),
@@ -311,7 +310,7 @@ pub enum Msg {
     /// The HDR surface's scale for SDR white, as its swapchain reports it.
     HdrWhite(bool, f32),
     Headroom(f32),
-    HeadroomSave(f32),
+    HeadroomSave,
     ExportEstimateRun(u64, u32, u32),
     ExportEstimate(u64, u64),
     ExportGo,
@@ -332,7 +331,7 @@ pub enum Msg {
     MergeHdrDone(Result<PathBuf, String>),
     RollLoaded(PathBuf, Result<(Decoded, Profile, Arc<Photo>), String>),
     RollEncoded(Profile, Vec<(PathBuf, Arc<Photo>)>),
-    RollTick(u64),
+    RollTick,
     RollSelect(usize),
     RollRemove(usize),
     RollFilter(u32),
@@ -346,7 +345,6 @@ pub enum Msg {
     CropRatio(usize),
     CropSwap,
     CropAngle(f32),
-    CropRect([f32; 4]),
     /// Crop overlay: a press at a point of the frame (0–1) with a grab tolerance, a drag
     /// from it, and a level line drawn on the frame (its screen delta).
     CropPress([f32; 2], [f32; 2]),
@@ -425,7 +423,6 @@ pub struct RollItem {
     pub small: Option<Decoded>,
     pub encoded: Option<(Profile, Arc<Photo>)>,
     /// Bumped with each frame the GPU renders for it (QML reloads image://rv/roll/<i>/<gen>).
-    pub frame: u64,
     /// Stable across removals: its frames are stored under image://rv/roll/<id>.
     pub id: u64,
 }
@@ -457,16 +454,8 @@ impl Prefs {
 #[derive(Default)]
 pub struct UiState {
     pub tab: String,
-    pub info: String,
     /// "empty", "loading" or "image".
     pub canvas: &'static str,
-    pub photo_gen: u64,
-    /// Bumped with each HDR rendition (only while the HDR preview is on).
-    pub hdr_gen: u64,
-    pub scopes_gen: u64,
-    pub lab_gen: u64,
-    pub match_thumb: u64,
-    pub thumbs: Vec<u64>,
     pub picker: bool,
     pub skin: bool,
     pub grid: bool,
@@ -502,6 +491,14 @@ pub struct ExportState {
     pub step: String,
 }
 
+/// What one round of messages leaves QML to hear.
+pub struct Published {
+    pub state: Option<String>,
+    pub frames: Option<String>,
+    pub toasts: Vec<(String, String, i32)>,
+    pub dialogs: Vec<(String, String)>,
+}
+
 pub struct App {
     pub grade: Grade,
     pub band: usize,
@@ -513,7 +510,6 @@ pub struct App {
     pub group_names: Vec<String>,
     pub group: Option<String>,
     pub query: String,
-    pub page: Page,
     pub lab_layers: Vec<LabLayer>,
     pub looks: Vec<LabLayer>,
     pub off: Vec<Off>,
@@ -524,16 +520,14 @@ pub struct App {
     pub browsing: bool,
     pub candidate: Option<(usize, Arc<Lut3d>)>,
     preview_req: Option<usize>,
-    hover_tick: u64,
     flash_new_look: bool,
     base_key: Option<BaseKey>,
     gallery_stale: bool,
     pub lab_input: Profile,
     pub lab_blend: Blend,
     pub look_blend: Blend,
-    /// Watches the LUT folder; `folder_changes` debounces its events.
+    /// Watches the LUT folder; its events are debounced into `Msg::FolderSettled`.
     watcher: Option<notify::RecommendedWatcher>,
-    folder_changes: u64,
     pub profile: Profile,
     decoded: Option<Decoded>,
     photo: Option<(Arc<Photo>, Profile)>,
@@ -555,7 +549,6 @@ pub struct App {
     pub active: Option<usize>,
     roll_gen: u64,
     roll_sent: Option<Vec<Grade>>,
-    roll_tick: u64,
     match_file: bool,
     match_gen: u64,
     pub crop: Crop,
@@ -576,13 +569,11 @@ pub struct App {
     frame_cost: f32,
     auto_draft: f32,
     pub refine: bool,
-    develop_tick: u64,
     camera_match: Option<(PathBuf, Match)>,
     camera_curve: Option<(PathBuf, Curve)>,
     camera_jpeg: Option<(PathBuf, Arc<Photo>)>,
     camera_job: Option<PathBuf>,
     saved: Option<Sidecar>,
-    save_tick: u64,
     looks_loading: bool,
     looks_gen: u64,
     save_failed: bool,
@@ -599,6 +590,10 @@ pub struct App {
     next_roll_id: u64,
     /// The state as QML last got it: an unchanged one is not sent again.
     published: String,
+    /// Each frame's key in the image provider and its generation, as `image://rv/<key>/<generation>`.
+    frames: std::collections::BTreeMap<String, u64>,
+    frame_count: u64,
+    frames_dirty: bool,
     /// The curves as last published, with their points and samples as JSON: sampled again only when they change.
     curve_cache: std::cell::RefCell<Option<(Vec<Curve>, serde_json::Value, serde_json::Value)>>,
     tx: Tx,
@@ -662,7 +657,6 @@ impl App {
             group_names: Vec::new(),
             group: None,
             query: String::new(),
-            page: Page::Grade,
             lab_layers: Vec::new(),
             looks: Vec::new(),
             off: Vec::new(),
@@ -673,7 +667,6 @@ impl App {
             browsing: false,
             candidate: None,
             preview_req: None,
-            hover_tick: 0,
             flash_new_look: false,
             base_key: None,
             gallery_stale: true,
@@ -681,7 +674,6 @@ impl App {
             lab_blend: Blend::Chain,
             look_blend: Blend::Chain,
             watcher: None,
-            folder_changes: 0,
             profile: Profile::Standard,
             decoded: None,
             photo: None,
@@ -703,7 +695,6 @@ impl App {
             active: None,
             roll_gen: 0,
             roll_sent: None,
-            roll_tick: 0,
             match_file: false,
             match_gen: 0,
             crop: Crop::default(),
@@ -722,13 +713,11 @@ impl App {
             frame_cost: 0.0,
             auto_draft: 0.75,
             refine: settings::flag(settings::REFINE_IDLE, true),
-            develop_tick: 0,
             camera_match: None,
             camera_curve: None,
             camera_jpeg: None,
             camera_job: None,
             saved: None,
-            save_tick: 0,
             looks_loading: false,
             looks_gen: 0,
             save_failed: false,
@@ -750,6 +739,9 @@ impl App {
             prefs: Prefs::load(),
             next_roll_id: 0,
             published: String::new(),
+            frames: Default::default(),
+            frame_count: 0,
+            frames_dirty: false,
             curve_cache: Default::default(),
             timers: Timers::new(tx.clone()),
             tx,
@@ -773,8 +765,12 @@ impl App {
             app.queue.push_back(Msg::RollAddPaths(roll, last));
         }
         // Files given on the command line (a file manager's "Open With"): added, the first opened.
-        let files: Vec<PathBuf> =
-            std::env::args_os().skip(1).filter(|a| !a.as_encoded_bytes().starts_with(b"--")).map(PathBuf::from).filter(|p| p.is_file()).collect();
+        let files: Vec<PathBuf> = std::env::args_os()
+            .skip(1)
+            .filter(|a| !a.as_encoded_bytes().starts_with(b"--"))
+            .map(PathBuf::from)
+            .filter(|p| p.is_file())
+            .collect();
         if let Some(first) = files.first().cloned() {
             app.queue.push_back(Msg::RollAddPaths(files, Some(first)));
         }
@@ -796,13 +792,39 @@ impl App {
         }
     }
 
-    /// The state for QML when it changed, and the toasts and dialogs to show.
-    pub fn publish(&mut self) -> (Option<String>, Vec<(String, String, i32)>, Vec<(String, String)>) {
+    /// What QML needs to hear: the state and the frames when they changed, and the toasts and dialogs to show.
+    pub fn publish(&mut self) -> Published {
         let state = std::mem::take(&mut self.dirty)
             .then(|| crate::view::state(self).to_string())
             .filter(|s| *s != self.published)
             .inspect(|s| self.published.clone_from(s));
-        (state, std::mem::take(&mut self.toasts), std::mem::take(&mut self.dialogs))
+        let frames =
+            std::mem::take(&mut self.frames_dirty).then(|| serde_json::to_string(&self.frames).unwrap_or_default());
+        Published {
+            state,
+            frames,
+            toasts: std::mem::take(&mut self.toasts),
+            dialogs: std::mem::take(&mut self.dialogs),
+        }
+    }
+
+    /// Stores a frame for `image://rv/<key>/<generation>`; the generation tells QML it changed.
+    pub fn show_image(&mut self, key: String, pixels: Vec<u8>, width: u32, height: u32, half: bool) {
+        crate::bridge::rv_set_image(&key, pixels, width, height, half);
+        // One counter for every key: a key dropped and set again never repeats a URL QML has seen.
+        self.frame_count += 1;
+        self.frames.insert(key, self.frame_count);
+        self.frames_dirty = true;
+    }
+
+    /// The frames whose keys start with `prefix`.
+    fn frames_with(&self, prefix: &str) -> Vec<String> {
+        self.frames.keys().filter(|k| k.starts_with(prefix)).cloned().collect()
+    }
+
+    pub fn drop_image(&mut self, key: &str) {
+        crate::bridge::rv_drop(key);
+        self.frames_dirty |= self.frames.remove(key).is_some();
     }
 
     /// The grade's curves for QML: their points, and samples drawn as the shader evaluates them (the core's interpolation).
@@ -813,7 +835,11 @@ impl App {
             let samples: Vec<Vec<f32>> = (self.grade.curves.iter().enumerate())
                 .map(|(ch, c)| {
                     let mut out = vec![0.0f32; 128];
-                    if is_periodic(ch) { sample_periodic(c, &mut out) } else { sample_curve(c, &mut out) }
+                    if is_periodic(ch) {
+                        sample_periodic(c, &mut out)
+                    } else {
+                        sample_curve(c, &mut out)
+                    }
                     out.iter().map(|v| (v * 1000.0).round() / 1000.0).collect()
                 })
                 .collect();
@@ -822,6 +848,11 @@ impl App {
         }
         let c = cache.as_ref().expect("filled above");
         (c.1.clone(), c.2.clone())
+    }
+
+    /// The Lab tab renders the Lab's chain; every other tab the photo.
+    pub fn in_lab(&self) -> bool {
+        self.ui.tab == "lab"
     }
 
     fn input(&mut self, msg: Msg) {
@@ -854,7 +885,12 @@ impl App {
 
     /// Asks QML for a dialog (`open`, `openMany`, `save`, `folder`, `confirm`, `presetName`); its answer,
     /// sent back with the request's id, becomes the message `answer` makes of it (`None`: nothing to do).
-    fn ask(&mut self, kind: &str, mut options: serde_json::Value, answer: impl FnOnce(DialogAnswer) -> Option<Msg> + 'static) {
+    fn ask(
+        &mut self,
+        kind: &str,
+        mut options: serde_json::Value,
+        answer: impl FnOnce(DialogAnswer) -> Option<Msg> + 'static,
+    ) {
         let id = self.next_action;
         self.next_action += 1;
         self.answers.insert(id, Box::new(answer));
@@ -865,11 +901,7 @@ impl App {
     /// A debounce tick or a result some later request superseded: it changes nothing to show.
     fn is_stale(&self, msg: &Msg) -> bool {
         match msg {
-            Msg::SaveSidecar(t) | Msg::WriteSidecar(t) => *t != self.save_tick,
-            Msg::RollTick(t) => *t != self.roll_tick,
-            Msg::DevelopSettled(t) => *t != self.develop_tick || !(self.drafting && self.refine),
-            Msg::HoverSettled(t, _) => *t != self.hover_tick,
-            Msg::FolderSettled(n) => *n != self.folder_changes,
+            Msg::DevelopSettled => !(self.drafting && self.refine),
             Msg::ExportEstimateRun(g, ..) | Msg::ExportEstimate(g, _) => *g != self.export_gen,
             Msg::Loaded(g, ..) | Msg::SourceMeta(g, ..) => *g != self.load_gen,
             Msg::SidecarLooks(g, _) => *g != self.looks_gen,
@@ -878,9 +910,10 @@ impl App {
     }
 
     fn dispatch(&mut self, msg: Msg) {
-        if !self.is_stale(&msg) {
-            self.dirty = true;
+        if self.is_stale(&msg) {
+            return;
         }
+        self.dirty = true;
         match msg {
             Msg::Open => {
                 let folder = settings::folder(settings::PHOTO_FOLDER);
@@ -890,7 +923,7 @@ impl App {
                         "title": gettext("Open Photo"),
                         "filters": [photo_filter()],
                         "folder": folder,
-                        
+
                     }),
                     |a| Some(Msg::RollAddPaths(a.paths, None)),
                 );
@@ -902,17 +935,17 @@ impl App {
                     "title": gettext("Merge Brackets to HDR"),
                     "filters": [photo_filter()],
                     "folder": settings::folder(settings::PHOTO_FOLDER),
-                    
+
                 }),
-                    |a| Some(Msg::MergeHdrRun(a.paths)),
-                ),
+                |a| Some(Msg::MergeHdrRun(a.paths)),
+            ),
             Msg::MergeHdrRun(mut paths) => {
                 if paths.len() < 2 {
                     return self.toast(&gettext("Pick two or more RAWs of the same scene at different exposures"));
                 }
                 paths.sort();
                 let first = &paths[0];
-                let stem = first.file_stem().unwrap_or_default().to_string_lossy();
+                let stem = stem_label(first).unwrap_or_default();
                 let out = free_path(first.parent().unwrap_or(std::path::Path::new(".")), &stem, "dng", "-HDR");
                 self.toast(&gettext!("Merging {} photos to HDR…", paths.len()));
                 let s = self.tx.clone();
@@ -922,7 +955,7 @@ impl App {
                 });
             }
             Msg::MergeHdrDone(Ok(path)) => {
-                self.toast(&gettext!("HDR merge saved: {}", path.file_name().unwrap_or_default().to_string_lossy()));
+                self.toast(&gettext!("HDR merge saved: {}", file_label(&path)));
                 self.add_to_roll(vec![path], None);
             }
             Msg::MergeHdrDone(Err(e)) => self.toast(&gettext!("HDR merge failed: {}", e)),
@@ -943,7 +976,7 @@ impl App {
                 }
                 self.upload_roll(false);
             }
-            Msg::RollTick(tick) if tick == self.roll_tick => {
+            Msg::RollTick => {
                 let grades = self.roll_grades();
                 if !self.roll.is_empty() && self.roll_sent.as_ref() != Some(&grades) {
                     self.send(Job::RenderRoll(grades.clone(), self.active));
@@ -951,7 +984,6 @@ impl App {
                 }
                 self.refresh_gallery();
             }
-            Msg::RollTick(_) => {}
             Msg::RollLoaded(path, Err(e)) => {
                 if let Some(i) = self.roll.iter().position(|it| it.path == path) {
                     self.drop_from_roll(i);
@@ -982,13 +1014,11 @@ impl App {
             Msg::RollFilter(f) => self.ui.roll_filter = f,
             Msg::Grid(on) => self.ui.grid = on && self.roll.len() > 1,
             Msg::Develop(edit) => self.edit_develop(edit),
-            Msg::SaveSidecar(tick) if tick == self.save_tick => {
+            Msg::SaveSidecar => {
                 self.record_edits();
                 self.save_now();
             }
-            Msg::SaveSidecar(_) => {}
-            Msg::WriteSidecar(tick) if tick == self.save_tick => self.save_now(),
-            Msg::WriteSidecar(_) => {}
+            Msg::WriteSidecar => self.save_now(),
             Msg::Close => {
                 self.save_now();
                 if let Some(cancel) = &self.exporting {
@@ -1000,7 +1030,6 @@ impl App {
                     let _ = t.join();
                 }
             }
-            Msg::SidecarLooks(generation, _) if generation != self.looks_gen => {}
             Msg::SidecarLooks(_, loaded) => {
                 let missing = loaded.iter().filter(|(_, l)| l.is_err()).count();
                 for (r, lut) in loaded {
@@ -1097,12 +1126,11 @@ impl App {
                     self.send(Job::SampleRaw { at, radius: 4, detail });
                 }
             }
-            Msg::DevelopSettled(tick) if tick == self.develop_tick && self.drafting && self.refine => {
+            Msg::DevelopSettled => {
                 self.drafting = false;
                 self.encode_photo();
                 self.request_view();
             }
-            Msg::DevelopSettled(_) => {}
             Msg::AiReady => {
                 self.encode_photo();
                 self.request_view();
@@ -1137,7 +1165,6 @@ impl App {
                 self.input(Msg::RollLoaded(path.clone(), Err(e.clone())));
                 self.input(Msg::Loaded(generation, path, Err(e)));
             }
-            Msg::Loaded(generation, ..) if generation != self.load_gen => {}
             Msg::Loaded(_, path, Ok(decoded)) => self.loaded(path, decoded),
             Msg::Loaded(_, path, Err(e)) => {
                 self.active = self.path.as_ref().and_then(|p| self.roll.iter().position(|it| it.path == *p));
@@ -1236,7 +1263,6 @@ impl App {
                 self.update_lens(true);
                 self.schedule_save();
             }
-            Msg::SourceMeta(generation, ..) if generation != self.load_gen => {}
             Msg::SourceMeta(_, path, m) => {
                 self.source_meta = m.map(|m| (path, m));
                 self.update_lens(true);
@@ -1322,7 +1348,7 @@ impl App {
                         "title": gettext("Choose Reference"),
                         "filters": [photo_filter()],
                         "folder": settings::folder(settings::PHOTO_FOLDER),
-                        
+
                     }),
                     |a| a.path().map(Msg::MatchReference),
                 );
@@ -1332,7 +1358,8 @@ impl App {
                 let s = self.tx.clone();
                 std::thread::spawn(move || {
                     // References are display images (a still, a JPEG); RAWs are rendered neutrally.
-                    let r = Decoded::load_max(&path, Some(1024)).map(|d| d.encode(Profile::Standard, &Develop::default()));
+                    let r =
+                        Decoded::load_max(&path, Some(1024)).map(|d| d.encode(Profile::Standard, &Develop::default()));
                     s.send(Msg::MatchLoaded(path, r));
                 });
             }
@@ -1366,9 +1393,9 @@ impl App {
             }
             Msg::PresetSave => {
                 let suggestion = self.path.as_deref().and_then(stem_label).unwrap_or_default();
-                self.ask("presetName", serde_json::json!({ "name": suggestion,  }),
-                    |a| Some(Msg::PresetSaveAs(a.name)),
-                );
+                self.ask("presetName", serde_json::json!({ "name": suggestion,  }), |a| {
+                    Some(Msg::PresetSaveAs(a.name))
+                });
             }
             Msg::PresetSaveAs(name) => {
                 let name = name.trim().to_owned();
@@ -1390,10 +1417,10 @@ impl App {
                             "title": gettext("Replace Preset?"),
                             "body": body,
                             "action": gettext("Replace"),
-                            
+
                         }),
-                    move |_| Some(Msg::PresetWrite(preset, true, apply)),
-                );
+                        move |_| Some(Msg::PresetWrite(preset, true, apply)),
+                    );
                 }
                 for (p, at) in existing {
                     if p.name == preset.name && at != path {
@@ -1440,10 +1467,10 @@ impl App {
                 serde_json::json!({
                     "title": gettext("Import Preset"),
                     "filters": [preset_filter()],
-                    
+
                 }),
-                    |a| a.path().map(Msg::PresetImported),
-                ),
+                |a| a.path().map(Msg::PresetImported),
+            ),
             Msg::PresetImported(p) => match Preset::load(&p) {
                 Ok(preset) => self.input(Msg::PresetWrite(Box::new(preset), false, true)),
                 Err(e) => self.toast(&gettext!("Not a valid preset: {}", e)),
@@ -1456,7 +1483,7 @@ impl App {
                         "title": gettext("Export Preset"),
                         "filters": [preset_filter()],
                         "name": preset::file_name(&stem),
-                        
+
                     }),
                     |a| a.path().map(Msg::PresetExportTo),
                 );
@@ -1493,7 +1520,7 @@ impl App {
                     (What::Identity, _) => format!("hald_identity_{size}"),
                     (What::Lab, _) => format!("lab_{}_{size}", self.lab_input.tag()),
                     (What::Grade, Some(p)) => {
-                        let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                        let stem = stem_label(p).unwrap_or_default();
                         format!("{stem}_{}_{size}", self.profile.tag())
                     }
                     (What::Grade, None) => format!("chart_{}_{size}", self.profile.tag()),
@@ -1508,7 +1535,7 @@ impl App {
                 self.ask("save", options, move |a| Some(Msg::ExportTo(format, size, what, a.path()?)));
             }
             Msg::ExportTo(format, size, what, path) => {
-                let title = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                let title = stem_label(&path).unwrap_or_default();
                 match what {
                     What::Identity => {
                         let s = self.tx.clone();
@@ -1543,7 +1570,11 @@ impl App {
                 if let Some(f) = format {
                     e.format = Some(f);
                 }
-                e.roll = self.roll.iter().filter(|it| self.ui.roll_filter == 0 || shown(self.ui.roll_filter, it.rating, it.label)).count();
+                e.roll = self
+                    .roll
+                    .iter()
+                    .filter(|it| self.ui.roll_filter == 0 || shown(self.ui.roll_filter, it.rating, it.label))
+                    .count();
                 e.size = Decoded::fit_size(&crop, u32::MAX);
                 e.open = true;
                 self.export_frame_request();
@@ -1567,7 +1598,7 @@ impl App {
                 if !on {
                     // Nothing more to convert or keep until it is on again.
                     crate::hdr::set_surface(false, crate::hdr::white());
-                    crate::bridge::rv_drop("hdr");
+                    self.drop_image("hdr");
                 }
                 let _ = settings::set_flag(settings::HDR_PREVIEW, on);
                 self.render();
@@ -1575,13 +1606,12 @@ impl App {
             Msg::Headroom(stops) => {
                 self.headroom = stops.clamp(1.0, 3.0);
                 self.render();
-                self.timers.after(Duration::from_millis(500), Msg::HeadroomSave(self.headroom));
+                self.timers.debounce(Duration::from_millis(500), Msg::HeadroomSave);
             }
-            Msg::HeadroomSave(stops) if stops == self.headroom => {
-                let _ = settings::set_value(settings::HDR_HEADROOM, &format!("{stops:.2}"));
+            Msg::HeadroomSave => {
+                let _ = settings::set_value(settings::HDR_HEADROOM, &format!("{:.2}", self.headroom));
             }
-            Msg::HeadroomSave(_) => {}
-            Msg::ExportEstimateRun(generation, w, h) if generation == self.export_gen => {
+            Msg::ExportEstimateRun(generation, w, h) => {
                 let e = &self.ui.export;
                 let format = e.format.unwrap_or(PhotoFormat::Jpeg);
                 let Some(frame) = self.export_frame.clone().filter(|f| f.hdr() == format.hdr()) else { return };
@@ -1592,11 +1622,7 @@ impl App {
                     s.send(Msg::ExportEstimate(generation, n as u64));
                 });
             }
-            Msg::ExportEstimateRun(..) => {}
-            Msg::ExportEstimate(generation, n) if generation == self.export_gen => {
-                self.ui.export.estimate = Some(gettext!("about {}", format_size(n)))
-            }
-            Msg::ExportEstimate(..) => {}
+            Msg::ExportEstimate(_, n) => self.ui.export.estimate = Some(gettext!("about {}", format_size(n))),
             Msg::ExportGo => self.export_go(),
             Msg::ExportPhotoTo(path) => {
                 self.export_to(path);
@@ -1618,10 +1644,10 @@ impl App {
                 serde_json::json!({
                     "title": gettext("LUT folder"),
                     "folder": settings::folder(settings::LUT_FOLDER),
-                    
+
                 }),
-                    |a| a.path().map(Msg::Folder),
-                ),
+                |a| a.path().map(Msg::Folder),
+            ),
             Msg::Folder(dir) => {
                 if let Err(e) = settings::set_folder(settings::LUT_FOLDER, &dir) {
                     self.toast(&gettext!("Cannot save the LUT folder: {}", e));
@@ -1696,11 +1722,9 @@ impl App {
             }
             Msg::Hover(over) => {
                 // A short rest before previewing, so sweeping across the grid does not flicker the photo.
-                self.hover_tick += 1;
-                self.timers.after(HOVER_REST, Msg::HoverSettled(self.hover_tick, over));
+                self.timers.debounce(HOVER_REST, Msg::HoverSettled(over));
             }
-            Msg::HoverSettled(tick, over) if tick == self.hover_tick => self.input(Msg::Preview(over)),
-            Msg::HoverSettled(..) => {}
+            Msg::HoverSettled(over) => self.input(Msg::Preview(over)),
             Msg::Commit(i) => {
                 let path = self.luts.get(i).map(|l| &l.path);
                 // A double-click activates twice: the second adds nothing.
@@ -1735,7 +1759,8 @@ impl App {
                     self.input(Msg::Browse(false));
                 }
             }
-            Msg::Profile(profile) if profile == self.profile && self.photo.as_ref().is_some_and(|p| p.1 == profile) => {}
+            Msg::Profile(profile) if profile == self.profile && self.photo.as_ref().is_some_and(|p| p.1 == profile) => {
+            }
             Msg::Profile(profile) => {
                 self.profile = profile;
                 self.schedule_save();
@@ -1780,8 +1805,7 @@ impl App {
             },
             Msg::OpenInLab => {
                 if self.selected.is_some() {
-                    self.ui.tab = "lab".into();
-                    self.input(Msg::Page(Page::Lab));
+                    self.input(Msg::Tab("lab".into()));
                 }
                 self.input(Msg::LayerAdd(Layers::Lab, LabAdd::Selected));
             }
@@ -1805,7 +1829,9 @@ impl App {
                     self.layers_changed(which, true);
                 }
             }
-            Msg::LayerIntensity(which, i, v) => self.edit_layer(which, i, |l| l.intensity = (v / 100.0).clamp(0.0, 1.0) as f32),
+            Msg::LayerIntensity(which, i, v) => {
+                self.edit_layer(which, i, |l| l.intensity = (v / 100.0).clamp(0.0, 1.0) as f32)
+            }
             Msg::LayerProfile(which, i, p) => self.edit_layer(which, i, |l| match &mut l.kind {
                 LabKind::Convert(to) => *to = p,
                 _ => l.input = p,
@@ -1818,32 +1844,25 @@ impl App {
             }
             Msg::LayerOn(which, i, on) => self.edit_layer(which, i, |l| l.on = on),
             Msg::FolderChanged => {
-                self.folder_changes += 1;
-                self.timers.after(Duration::from_millis(500), Msg::FolderSettled(self.folder_changes));
+                self.timers.debounce(Duration::from_millis(500), Msg::FolderSettled);
             }
-            Msg::FolderSettled(n) if n == self.folder_changes => match settings::folder(settings::LUT_FOLDER) {
+            Msg::FolderSettled => match settings::folder(settings::LUT_FOLDER) {
                 Some(dir) => self.input(Msg::Folder(dir)),
                 None => self.toast(&gettext("The LUT folder was moved or deleted: press F5 to choose it again")),
             },
-            Msg::FolderSettled(_) => {}
             Msg::LabBlend(b) => {
                 self.lab_blend = b;
                 self.render_lab();
             }
             Msg::Tab(tab) => {
-                let lab = tab == "lab";
+                let was_lab = self.in_lab();
                 self.ui.tab = tab;
-                let page = if lab { Page::Lab } else { Page::Grade };
-                if page != self.page {
-                    self.input(Msg::Page(page));
+                if self.in_lab() != was_lab {
+                    if self.in_lab() {
+                        self.set_zoom(None);
+                    }
+                    self.refresh();
                 }
-            }
-            Msg::Page(page) => {
-                self.page = page;
-                if !matches!(page, Page::Grade) {
-                    self.set_zoom(None);
-                }
-                self.refresh();
             }
             Msg::Gpu(done) => self.on_gpu(done),
             Msg::Zoom(cmd) => self.on_zoom(cmd),
@@ -1894,13 +1913,6 @@ impl App {
             Msg::CropAngle(a) => {
                 if let Some((w, h)) = self.size() {
                     self.crop = crop::straighten(self.crop, a.clamp(-45.0, 45.0), w, h);
-                }
-                self.crop_changed();
-            }
-            Msg::CropRect(rect) => {
-                self.crop.rect = rect;
-                if let Some((w, h)) = self.size() {
-                    self.crop = crop::clamp(self.crop, w, h);
                 }
                 self.crop_changed();
             }
@@ -2027,10 +2039,7 @@ pub fn export_policy() -> rawvibes_core::meta::Policy {
 
 /// The HDR headroom in stops (1–3), as last set.
 pub fn headroom_setting() -> f32 {
-    settings::value(settings::HDR_HEADROOM)
-        .and_then(|q| q.parse().ok())
-        .unwrap_or(export::HDR_HEADROOM)
-        .clamp(1.0, 3.0)
+    settings::value(settings::HDR_HEADROOM).and_then(|q| q.parse().ok()).unwrap_or(export::HDR_HEADROOM).clamp(1.0, 3.0)
 }
 
 /// The last photo export format and JPEG quality used.
@@ -2165,7 +2174,11 @@ fn photo_filter() -> String {
 }
 
 fn lut_filter(label: &str) -> String {
-    format!("{label} (*.cube *.vlt *.png *.CUBE *.VLT *.PNG)")
+    use rawvibes_core::lut::Format;
+    let exts = [Format::Cube, Format::Vlt, Format::Hald].map(Format::ext);
+    let globs: Vec<String> =
+        exts.iter().map(|e| format!("*.{e}")).chain(exts.iter().map(|e| format!("*.{}", e.to_uppercase()))).collect();
+    format!("{label} ({})", globs.join(" "))
 }
 
 fn preset_filter() -> String {
@@ -2190,7 +2203,6 @@ fn lens_db_path() -> PathBuf {
         .filter(|p| p.exists())
         .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/lensfun.json")))
 }
-
 
 #[cfg(test)]
 mod tests {

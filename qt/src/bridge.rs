@@ -22,6 +22,8 @@ pub mod qobject {
         #[qml_singleton]
         #[qproperty(QString, state)]
         #[qproperty(QString, constants)]
+        /// The frames in the image provider: key → generation, as JSON (apart from `state`: a frame changes nothing else).
+        #[qproperty(QString, frames)]
         type Backend = super::BackendRust;
 
         /// Writes pending edits and stops the GPU worker, now: the window is going.
@@ -60,7 +62,10 @@ pub use qobject::{rv_drop, rv_install_images, rv_set_image};
 pub struct BackendRust {
     state: QString,
     constants: QString,
+    frames: QString,
     app: Option<Box<App>>,
+    /// A publish is queued: the messages before it share it.
+    flush_queued: bool,
 }
 
 /// Where worker threads and timers send their messages: the Qt thread, through the backend.
@@ -79,7 +84,7 @@ impl cxx_qt::Initialize for qobject::Backend {
         let tx = Tx(self.qt_thread());
         let mut app = App::new(tx);
         // QML's first bindings read a whole state, not an empty one.
-        let (state, ..) = app.publish();
+        let state = app.publish().state;
         self.as_mut().rust_mut().app = Some(Box::new(app));
         if let Some(state) = state {
             self.as_mut().set_state(QString::from(&state));
@@ -109,14 +114,27 @@ impl qobject::Backend {
         QString::from(&crate::i18n::gettext(&text.to_string()))
     }
 
-    /// Runs `msg` through the editor, then publishes what it changed.
+    /// Runs `msg` through the editor; what it changed is published once the messages queued with it have run too.
     pub fn handle(mut self: Pin<&mut Self>, msg: Msg) {
         let Some(mut app) = self.as_mut().rust_mut().app.take() else { return };
         app.update(msg);
-        let (state, toasts, dialogs) = app.publish();
+        self.as_mut().rust_mut().app = Some(app);
+        if !std::mem::replace(&mut self.as_mut().rust_mut().flush_queued, true) {
+            let _ = self.qt_thread().queue(|b| b.flush());
+        }
+    }
+
+    /// Publishes the state and frames, and shows the toasts and dialogs, the last messages left.
+    fn flush(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().flush_queued = false;
+        let Some(mut app) = self.as_mut().rust_mut().app.take() else { return };
+        let crate::app::Published { state, frames, toasts, dialogs } = app.publish();
         self.as_mut().rust_mut().app = Some(app);
         if let Some(state) = state {
             self.as_mut().set_state(QString::from(&state));
+        }
+        if let Some(frames) = frames {
+            self.as_mut().set_frames(QString::from(&frames));
         }
         for (text, action, id) in toasts {
             self.as_mut().toast(QString::from(&text), QString::from(&action), id);

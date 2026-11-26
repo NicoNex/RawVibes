@@ -48,7 +48,9 @@ ColumnLayout {
         readonly property real ih: height - 2 * ed.pad
         function sx(x) { return ed.pad + x * iw }
         function sy(y) { return ed.pad + (1 - y) * ih }
-        Connections { target: Store; function onSChanged() { plot.requestPaint() } }
+        // Repainted when the curves change, not on every state the editor publishes.
+        readonly property string drawn: JSON.stringify(ed.s.curves)
+        onDrawnChanged: requestPaint()
         onPaint: {
             const ctx = getContext("2d")
             ctx.reset()

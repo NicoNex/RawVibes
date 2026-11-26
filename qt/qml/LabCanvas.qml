@@ -11,7 +11,7 @@ Rectangle {
     Image {
         anchors { fill: parent; margins: 24 }
         visible: (s.lab || []).length > 0 && s.hasSource
-        source: s.labGen ? "image://rv/lab/" + s.labGen : ""
+        source: Store.img("lab")
         fillMode: Image.PreserveAspectFit
         cache: false
         retainWhileLoading: true

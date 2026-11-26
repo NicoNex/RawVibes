@@ -9,8 +9,8 @@ mod settings;
 mod timers;
 mod view;
 
-use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
 use cxx_qt_lib::QQuickStyle;
+use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
 
 /// A Vulkan driver is installed (an ICD manifest where the loader looks): Qt Quick can render with it.
 #[cfg(target_os = "linux")]
@@ -27,6 +27,11 @@ fn main() {
     if std::env::var_os("QSG_RHI_BACKEND").is_none() && vulkan_driver() {
         // SAFETY: first thing in main, before Qt or any other thread starts.
         unsafe { std::env::set_var("QSG_RHI_BACKEND", "vulkan") };
+    }
+    // Qt Wayland warns on every focus move between the window and the HDR surface's: noise, not a fault.
+    if std::env::var_os("QT_LOGGING_RULES").is_none() {
+        // SAFETY: before Qt or any other thread starts.
+        unsafe { std::env::set_var("QT_LOGGING_RULES", "qt.qpa.wayland.textinput=false") };
     }
     i18n::bind(&i18n::locale_dir());
     let mut app = QGuiApplication::new();

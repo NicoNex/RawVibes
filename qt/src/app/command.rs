@@ -27,7 +27,13 @@ fn path(a: &Value) -> Option<PathBuf> {
 }
 
 fn paths(a: &Value) -> Vec<PathBuf> {
-    a.get("paths").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(PathBuf::from).collect()
+    a.get("paths")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(PathBuf::from)
+        .collect()
 }
 
 /// A serde value of the core (`Profile`, `Blend`, `Label`…) under `k`.
@@ -215,11 +221,6 @@ pub fn command(name: &str, a: &Value) -> Option<Msg> {
         "cropRatio" => Msg::CropRatio(u(a, "i")),
         "cropSwap" => Msg::CropSwap,
         "cropAngle" => Msg::CropAngle(f(a, "v") as f32),
-        "cropRect" => {
-            let r = a.get("rect")?.as_array()?;
-            let v: Vec<f32> = r.iter().filter_map(Value::as_f64).map(|v| v as f32).collect();
-            Msg::CropRect(v.try_into().ok()?)
-        }
         "cropReset" => Msg::CropReset,
         "cropPress" => Msg::CropPress([f(a, "x") as f32, f(a, "y") as f32], [f(a, "tx") as f32, f(a, "ty") as f32]),
         "cropDrag" => Msg::CropDrag([f(a, "dx") as f32, f(a, "dy") as f32]),
@@ -260,7 +261,6 @@ pub fn command(name: &str, a: &Value) -> Option<Msg> {
         "browse" => Msg::Browse(b(a, "on")),
         "selectLut" => Msg::SelectLut(u(a, "i")),
         "hover" => Msg::Hover(opt_u(a, "i")),
-        "preview" => Msg::Preview(opt_u(a, "i")),
         "commit" => Msg::Commit(u(a, "i")),
         "openInLab" => Msg::OpenInLab,
         "layerAdd" => Msg::LayerAdd(
@@ -316,7 +316,8 @@ mod tests {
 
     #[test]
     fn eye_keys_round_trip() {
-        for o in [Off::Grade(Stage::Tone), Off::Develop(rawvibes_core::develop::DevPart::Noise), Off::Looks, Off::Crop] {
+        for o in [Off::Grade(Stage::Tone), Off::Develop(rawvibes_core::develop::DevPart::Noise), Off::Looks, Off::Crop]
+        {
             assert_eq!(off_from_key(&off_key(o)), Some(o), "{}", off_key(o));
         }
     }

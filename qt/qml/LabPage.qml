@@ -15,7 +15,7 @@ ColumnLayout {
     RowLayout {
         Layout.fillWidth: true
         Layout.topMargin: 6
-        Label { text: Store.tr("1 · Layers"); color: Theme.text; font.pixelSize: Theme.heading; font.weight: Font.DemiBold; Layout.fillWidth: true }
+        Heading { text: Store.tr("1 · Layers"); Layout.fillWidth: true }
         Icon { id: addBtn; name: "list-add"; tip: Store.tr("Add layer"); onClicked: addMenu.popup(addBtn, 0, addBtn.height) }
         Menu {
             id: addMenu
@@ -42,7 +42,7 @@ ColumnLayout {
         }
     }
 
-    Label { text: Store.tr("2 · I will use the final LUT on"); color: Theme.text; font.pixelSize: Theme.heading; font.weight: Font.DemiBold; Layout.topMargin: 10 }
+    Heading { text: Store.tr("2 · I will use the final LUT on"); Layout.topMargin: 10 }
     Choice {
         Layout.fillWidth: true
         model: Store.c.profileNames
@@ -52,7 +52,7 @@ ColumnLayout {
     }
     Caption { text: Store.tr("The camera profile (standard or log) you will load the exported LUT on. The signal is converted automatically to each layer's profile.") }
 
-    Label { text: Store.tr("Layer blending"); color: Theme.text; font.pixelSize: Theme.heading; font.weight: Font.DemiBold; Layout.topMargin: 10 }
+    Heading { text: Store.tr("Layer blending"); Layout.topMargin: 10 }
     Toggles {
         Layout.fillWidth: true
         model: [Store.tr("Chain"), Store.tr("Mix")]
@@ -70,7 +70,7 @@ ColumnLayout {
         background: Rectangle { color: Theme.canvas; radius: Theme.radius }
     }
 
-    Label { text: Store.tr("3 · Export"); color: Theme.text; font.pixelSize: Theme.heading; font.weight: Font.DemiBold; Layout.topMargin: 10 }
+    Heading { text: Store.tr("3 · Export"); Layout.topMargin: 10 }
     RowLayout {
         Layout.fillWidth: true
         enabled: lab.layers.length > 0

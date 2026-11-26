@@ -30,13 +30,12 @@ Rectangle {
     Image {
         id: photo
         anchors { fill: parent; margins: canvas.margin }
-        source: s.photoGen ? "image://rv/photo/" + s.photoGen : ""
+        source: Store.img("photo")
         // Under the HDR surface it would only be drawn over.
         visible: s.canvas === "image" && !hdrView.visible
         fillMode: Image.PreserveAspectFit
         cache: false
         smooth: true
-        mipmap: true
         asynchronous: false
         // Keeps the last frame on screen while the next one is decoded: no flash between frames.
         retainWhileLoading: true
@@ -99,7 +98,7 @@ Rectangle {
         Image {
             anchors.fill: parent
             // The SDR frame until the swapchain turns out HDR: an SDR screen gets an SDR one.
-            source: hdr.hdr ? (s.hdrGen ? "image://rv/hdr/" + s.hdrGen : "") : (s.photoGen ? "image://rv/photo/" + s.photoGen : "")
+            source: Store.img(hdr.hdr ? "hdr" : "photo")
             fillMode: Image.Stretch
             cache: false
             smooth: true
@@ -113,7 +112,8 @@ Rectangle {
         window: hdr
         x: canvas.shown.x; y: canvas.shown.y
         width: canvas.shown.width; height: canvas.shown.height
-        visible: s.hdrPreview && s.hdrGen > 0 && s.canvas === "image"
+        // Shown from the first frame on: the window must render once to learn its swapchain is HDR.
+        visible: s.hdrPreview && Store.f.photo > 0 && s.canvas === "image"
                  && !(s.crop && s.crop.editing) && !s.compare && !Store.covered
     }
 

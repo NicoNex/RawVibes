@@ -32,8 +32,6 @@ pub const REFINE_IDLE: &str = "refine-idle";
 /// The canvas background: "default", "black" or "white".
 pub const BACKGROUND: &str = "background";
 
-
-
 /// The stored value; until RawVibes stores its own, VibingLUT's (same keys).
 pub fn value(key: &str) -> Option<String> {
     let vibinglut = config_dir().join("vibinglut").join(key);
@@ -83,8 +81,6 @@ pub const AUTHOR: &str = "author";
 pub const COPYRIGHT: &str = "copyright";
 pub const AUTHOR_EMAIL: &str = "author-email";
 pub const AUTHOR_WEBSITE: &str = "author-website";
-
-
 
 /// A stored on/off setting ("1"/"0"); `default` when never set.
 pub fn flag(key: &str, default: bool) -> bool {

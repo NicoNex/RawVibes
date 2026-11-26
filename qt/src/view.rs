@@ -1,9 +1,9 @@
 //! What QML shows, as one JSON document: the editor's state in the words and numbers the controls need.
 
 use rawvibes_core::crop::PRESETS;
-use rawvibes_core::develop::{DevPart, KELVIN, WB_PRESETS};
+use rawvibes_core::develop::{KELVIN, WB_PRESETS};
 use rawvibes_core::export::PhotoFormat;
-use rawvibes_core::grade::{BAND_HUE_RANGE, BAND_HUES, Stage};
+use rawvibes_core::grade::{BAND_HUE_RANGE, BAND_HUES};
 use rawvibes_core::lab::{Blend, oklch_to_srgb};
 use rawvibes_core::meta::{self, Exif, Policy, RawMetadata};
 use rawvibes_core::profiles::Profile;
@@ -23,8 +23,10 @@ pub fn constants() -> Value {
         .iter()
         .map(|&f| json!({ "tag": f.tag(), "name": format_label(f), "hdr": f.hdr(), "lossy": f.lossy() }))
         .collect();
-    let policies: Vec<Value> =
-        Policy::ALL.iter().map(|&p| json!({ "tag": p.tag(), "name": policy_name(p), "hint": policy_hint(p) })).collect();
+    let policies: Vec<Value> = Policy::ALL
+        .iter()
+        .map(|&p| json!({ "tag": p.tag(), "name": policy_name(p), "hint": policy_hint(p) }))
+        .collect();
     json!({
         "debug": std::env::var_os("RAWVIBES_DEBUG").is_some(),
         "labels": Label::ALL.iter().map(|&l| json!({ "key": l, "name": label_name(l) })).collect::<Vec<_>>(),
@@ -45,7 +47,6 @@ pub fn constants() -> Value {
         "policies": policies,
         "policyNames": Policy::ALL.iter().map(|&p| policy_name(p)).collect::<Vec<_>>(),
         "qualities": [gettext("Automatic"), gettext("Fast"), gettext("Balanced"), gettext("Best")],
-        "stages": stage_keys(),
         // Per curve channel: its no-change curve, and whether its ends wrap (hue).
         "curveNeutral": (0..rawvibes_core::grade::CURVES).map(rawvibes_core::grade::neutral_curve).collect::<Vec<_>>(),
         "curvePeriodic": (0..rawvibes_core::grade::CURVES).map(rawvibes_core::grade::is_periodic).collect::<Vec<_>>(),
@@ -68,7 +69,6 @@ pub fn state(app: &App) -> Value {
                 "name": crate::app::file_label(&it.path),
                 "rating": it.rating,
                 "label": it.label,
-                "frame": it.frame,
                 "id": it.id,
                 "active": app.active == Some(i),
                 "shown": app.shows(it.rating, it.label),
@@ -78,15 +78,13 @@ pub fn state(app: &App) -> Value {
     let gallery: Vec<Value> = app
         .luts
         .iter()
-        .enumerate()
-        .map(|(i, l)| {
+        .map(|l| {
             let place = if l.group.is_empty() { String::new() } else { format!("{} · ", l.group) };
             json!({
                 "title": l.title,
                 "badge": l.format.badge(),
                 "tip": format!("{place}{} · {} {}³", l.title, l.format.badge(), l.size),
                 "shown": app.gallery_shows(l),
-                "thumb": app.ui.thumbs.get(i).copied().unwrap_or_default(),
             })
         })
         .collect();
@@ -94,7 +92,6 @@ pub fn state(app: &App) -> Value {
         .chain(app.group_names.iter().map(|g| if g.is_empty() { gettext("Main folder") } else { g.clone() }))
         .collect();
     let group = app.group.as_ref().and_then(|g| app.group_names.iter().position(|n| n == g)).map_or(0, |i| i + 1);
-    let size = app.size();
     let camera = app.camera_meta();
     let raw = app.camera().is_some();
     let e = &app.ui.export;
@@ -103,13 +100,8 @@ pub fn state(app: &App) -> Value {
     json!({
         "tab": app.ui.tab,
         "title": app.path.as_deref().map(crate::app::file_label).unwrap_or_else(|| "RawVibes".into()),
-        "info": app.ui.info,
         "photoInfo": photo_info(camera),
         "canvas": app.ui.canvas,
-        "photoGen": app.ui.photo_gen,
-        "hdrGen": app.ui.hdr_gen,
-        "scopesGen": app.ui.scopes_gen,
-        "labGen": app.ui.lab_gen,
         "hasSource": app.has_source(),
         "hasPhoto": app.path.is_some(),
         "raw": raw,
@@ -143,10 +135,8 @@ pub fn state(app: &App) -> Value {
         "matching": app.ui.matching,
         "matchName": app.ui.match_name,
         "matchFile": app.match_file(),
-        "matchThumb": app.ui.match_thumb,
         "matchAmount": p.match_amount,
         "off": app.off.iter().map(|&o| off_key(o)).collect::<Vec<_>>(),
-        "profile": app.profile,
         "profileIndex": Profile::ALL.iter().position(|&q| q == app.profile).unwrap_or(0),
         "profileName": app.profile.name(),
         "sourceProfileName": app.source_profile().name(),
@@ -184,8 +174,6 @@ pub fn state(app: &App) -> Value {
             "levelling": app.levelling,
             "ratio": app.ratio_row,
             "swappable": matches!(app.ratio, rawvibes_core::crop::Ratio::Fixed(a, b) if a != b),
-            "aspect": size.and_then(|(w, h)| app.ratio.aspect(w, h)),
-            "frame": size.map_or([0.0; 2], |(w, h)| [w as f32, h as f32]),
         },
         // Looks and LUT Lab
         "looks": layers(&app.looks),
@@ -239,13 +227,6 @@ pub fn state(app: &App) -> Value {
     })
 }
 
-/// Every eye's key, so QML builds them from one list.
-fn stage_keys() -> Value {
-    let g: Vec<String> = Stage::ALL.iter().map(|&s| off_key(rawvibes_core::sidecar::Off::Grade(s))).collect();
-    let d: Vec<String> = DevPart::ALL.iter().map(|&p| off_key(rawvibes_core::sidecar::Off::Develop(p))).collect();
-    json!({ "grade": g, "develop": d })
-}
-
 fn layers(list: &[LabLayer]) -> Value {
     Value::Array(
         list.iter()
@@ -260,7 +241,6 @@ fn layers(list: &[LabLayer]) -> Value {
                     "badge": badge,
                     "title": title,
                     "intensity": (l.intensity * 100.0).round(),
-                    "input": to,
                     "inputIndex": Profile::ALL.iter().position(|&q| q == to).unwrap_or(0),
                     "on": l.on,
                 })
@@ -340,10 +320,6 @@ fn band_names() -> [String; 8] {
 
 /// Swatches and slider tracks in OKLCh from the shader's own band hues: each track shows what moving it does.
 fn band_colours() -> Value {
-    let hex = |l: f32, c: f32, h: f32| {
-        let [r, g, b] = oklch_to_srgb(l, c, h).map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
-        format!("#{r:02x}{g:02x}{b:02x}")
-    };
     Value::Array(
         BAND_HUES
             .iter()
@@ -361,13 +337,18 @@ fn band_colours() -> Value {
     )
 }
 
+/// An OKLCh colour as `#rrggbb`, clipped to sRGB.
+fn hex(l: f32, c: f32, h: f32) -> String {
+    let [r, g, b] = oklch_to_srgb(l, c, h).map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
 /// The hue curves' x axis: 72 steps around the OKLCh hue circle, as the shader sees it.
 fn hue_strip() -> Vec<String> {
     (0..72)
         .map(|i| {
             let t = (i as f32 + 0.5) / 72.0;
-            let [r, g, b] = oklch_to_srgb(0.72, 0.13, t * std::f32::consts::TAU).map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
-            format!("#{r:02x}{g:02x}{b:02x}")
+            hex(0.72, 0.13, t * std::f32::consts::TAU)
         })
         .collect()
 }

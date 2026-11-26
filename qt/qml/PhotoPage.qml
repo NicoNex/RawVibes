@@ -83,14 +83,14 @@ ColumnLayout {
             label: Store.tr("Temperature")
             from: (Store.c.kelvinRange || [2000, 12000])[0]; to: (Store.c.kelvinRange || [2000, 12000])[1]; neutral: 5500
             unit: " K"
-            track: ["#4f86e8", "#e8e8e8", "#f2b84b"]
+            track: Theme.temperatureTrack
             value: dev.kelvin || 5500
             onMoved: (v) => Store.cmd("kelvin", { v: v })
         }
         ValueSlider {
             Layout.fillWidth: true
             label: Store.tr("Tint")
-            track: ["#4cbf5a", "#e8e8e8", "#d85bd0"]
+            track: Theme.tintTrack
             value: dev.tint || 0
             onMoved: (v) => Store.cmd("tint", { v: v })
         }

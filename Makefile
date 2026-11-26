@@ -1,6 +1,7 @@
 # RawVibes — build, run and package.
 #   make run FILE=photo.RW2     debug run, optionally opening a photo
 #   make release / run-release  optimised build
+#   make qt / run-qt            the Qt interface, optimised; qt-debug / run-qt-debug for a debug build
 #   make install PREFIX=~/.local
 #   make arch                   build an Arch Linux package with makepkg
 #   make dmg                    build a macOS .dmg (run on macOS, needs dylibbundler)
@@ -26,7 +27,7 @@ DTMODEL    := target/models/rawdenoise-nind.dtmodel
 # macOS: shasum (its sha256sum -c reads no stdin); Linux: sha256sum.
 SHA256     := $(shell command -v shasum >/dev/null && echo shasum -a 256 || echo sha256sum)
 
-.PHONY: all build run release run-release test check fmt clean install uninstall arch dmg pot locale models lensfun
+.PHONY: all build run release run-release qt run-qt qt-debug run-qt-debug test check fmt clean install uninstall arch dmg pot locale models lensfun
 
 all: release
 
@@ -41,6 +42,18 @@ release: locale lensfun
 
 run-release: locale lensfun
 	$(CARGO) run --release -p $(BIN) -- $(FILE)
+
+qt: locale lensfun
+	$(CARGO) build --release -p $(BIN)-qt
+
+run-qt: locale lensfun
+	$(CARGO) run --release -p $(BIN)-qt -- $(FILE)
+
+qt-debug: locale lensfun
+	$(CARGO) build -p $(BIN)-qt
+
+run-qt-debug: locale lensfun
+	$(CARGO) run -p $(BIN)-qt -- $(FILE)
 
 test:
 	$(CARGO) test --workspace

@@ -13,11 +13,13 @@ QtObject {
     readonly property color faint: "#6a6a6a"
     readonly property color accent: "#e0a040"
     readonly property color accentInk: "#1c1c1c"
-    readonly property color danger: "#e5534b"
+    // Colour labels, as the filmstrip and the header mark a photo (None has no colour).
+    readonly property var labels: ({ Red: "#e5534b", Yellow: "#e0c040", Green: "#57c46a", Blue: "#5b8def", Purple: "#b06ce0" })
+    // White balance tracks: cool to warm, green to magenta.
+    readonly property var temperatureTrack: ["#4f86e8", "#e8e8e8", "#f2b84b"]
+    readonly property var tintTrack: ["#4cbf5a", "#e8e8e8", "#d85bd0"]
 
     readonly property int radius: 6
-    readonly property int gap: 8
-    readonly property int pad: 12
     readonly property int small: 11
     readonly property int body: 13
     readonly property int heading: 14

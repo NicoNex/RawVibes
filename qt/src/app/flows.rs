@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use rawvibes_core::crop::{self, Crop, Ratio};
-use rawvibes_core::develop::{Camera, Develop, Detail, WB_PRESETS};
+use rawvibes_core::develop::{Camera, Detail, Develop, WB_PRESETS};
 use rawvibes_core::export::PhotoFormat;
 use rawvibes_core::gpu::{Done, Job, PhotoExport, ThumbBase};
 use rawvibes_core::grade::Grade;
@@ -23,7 +23,6 @@ use rawvibes_core::sidecar::{Label, LookRef, Off, Sidecar};
 use rawvibes_core::view::{Region, Zoom};
 
 use super::*;
-use crate::bridge::{rv_drop, rv_set_image};
 
 impl App {
     pub fn split_value(&self) -> f32 {
@@ -46,21 +45,11 @@ impl App {
     /// Sends the active source (photo or test chart) to the GPU and redraws.
     pub(super) fn show_source(&mut self) {
         let Some((img, profile)) = self.active_source().cloned() else {
-            self.ui.info.clear();
             self.ui.canvas = "empty";
             return;
         };
         // The shader decodes the profile the pixels were actually encoded in.
         self.grade.params.set_input(profile);
-        let name = match (&self.path, self.show_chart) {
-            (Some(p), false) => file_label(p),
-            _ => gettext("Test chart"),
-        };
-        let [w, h] = match (self.crop_region(), self.show_chart) {
-            (Some(r), false) => r.size.map(|v| v.round() as u32),
-            _ => [img.width, img.height],
-        };
-        self.ui.info = format!("{name} · {} · {w}×{h}", profile.name());
         if self.view_zoom().is_some() {
             self.request_view();
         } else {
@@ -82,7 +71,8 @@ impl App {
     pub(super) fn render(&mut self) {
         let mut grade = self.graded();
         grade.params.overlay = self.overlay as u32;
-        if self.hdr_preview {
+        // No HDR rendition for an SDR surface: it would be read back only to be dropped.
+        if self.hdr_preview && crate::hdr::surface() {
             grade.params.hdr_stops = self.headroom;
         }
         // Where the shown image sits in the crop, for the creative vignette.
@@ -361,8 +351,8 @@ impl App {
     /// The metadata an export of `crop` embeds: the photo's, with the author defaults, as Preferences allow.
     fn export_tags(&self, crop: &Region) -> meta::Tags {
         let src = self.camera_meta();
-        let m = meta::with_defaults(&self.meta, &author_defaults(), src.and_then(meta::capture_year));
-        meta::tags(src, &m, export_policy(), Decoded::fit_size(crop, u32::MAX))
+        let m = meta::with_defaults(&self.meta, &self.prefs.author, src.and_then(meta::capture_year));
+        meta::tags(src, &m, self.prefs.policy, Decoded::fit_size(crop, u32::MAX))
     }
 
     /// Starts exporting the open photo to `path`; false if there is none.
@@ -448,9 +438,8 @@ impl App {
         if self.saved.is_none() {
             return;
         }
-        self.save_tick += 1;
-        self.timers.after(WRITE_SETTLE, Msg::WriteSidecar(self.save_tick));
-        self.timers.after(SAVE_SETTLE, Msg::SaveSidecar(self.save_tick));
+        self.timers.debounce(WRITE_SETTLE, Msg::WriteSidecar);
+        self.timers.debounce(SAVE_SETTLE, Msg::SaveSidecar);
     }
 
     /// Writes the open photo's sidecar if its edits changed since it was read or written.
@@ -533,8 +522,7 @@ impl App {
         if roll_current && !self.browsing {
             return;
         }
-        self.roll_tick += 1;
-        self.timers.after(ROLL_SETTLE, Msg::RollTick(self.roll_tick));
+        self.timers.debounce(ROLL_SETTLE, Msg::RollTick);
     }
 
     /// Hands the filmstrip to the GPU; `layout` when photos were added or removed.
@@ -572,7 +560,7 @@ impl App {
     /// Takes photo `i` out of the strip; true if it was the one being edited.
     pub(super) fn drop_from_roll(&mut self, i: usize) -> bool {
         let gone = self.roll.remove(i);
-        rv_drop(&format!("roll/{}", gone.id));
+        self.drop_image(&format!("roll/{}", gone.id));
         let was_active = self.active == Some(i);
         self.active = self.active.and_then(|a| if a > i { Some(a - 1) } else { (a < i).then_some(a) });
         self.roll_changed();
@@ -590,9 +578,7 @@ impl App {
     }
 
     pub(super) fn show_match_thumb(&mut self, reference: &Photo) {
-        let rgba = rgba8(&reference.pixels);
-        rv_set_image("match", rgba, reference.width, reference.height, false);
-        self.ui.match_thumb += 1;
+        self.show_image("match".into(), rgba8(&reference.pixels), reference.width, reference.height, false);
     }
 
     /// Matches the photo on screen (as decoded, before any grading) to `reference`.
@@ -645,7 +631,6 @@ impl App {
                         looks: Vec::new(),
                         small: None,
                         encoded: None,
-                        frame: 0,
                         id: self.next_roll_id,
                     });
                     self.next_roll_id += 1;
@@ -688,7 +673,6 @@ impl App {
             let _ = settings::set_folder(settings::PHOTO_FOLDER, dir);
         }
         self.ui.canvas = if self.has_source() { "image" } else { "loading" };
-        self.ui.info = gettext("Loading…");
         self.load_gen += 1;
         let (s, generation, profile) = (self.tx.clone(), self.load_gen, self.profile);
         std::thread::spawn(move || {
@@ -864,7 +848,10 @@ impl App {
         if truncated {
             self.toast(&gettext!("Very large library: showing the first {} LUTs", MAX_LIBRARY));
         }
-        self.ui.thumbs = vec![0; luts.len()];
+        let old: Vec<String> = self.frames_with("thumb/");
+        for key in old {
+            self.drop_image(&key);
+        }
         self.group_names = luts.iter().map(|l| l.group.clone()).collect();
         self.group_names.dedup(); // sorted by group in core
         self.group = keep_group.filter(|g| self.group_names.contains(g));
@@ -882,10 +869,7 @@ impl App {
 
     /// Renders only the view on screen; the others refresh when shown.
     pub(super) fn refresh(&mut self) {
-        match self.page {
-            Page::Grade => self.render(),
-            Page::Lab => self.render_lab(),
-        }
+        if self.in_lab() { self.render_lab() } else { self.render() }
     }
 
     fn job_layer(&self, l: &LabLayer) -> Layer {
@@ -927,7 +911,15 @@ impl App {
             };
             let (width, height) = self.draft_size(Decoded::fit_size(&r, max));
             let develop = self.applied_develop();
-            return self.send(Job::DevelopRaw { generation: 0, region: r, width, height, develop, profile, view: false });
+            return self.send(Job::DevelopRaw {
+                generation: 0,
+                region: r,
+                width,
+                height,
+                develop,
+                profile,
+                view: false,
+            });
         }
         let s = self.tx.clone();
         std::thread::spawn(move || {
@@ -1089,8 +1081,7 @@ impl App {
         self.drafting = self.quality.draft(self.auto_draft) < 1.0;
         self.encode_photo();
         self.request_view();
-        self.develop_tick += 1;
-        self.timers.after(DEVELOP_SETTLE, Msg::DevelopSettled(self.develop_tick));
+        self.timers.debounce(DEVELOP_SETTLE, Msg::DevelopSettled);
         self.schedule_save();
     }
 
@@ -1289,7 +1280,9 @@ impl App {
         }
         // shortcut: one thread per request; a scroll burst resamples views nobody sees. Pool them if it shows.
         let dev = Develop::default();
-        std::thread::spawn(move || s.send(Msg::ViewReady(generation, profile, d.encode_region(&r, w, h, profile, &dev))));
+        std::thread::spawn(move || {
+            s.send(Msg::ViewReady(generation, profile, d.encode_region(&r, w, h, profile, &dev)))
+        });
     }
 
     pub(super) fn set_zoom(&mut self, zoom: Option<Zoom>) {
@@ -1318,7 +1311,7 @@ impl App {
     }
 
     pub(super) fn on_zoom(&mut self, cmd: ZoomCmd) {
-        let zoomable = !self.show_chart && matches!(self.page, Page::Grade) && self.editing.is_none();
+        let zoomable = !self.show_chart && !self.in_lab() && self.editing.is_none();
         let Some(crop) = self.shown_region().filter(|_| zoomable) else { return };
         let canvas = self.canvas;
         let middle = canvas.map(|v| v / 2.0);
@@ -1353,32 +1346,22 @@ impl App {
             Done::Graded { width, height, rgba, hdr, scopes: Scopes { histogram, waveform, vectorscope } } => {
                 // The HDR rendition goes to the HDR surface; the SDR one always backs the canvas.
                 if let Some(hdr) = hdr.filter(|_| self.hdr_preview) {
-                    rv_set_image("hdr", hdr, width, height, true);
-                    self.ui.hdr_gen += 1;
+                    self.show_image("hdr".into(), hdr, width, height, true);
                 }
-                rv_set_image("photo", rgba, width, height, false);
-                rv_set_image("hist", histogram, HIST_W as u32, HIST_H as u32, false);
-                rv_set_image("wave", waveform, HIST_W as u32, HIST_H as u32, false);
-                rv_set_image("vec", vectorscope, VEC_SIZE as u32, VEC_SIZE as u32, false);
-                self.ui.photo_gen += 1;
-                self.ui.scopes_gen += 1;
+                self.show_image("photo".into(), rgba, width, height, false);
+                self.show_image("hist".into(), histogram, HIST_W as u32, HIST_H as u32, false);
+                self.show_image("wave".into(), waveform, HIST_W as u32, HIST_H as u32, false);
+                self.show_image("vec".into(), vectorscope, VEC_SIZE as u32, VEC_SIZE as u32, false);
             }
             Done::Lab { width, height, rgba } => {
-                rv_set_image("lab", rgba, width, height, false);
-                self.ui.lab_gen += 1;
+                self.show_image("lab".into(), rgba, width, height, false);
             }
             Done::Thumb { generation, index, width, height, rgba } => {
-                if generation != self.gallery_gen {
-                    return;
-                }
-                if let Some(g) = self.ui.thumbs.get_mut(index) {
-                    rv_set_image(&format!("thumb/{index}"), rgba, width, height, false);
-                    *g += 1;
+                if generation == self.gallery_gen && index < self.luts.len() {
+                    self.show_image(format!("thumb/{index}"), rgba, width, height, false);
                 }
             }
-            Done::Exported(Ok(p)) => {
-                self.toast(&gettext!("LUT saved: {}", p.file_name().unwrap_or_default().to_string_lossy()))
-            }
+            Done::Exported(Ok(p)) => self.toast(&gettext!("LUT saved: {}", file_label(&p))),
             Done::Exported(Err(e)) => self.toast(&gettext!("Export failed: {}", e)),
             Done::ExportProgress(f) => {
                 // A batch shows its own progress: the photos done plus this one's part.
@@ -1417,10 +1400,9 @@ impl App {
             }
             Done::RollFrame { generation, index, width, height, rgba } => {
                 if generation == self.roll_gen
-                    && let Some(it) = self.roll.get_mut(index)
+                    && let Some(id) = self.roll.get(index).map(|it| it.id)
                 {
-                    rv_set_image(&format!("roll/{}", it.id), rgba, width, height, false);
-                    it.frame += 1;
+                    self.show_image(format!("roll/{id}"), rgba, width, height, false);
                 }
             }
             Done::RawLoaded(generation, path, r) => {
@@ -1479,4 +1461,3 @@ fn rgba8(pixels: &[[f32; 4]]) -> Vec<u8> {
     out.extend(pixels.iter().flat_map(|p| p.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)));
     out
 }
-

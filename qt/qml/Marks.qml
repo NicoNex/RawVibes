@@ -5,7 +5,6 @@ import RawVibes
 // The open photo's stars (a star clicked twice clears them) and colour label.
 Row {
     readonly property var s: Store.s
-    readonly property var colours: ({ None: Theme.line, Red: "#e5534b", Yellow: "#e0c040", Green: "#57c46a", Blue: "#5b8def", Purple: "#b06ce0" })
     spacing: 0
     Repeater {
         model: 5
@@ -29,7 +28,7 @@ Row {
         ToolTip.visible: hovered; ToolTip.text: Accessible.name; ToolTip.delay: 600
         onClicked: labelMenu.popup(labelBtn, 0, labelBtn.height)
         contentItem: Item {
-            Rectangle { anchors.centerIn: parent; width: 12; height: 12; radius: 6; color: colours[s.label] || Theme.line; border.color: Theme.dim; border.width: s.label === "None" ? 1 : 0 }
+            Rectangle { anchors.centerIn: parent; width: 12; height: 12; radius: 6; color: Theme.labels[s.label] || Theme.line; border.color: Theme.dim; border.width: s.label === "None" ? 1 : 0 }
         }
         background: Rectangle { radius: 15; color: labelBtn.hovered ? Theme.raised : "transparent" }
         Menu {

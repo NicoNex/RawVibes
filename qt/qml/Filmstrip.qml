@@ -10,7 +10,6 @@ Rectangle {
     readonly property var roll: s.roll || []
     color: Theme.panel
     implicitHeight: 112
-    readonly property var labelColours: ({ None: "transparent", Red: "#e5534b", Yellow: "#e0c040", Green: "#57c46a", Blue: "#5b8def", Purple: "#b06ce0" })
 
     RowLayout {
         anchors { fill: parent; margins: 8 }
@@ -51,7 +50,7 @@ Rectangle {
                 border.width: 2
                 Image {
                     anchors { fill: parent; margins: 3; bottomMargin: 20 }
-                    source: card.it.frame ? "image://rv/roll/" + card.it.id + "/" + card.it.frame : ""
+                    source: Store.img("roll/" + card.it.id)
                     fillMode: Image.PreserveAspectFit
                     cache: false
                     retainWhileLoading: true
@@ -59,7 +58,7 @@ Rectangle {
                 Rectangle {
                     width: 6; height: 6; radius: 3
                     anchors { left: parent.left; bottom: parent.bottom; margins: 7 }
-                    color: fs.labelColours[card.it.label] || "transparent"
+                    color: Theme.labels[card.it.label] || "transparent"
                 }
                 Label {
                     anchors { left: parent.left; right: stars.left; bottom: parent.bottom; leftMargin: 18; bottomMargin: 3 }

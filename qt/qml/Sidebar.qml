@@ -48,7 +48,7 @@ ColumnLayout {
         visible: side.pinned && s.tab !== "lab" && !(s.browsing && s.tab === "grade")
         RowLayout {
             Layout.fillWidth: true
-            Label { text: Store.tr("Scopes"); color: Theme.text; font.pixelSize: Theme.heading; font.weight: Font.DemiBold; Layout.fillWidth: true }
+            Heading { text: Store.tr("Scopes"); Layout.fillWidth: true }
             Icon { name: "view-pin"; tip: Store.tr("Keep scopes in view while scrolling"); checkable: true; checked: side.pinned; onClicked: side.pinToggled() }
         }
         Scopes { Layout.fillWidth: true }
@@ -79,7 +79,7 @@ ColumnLayout {
                 visible: !side.pinned && s.tab !== "lab"
                 RowLayout {
                     Layout.fillWidth: true
-                    Label { text: Store.tr("Scopes"); color: Theme.text; font.pixelSize: Theme.heading; font.weight: Font.DemiBold; Layout.fillWidth: true }
+                    Heading { text: Store.tr("Scopes"); Layout.fillWidth: true }
                     Icon { name: "view-pin"; tip: Store.tr("Keep scopes in view while scrolling"); checkable: true; checked: side.pinned; onClicked: side.pinToggled() }
                 }
                 Scopes { Layout.fillWidth: true; visible: !side.pinned }

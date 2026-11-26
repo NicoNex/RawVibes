@@ -39,7 +39,7 @@ ColumnLayout {
         Image {
             anchors.fill: parent
             anchors.margins: 1
-            source: s.scopesGen ? "image://rv/" + ["hist", "wave", "vec"][sc.kind] + "/" + s.scopesGen : ""
+            source: Store.img(["hist", "wave", "vec"][sc.kind])
             fillMode: sc.kind === 2 ? Image.PreserveAspectFit : Image.Stretch
             cache: false
             retainWhileLoading: true

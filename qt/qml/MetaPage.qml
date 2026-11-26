@@ -35,9 +35,7 @@ ColumnLayout {
         Label { text: parent.title; color: Theme.dim; font.pixelSize: Theme.small }
         Label { text: parent.value; color: Theme.text; font.pixelSize: Theme.body; wrapMode: Text.Wrap; Layout.fillWidth: true }
     }
-    component Group: Label {
-        color: Theme.text; font.pixelSize: Theme.heading; font.weight: Font.DemiBold; Layout.topMargin: 6
-    }
+    component Group: Heading { Layout.topMargin: 6 }
 
     // The shot card.
     Rectangle {

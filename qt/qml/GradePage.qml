@@ -48,8 +48,8 @@ ColumnLayout {
     Section {
         title: Store.tr("Warmth")
         eye: "g:WhiteBalance"
-        Param { label: Store.tr("Temperature"); key: "temperature"; track: ["#4f86e8", "#e8e8e8", "#f2b84b"] }
-        Param { label: Store.tr("Tint"); key: "tint"; track: ["#4cbf5a", "#e8e8e8", "#d85bd0"] }
+        Param { label: Store.tr("Temperature"); key: "temperature"; track: Theme.temperatureTrack }
+        Param { label: Store.tr("Tint"); key: "tint"; track: Theme.tintTrack }
     }
 
     PhaseLabel { text: Store.tr("Primaries") }

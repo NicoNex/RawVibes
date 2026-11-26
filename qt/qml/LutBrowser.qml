@@ -14,7 +14,7 @@ ColumnLayout {
     RowLayout {
         Layout.fillWidth: true
         Icon { name: "go-previous"; tip: Store.tr("Back to the grade (B)"); onClicked: Store.cmd("browse", { on: false }) }
-        Label { text: Store.tr("LUTs"); color: Theme.text; font.pixelSize: Theme.heading; font.weight: Font.DemiBold; Layout.fillWidth: true }
+        Heading { text: Store.tr("LUTs"); Layout.fillWidth: true }
         Icon { name: "folder-open"; tip: Store.tr("Choose LUT folder"); onClicked: Store.cmd("chooseFolder") }
         Icon { name: "view-refresh"; tip: Store.tr("Reload LUTs (F5)"); onClicked: Store.cmd("reload") }
         Icon {
@@ -97,12 +97,12 @@ ColumnLayout {
                     Image {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        source: card.thumb ? "image://rv/thumb/" + card.i + "/" + card.thumb : ""
+                        source: Store.img("thumb/" + card.i)
                         fillMode: Image.PreserveAspectCrop
                         cache: false
                         clip: true
                         retainWhileLoading: true
-                        Rectangle { anchors.fill: parent; color: Theme.canvas; visible: !card.thumb; z: -1 }
+                        Rectangle { anchors.fill: parent; color: Theme.canvas; visible: !Store.f["thumb/" + card.i]; z: -1 }
                         Label {
                             anchors { top: parent.top; right: parent.right; margins: 4 }
                             text: card.badge

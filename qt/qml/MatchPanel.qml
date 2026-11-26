@@ -26,8 +26,8 @@ StackLayout {
         Image {
             Layout.fillWidth: true
             Layout.preferredHeight: 110
-            visible: s.matchThumb > 0 && (s.matchFile || s.matchName !== "")
-            source: s.matchThumb ? "image://rv/match/" + s.matchThumb : ""
+            visible: Store.f.match > 0 && (s.matchFile || s.matchName !== "")
+            source: Store.img("match")
             fillMode: Image.PreserveAspectCrop
             cache: false
             clip: true

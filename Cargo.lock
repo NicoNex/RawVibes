@@ -2614,6 +2614,7 @@ dependencies = [
  "cxx-qt-lib",
  "dirs",
  "gettext-sys",
+ "half",
  "notify",
  "qt-build-utils",
  "rawvibes-core",

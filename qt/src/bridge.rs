@@ -24,6 +24,8 @@ pub mod qobject {
         #[qproperty(QString, constants)]
         /// The frames in the image provider: key → generation, as JSON (apart from `state`: a frame changes nothing else).
         #[qproperty(QString, frames)]
+        /// The same for the frames each render replaces (photo, HDR, scopes, lab): see `app::is_live`.
+        #[qproperty(QString, live)]
         type Backend = super::BackendRust;
 
         /// Writes pending edits and stops the GPU worker, now: the window is going.
@@ -63,6 +65,7 @@ pub struct BackendRust {
     state: QString,
     constants: QString,
     frames: QString,
+    live: QString,
     app: Option<Box<App>>,
     /// A publish is queued: the messages before it share it.
     flush_queued: bool,
@@ -128,13 +131,16 @@ impl qobject::Backend {
     fn flush(mut self: Pin<&mut Self>) {
         self.as_mut().rust_mut().flush_queued = false;
         let Some(mut app) = self.as_mut().rust_mut().app.take() else { return };
-        let crate::app::Published { state, frames, toasts, dialogs } = app.publish();
+        let crate::app::Published { state, frames, live, toasts, dialogs } = app.publish();
         self.as_mut().rust_mut().app = Some(app);
         if let Some(state) = state {
             self.as_mut().set_state(QString::from(&state));
         }
         if let Some(frames) = frames {
             self.as_mut().set_frames(QString::from(&frames));
+        }
+        if let Some(live) = live {
+            self.as_mut().set_live(QString::from(&live));
         }
         for (text, action, id) in toasts {
             self.as_mut().toast(QString::from(&text), QString::from(&action), id);

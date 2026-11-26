@@ -496,6 +496,8 @@ pub struct ExportState {
 pub struct Published {
     pub state: Option<String>,
     pub frames: Option<String>,
+    /// The frames that change with every render (photo, HDR, scopes, lab), apart from the thumbnails.
+    pub live: Option<String>,
     pub toasts: Vec<(String, String, i32)>,
     pub dialogs: Vec<(String, String)>,
 }
@@ -597,6 +599,7 @@ pub struct App {
     frames: std::collections::BTreeMap<String, u64>,
     frame_count: u64,
     frames_dirty: bool,
+    live_dirty: bool,
     /// A zoomed view was asked for since the last publish (`request_view`).
     view_wanted: bool,
     /// The curves as last published, with their points and samples as JSON: sampled again only when they change.
@@ -748,6 +751,7 @@ impl App {
             frames: Default::default(),
             frame_count: 0,
             frames_dirty: false,
+            live_dirty: false,
             view_wanted: false,
             curve_cache: Default::default(),
             timers: Timers::new(tx.clone()),
@@ -808,11 +812,16 @@ impl App {
             .then(|| crate::view::state(self).to_string())
             .filter(|s| *s != self.published)
             .inspect(|s| self.published.clone_from(s));
-        let frames =
-            std::mem::take(&mut self.frames_dirty).then(|| serde_json::to_string(&self.frames).unwrap_or_default());
+        let json = |live: bool| {
+            let part: std::collections::HashMap<_, _> = self.frames.iter().filter(|(k, _)| is_live(k) == live).collect();
+            serde_json::to_string(&part).unwrap_or_default()
+        };
+        let frames = std::mem::take(&mut self.frames_dirty).then(|| json(false));
+        let live = std::mem::take(&mut self.live_dirty).then(|| json(true));
         Published {
             state,
             frames,
+            live,
             toasts: std::mem::take(&mut self.toasts),
             dialogs: std::mem::take(&mut self.dialogs),
         }
@@ -823,8 +832,13 @@ impl App {
         crate::bridge::rv_set_image(&key, pixels, width, height, half);
         // One counter for every key: a key dropped and set again never repeats a URL QML has seen.
         self.frame_count += 1;
+        self.mark(&key);
         self.frames.insert(key, self.frame_count);
-        self.frames_dirty = true;
+    }
+
+    /// The frames property `key` is published in changed.
+    fn mark(&mut self, key: &str) {
+        if is_live(key) { self.live_dirty = true } else { self.frames_dirty = true }
     }
 
     /// The frames whose keys start with `prefix`.
@@ -834,7 +848,9 @@ impl App {
 
     pub fn drop_image(&mut self, key: &str) {
         crate::bridge::rv_drop(key);
-        self.frames_dirty |= self.frames.remove(key).is_some();
+        if self.frames.remove(key).is_some() {
+            self.mark(key);
+        }
     }
 
     /// The grade's curves for QML: their points, and samples drawn as the shader evaluates them (the core's interpolation).
@@ -2258,4 +2274,10 @@ mod tests {
         assert!(near(level_turn(-100.0, -100.0 * 5f32.to_radians().tan()), 5.0));
         assert!(near(level_turn(100.0 * 5f32.to_radians().tan(), 100.0), -5.0));
     }
+}
+
+/// The frames every render replaces: published apart, so the filmstrip's and the LUT browser's
+/// image bindings do not run again for each slider frame.
+fn is_live(key: &str) -> bool {
+    matches!(key, "photo" | "hdr" | "hist" | "wave" | "vec" | "lab")
 }

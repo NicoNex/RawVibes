@@ -105,7 +105,7 @@ ColumnLayout {
                         cache: false
                         clip: true
                         retainWhileLoading: true
-                        Rectangle { anchors.fill: parent; color: Theme.canvas; visible: !Store.f["thumb/" + card.i]; z: -1 }
+                        Rectangle { anchors.fill: parent; color: Theme.canvas; visible: !Store.gen("thumb/" + card.i); z: -1 }
                         Label {
                             anchors { top: parent.top; right: parent.right; margins: 4 }
                             text: card.badge

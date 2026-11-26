@@ -117,7 +117,7 @@ Rectangle {
         width: canvas.shown.width; height: canvas.shown.height
         // Shown while it checks its swapchain (one frame), then only with HDR frames to show:
         // an SDR swapchain steps aside for the SDR photo under it.
-        visible: s.hdrPreview && s.canvas === "image" && (probe.running || (hdr.hdr && Store.f.hdr > 0))
+        visible: s.hdrPreview && s.canvas === "image" && (probe.running || (hdr.hdr && Store.gen("hdr") > 0))
                  && !(s.crop && s.crop.editing) && !s.compare && !Store.covered && !overPhoto
     }
     // A menu, popup, dialog or tooltip over the photo; a tooltip on the sidebar leaves the HDR alone.
@@ -134,7 +134,7 @@ Rectangle {
         hdr.reprobe()
         probe.restart()
     }
-    readonly property bool previewOn: s.hdrPreview && Store.f.photo > 0
+    readonly property bool previewOn: s.hdrPreview && Store.gen("photo") > 0
     onPreviewOnChanged: reprobe()
     Connections { target: canvas.Window.window; function onScreenChanged() { canvas.reprobe() } }
 

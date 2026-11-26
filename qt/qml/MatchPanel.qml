@@ -26,7 +26,7 @@ StackLayout {
         Image {
             Layout.fillWidth: true
             Layout.preferredHeight: 110
-            visible: Store.f.match > 0 && (s.matchFile || s.matchName !== "")
+            visible: Store.gen("match") > 0 && (s.matchFile || s.matchName !== "")
             source: Store.img("match")
             fillMode: Image.PreserveAspectCrop
             cache: false

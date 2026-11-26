@@ -3,6 +3,8 @@
 // 2D content, so only the photo lives here; the rest of the interface stays on an SDR surface.
 #pragma once
 
+#include <QtCore/QFile>
+#include <QtGui/QColorSpace>
 #include <QtGui/QGuiApplication>
 #include <QtQuick/QQuickWindow>
 #include <rhi/qrhi.h>
@@ -26,6 +28,17 @@ public:
         setProperty("_qt_sg_hdr_format", QByteArrayLiteral("hdr10"));
 #endif
         connect(this, &QQuickWindow::afterRendering, this, &RvHdrWindow::check, Qt::DirectConnection);
+#ifdef Q_OS_LINUX
+        // NVIDIA's Vulkan driver gives Wayland an HDR10 swapchain but never tags the surface PQ, so the
+        // compositor reads the codes as sRGB (washed out); Qt tags it from the format's colour space.
+        // shortcut: NVIDIA only, since Mesa tags the surface itself and a second tag is a protocol error;
+        // drop it once NVIDIA's driver tags its HDR10 swapchains.
+        if (QGuiApplication::platformName() == QLatin1String("wayland") && QFile::exists(QStringLiteral("/proc/driver/nvidia/version"))) {
+            QSurfaceFormat f = requestedFormat();
+            f.setColorSpace(QColorSpace(QColorSpace::Primaries::Bt2020, QColorSpace::TransferFunction::St2084));
+            setFormat(f);
+        }
+#endif
         // On Wayland this window is a subsurface its parent commits: a new frame shows once the parent draws too.
         if (QGuiApplication::platformName() == QLatin1String("wayland"))
             connect(this, &QQuickWindow::frameSwapped, this, [this] {

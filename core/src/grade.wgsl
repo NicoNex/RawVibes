@@ -556,9 +556,14 @@ fn look_graded(idx: u32, c: vec3<f32>) -> vec3<f32> {
     return vignette(idx, g);
 }
 
+// Workgroups are laid out on a 2-D grid (`raw::grid`): x alone tops out at 65535 × 256 ≈ 16.7 M pixels.
+fn flat(id: vec3<u32>, wg: vec3<u32>) -> u32 {
+    return id.y * wg.x * 256u + id.x;
+}
+
 @compute @workgroup_size(256)
-fn preview(@builtin(global_invocation_id) id: vec3<u32>) {
-    let idx = id.x;
+fn preview(@builtin(global_invocation_id) id: vec3<u32>, @builtin(num_workgroups) wg: vec3<u32>) {
+    let idx = flat(id, wg);
     if idx >= p.width * p.height { return; }
     let c = src[idx].rgb;
     var g = look_graded(idx, c);
@@ -576,8 +581,8 @@ const REC709_TO_2020 = mat3x3<f32>(
 // rendition in `dst_hdr` as GTK's rec2100-linear (linear Rec.2020, 1 = SDR white
 // at 203 cd/m²), RGBA16F. Clipping stripes, the divider and the untouched side stay SDR.
 @compute @workgroup_size(256)
-fn preview_hdr(@builtin(global_invocation_id) id: vec3<u32>) {
-    let idx = id.x;
+fn preview_hdr(@builtin(global_invocation_id) id: vec3<u32>, @builtin(num_workgroups) wg: vec3<u32>) {
+    let idx = flat(id, wg);
     if idx >= p.width * p.height { return; }
     let s = src[idx];
     let graded = look_graded(idx, s.rgb);
@@ -597,17 +602,17 @@ fn preview_hdr(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 
 @compute @workgroup_size(256)
-fn apply_lut(@builtin(global_invocation_id) id: vec3<u32>) {
-    let idx = id.x;
+fn apply_lut(@builtin(global_invocation_id) id: vec3<u32>, @builtin(num_workgroups) wg: vec3<u32>) {
+    let idx = flat(id, wg);
     if idx >= p.width * p.height { return; }
     let c = src[idx].rgb;
     dst_px[idx] = finish(idx, tetrahedral(c), c);
 }
 
 @compute @workgroup_size(256)
-fn bake(@builtin(global_invocation_id) id: vec3<u32>) {
+fn bake(@builtin(global_invocation_id) id: vec3<u32>, @builtin(num_workgroups) wg: vec3<u32>) {
     let n = p.lut_size;
-    let idx = id.x;
+    let idx = flat(id, wg);
     if idx >= n * n * n { return; }
     let rgb = vec3<f32>(vec3(idx % n, (idx / n) % n, idx / (n * n))) / f32(n - 1u);
     dst_lut[idx] = vec4(grade(rgb), 1.0);
@@ -616,8 +621,8 @@ fn bake(@builtin(global_invocation_id) id: vec3<u32>) {
 // Photo export: preview without overlay or split, as RGBA16 (two u32 per pixel);
 // alpha is log2 of the HDR gain over hdr_stops (0 without HDR).
 @compute @workgroup_size(256)
-fn export16(@builtin(global_invocation_id) id: vec3<u32>) {
-    let idx = id.x;
+fn export16(@builtin(global_invocation_id) id: vec3<u32>, @builtin(num_workgroups) wg: vec3<u32>) {
+    let idx = flat(id, wg);
     if idx >= p.width * p.height { return; }
     let s = src[idx];
     let g = clamp(look_graded(idx, s.rgb), vec3(0.0), vec3(1.0));

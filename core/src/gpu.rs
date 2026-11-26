@@ -247,7 +247,8 @@ impl Gpu {
             let mut pass = enc.begin_compute_pass(&Default::default());
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, bind, &[]);
-            pass.dispatch_workgroups(count.div_ceil(WORKGROUP), 1, 1);
+            let (x, y) = crate::raw::grid(count);
+            pass.dispatch_workgroups(x, y, 1);
         }
         for (out, staging) in outputs {
             enc.copy_buffer_to_buffer(out, 0, staging, 0, out.size());
@@ -473,6 +474,7 @@ pub enum Job {
 }
 
 /// What `Job::ExportPhoto` writes, and from what.
+#[derive(Clone)]
 pub struct PhotoExport {
     /// The open photo: a RAW is the one loaded on the GPU.
     pub decoded: Decoded,
@@ -600,6 +602,8 @@ struct Worker {
     /// Its CPU data, kept to reload it when `Detail::ca_correct` flips and
     /// for the AI, and whether `raw` was loaded CA-corrected (the last flag asked for).
     raw_data: Option<Arc<RawData>>,
+    /// The camera of the `Decoded` this RAW was handed out as: an export proves it is that photo.
+    raw_camera: Option<Arc<crate::develop::Camera>>,
     raw_ca: bool,
     /// The CA-corrected data, computed once per photo (`None` inside: not a Bayer RAW).
     ca_data: Option<Option<Arc<RawData>>>,
@@ -799,6 +803,11 @@ impl Worker {
     ) -> Result<Option<Exported>, String> {
         let cancelled = || e.cancel.load(Ordering::Relaxed);
         let raw = e.decoded.is_raw();
+        // A RAW exports from the GPU's copy: refuse if that is another photo (one opened since).
+        let loaded = |c: &Arc<crate::develop::Camera>| self.raw_camera.as_ref().is_some_and(|l| Arc::ptr_eq(l, c));
+        if matches!(&e.decoded, Decoded::Raw { camera, .. } if !loaded(camera)) {
+            return Err("the photo is still loading: export it again in a moment".into());
+        }
         // The AI result the preview shows, finished first if still running: the first half of the bar.
         let mut start = 0.0;
         if raw && e.develop.detail.nr_ai {
@@ -881,6 +890,9 @@ impl Worker {
                     let size = raw.oriented_size();
                     let small = gpu.small(&raw, RAW_SMALL);
                     let decoded = Decoded::raw(small, raw.camera.clone(), size);
+                    if let Decoded::Raw { camera, .. } = &decoded {
+                        self.raw_camera = Some(camera.clone());
+                    }
                     self.raw = Some(raw);
                     #[cfg(feature = "ai")]
                     {
@@ -1280,7 +1292,7 @@ mod tests {
         });
         let notify = |_: Done| {};
         let mut worker = Worker::default();
-        worker.handle(&gpu, Job::LoadRaw(1, PathBuf::new(), data), &notify);
+        let decoded = load_raw(&mut worker, &gpu, PathBuf::new(), data);
         let detail = crate::develop::Detail {
             nr_luma: 30.0,
             sharpen: 40.0,
@@ -1290,12 +1302,10 @@ mod tests {
         };
         let mut grade = Grade::default();
         grade.params.vignette = -60.0;
+        // Another photo's Decoded (same camera, same size) is refused: the GPU holds this one.
+        let other = Decoded::raw(Photo { width: 4, height: 3, pixels: vec![[0.2; 4]; 12] }, crate::develop::Camera::neutral(), (w, h));
         let e = PhotoExport {
-            decoded: Decoded::raw(
-                Photo { width: 4, height: 3, pixels: vec![[0.2; 4]; 12] },
-                crate::develop::Camera::neutral(),
-                (w, h),
-            ),
+            decoded,
             crop: Region { center: [160.0, 120.0], size: [240.0, 160.0], angle: 5.0 },
             develop: Develop { detail, ..Develop::default() },
             profile: Profile::Standard,
@@ -1308,6 +1318,7 @@ mod tests {
             cancel: Arc::default(),
             tags: Default::default(),
         };
+        assert!(worker.export_photo(&gpu, &PhotoExport { decoded: other, ..e.clone() }, u64::MAX, &notify).is_err());
         let one = worker.export_photo(&gpu, &e, u64::MAX, &notify).unwrap().unwrap().rgb;
         // 37 rows per strip (plus the margin all round): 5 strips, the last one short.
         let m = e.develop.detail.support().ceil() as u64;
@@ -1325,6 +1336,31 @@ mod tests {
         assert!(worker.export_photo(&gpu, &hdr, u64::MAX, &notify).unwrap().is_none());
     }
 
+    #[test]
+    fn renders_past_the_one_axis_dispatch_limit() {
+        let Ok(gpu) = Gpu::new() else { return eprintln!("no GPU, skipped") };
+        // 17.2 MP: more than 65535 workgroups of 256 on one axis.
+        let (w, h) = (4200u32, 4100u32);
+        if gpu.device.limits().max_storage_buffer_binding_size < w as u64 * h as u64 * 16 {
+            return eprintln!("buffers too small on this GPU, skipped");
+        }
+        let ph = gpu.upload(&Photo { width: w, height: h, pixels: vec![[0.5, 0.5, 0.5, 1.0]; (w * h) as usize] });
+        let rgba = gpu.render(&ph, &Grade::default(), None, 0.0);
+        assert_eq!(&rgba[rgba.len() - 4..], &rgba[..4], "the last pixel is graded like the first");
+    }
+
+    /// Loads `data` as the worker does and returns the `Decoded` it hands the UI.
+    fn load_raw(worker: &mut Worker, gpu: &Gpu, path: PathBuf, data: Arc<RawData>) -> Decoded {
+        let out = std::cell::RefCell::new(None);
+        let notify = |d: Done| {
+            if let Done::RawLoaded(_, _, Ok(d)) = d {
+                *out.borrow_mut() = Some(d);
+            }
+        };
+        worker.handle(gpu, Job::LoadRaw(1, path, data), &notify);
+        out.into_inner().expect("RAW loaded")
+    }
+
     /// Full export of a real RAW with AI on, timed:
     /// `RAWVIBES_RAW=x.RW2 RAWVIBES_OUT=dir cargo test --release -p rawvibes-core export_sample -- --ignored --nocapture`.
     #[test]
@@ -1333,12 +1369,11 @@ mod tests {
         let (Ok(raw), Ok(out)) = (std::env::var("RAWVIBES_RAW"), std::env::var("RAWVIBES_OUT")) else { return };
         let gpu = Gpu::new().unwrap();
         let path = PathBuf::from(raw);
-        let decoded = Decoded::load(&path).unwrap();
-        let size = [decoded.size().0 as f32, decoded.size().1 as f32];
-        let crop = Region { center: size.map(|v| v / 2.0), size, angle: 0.0 };
         let mut worker = Worker::default();
         let notify = |_: Done| {};
-        worker.handle(&gpu, Job::LoadRaw(1, path.clone(), Arc::new(crate::raw::read_raw(&path).unwrap())), &notify);
+        let decoded = load_raw(&mut worker, &gpu, path.clone(), Arc::new(crate::raw::read_raw(&path).unwrap()));
+        let size = [decoded.size().0 as f32, decoded.size().1 as f32];
+        let crop = Region { center: size.map(|v| v / 2.0), size, angle: 0.0 };
         for format in PhotoFormat::ALL {
             let detail =
                 crate::develop::Detail { nr_ai: true, nr_ai_strength: 100.0, sharpen: 30.0, ..Default::default() };

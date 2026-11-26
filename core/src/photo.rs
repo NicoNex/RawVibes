@@ -266,6 +266,27 @@ pub const RAW_SMALL: u32 = 1024;
 // shortcut: filmstrip photos and match references skip the GPU (RCD, inpaint opposed); route them through
 // `Gpu::load_raw` + `Gpu::small` if their highlights ever look wrong at strip size.
 fn load_raw_small(path: &Path, max: u32) -> Result<Decoded, String> {
+    let data = crate::raw::read_raw(path)?;
+    // A 2×2 Bayer mosaic: one RGB pixel per cell (its two greens averaged), at half size, is all a
+    // strip-sized copy needs (~150 ms less than rawler's full demosaic on 24 MP, and no ~290 MB RGB).
+    if let (crate::raw::Pixels::Bayer(m), [2, 2]) = (&data.pixels, data.pattern_size) {
+        let [cx, cy, cw, ch] = data.crop;
+        let (w, h) = (cw / 2, ch / 2);
+        let g = data.camera.as_shot;
+        let cell = |x: u32, y: u32| {
+            let mut rgb = [0.0f32; 3];
+            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                let (mx, my) = (cx + 2 * x + dx, cy + 2 * y + dy);
+                let c = data.pattern[((my % 2) * 2 + mx % 2) as usize] as usize;
+                rgb[c] += m[(my * data.width + mx) as usize] * if c == 1 { 0.5 } else { 1.0 };
+            }
+            [rgb[0] * g[0], rgb[1] * g[1], rgb[2] * g[2]]
+        };
+        let rgb: Vec<[f32; 3]> = (0..h).into_par_iter().flat_map_iter(|y| (0..w).map(move |x| cell(x, y))).collect();
+        let small = box_downscale(&rgb, w, h, max, |p| balanced(*p)).oriented(data.orientation);
+        return Ok(Decoded::raw(small, data.camera, oriented_size((cw, ch), data.orientation)));
+    }
+    // shortcut: X-Trans and 4-colour sensors decode again for rawler's demosaic; fold them in if strips feel slow.
     let (raw, orientation) = crate::raw::decode(path)?;
     let (rgb, w, h, camera) = crate::raw::cpu_rgb(&raw)?;
     let small = box_downscale(&rgb, w as u32, h as u32, max, |p| balanced(*p)).oriented(orientation);
@@ -358,5 +379,28 @@ mod tests {
         assert!(d.is_raw(), "not a RAW");
         let (w, h) = d.size();
         assert!(h > w, "{w}×{h} is landscape");
+    }
+}
+
+
+#[cfg(test)]
+mod strip_copy_tests {
+    use super::*;
+
+    /// The superpixel strip copy matches rawler's demosaic one:
+    /// `RAWVIBES_RAW=x.RW2 cargo test --release -p rawvibes-core superpixel` (skipped without a sample).
+    #[test]
+    fn superpixel_copy_matches_the_demosaiced_one() {
+        let Ok(p) = std::env::var("RAWVIBES_RAW") else { return eprintln!("no sample, skipped") };
+        let path = Path::new(&p);
+        let new = load_raw_small(path, 256).unwrap();
+        let (raw, o) = crate::raw::decode(path).unwrap();
+        let (rgb, w, h, _) = crate::raw::cpu_rgb(&raw).unwrap();
+        let old = box_downscale(&rgb, w as u32, h as u32, 256, |p| balanced(*p)).oriented(o);
+        let new = new.pyramid().full();
+        assert_eq!((new.width, new.height), (old.width, old.height));
+        let d: f64 = new.pixels.iter().zip(&old.pixels).flat_map(|(a, b)| (0..3).map(move |c| (a[c] - b[c]) as f64)).map(|v| v * v).sum();
+        let rmse = (d / (3 * old.pixels.len()) as f64).sqrt();
+        assert!(rmse < 0.01, "rmse {rmse}");
     }
 }

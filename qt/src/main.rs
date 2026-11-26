@@ -1,4 +1,6 @@
 #![recursion_limit = "512"]
+// Windows: a release build opens no console window next to the app.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 //! RawVibes with a Qt 6 / QML interface, alongside the GTK one: the same core and edits.
 
 mod app;

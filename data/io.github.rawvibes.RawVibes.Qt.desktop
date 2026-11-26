@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=RawVibes (Qt)
+GenericName=RAW Photo Editor
+GenericName[it]=Editor di foto RAW
+Comment=Develop RAW photos, colour grade them and export 3D LUTs
+Comment[it]=Sviluppa foto RAW, fai color grading ed esporta LUT 3D
+Exec=rawvibes-qt %F
+Icon=io.github.rawvibes.RawVibes
+Terminal=false
+StartupNotify=true
+Categories=Graphics;2DGraphics;RasterGraphics;Photography;Qt;
+Keywords=raw;photo;developer;darkroom;color;grading;lut;cube;lumix;camera;
+Keywords[it]=raw;foto;sviluppo;camera oscura;colore;grading;lut;cube;lumix;fotocamera;
+MimeType=image/jpeg;image/png;image/tiff;image/webp;image/x-dcraw;image/x-adobe-dng;image/x-panasonic-rw;image/x-panasonic-rw2;image/x-panasonic-raw;image/x-panasonic-raw2;image/x-canon-cr2;image/x-canon-cr3;image/x-canon-crw;image/x-nikon-nef;image/x-nikon-nrw;image/x-sony-arw;image/x-sony-sr2;image/x-sony-srf;image/x-fuji-raf;image/x-olympus-orf;image/x-pentax-pef;image/x-samsung-srw;image/x-phaseone-iiq;image/x-hasselblad-3fr;image/x-hasselblad-fff;image/x-epson-erf;image/x-kodak-kdc;image/x-kodak-dcr;image/x-minolta-mrw;image/x-mamiya-mef;image/x-leaf-mos;image/x-sigma-x3f;

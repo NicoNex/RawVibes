@@ -2,10 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>RawVibes</string>
-  <key>CFBundleDisplayName</key><string>RawVibes</string>
-  <key>CFBundleIdentifier</key><string>io.github.rawvibes.RawVibes</string>
-  <key>CFBundleExecutable</key><string>rawvibes</string>
+  <key>CFBundleName</key><string>@NAME@</string>
+  <key>CFBundleDisplayName</key><string>@NAME@</string>
+  <key>CFBundleIdentifier</key><string>@ID@</string>
+  <key>CFBundleExecutable</key><string>@EXEC@</string>
   <key>CFBundleIconFile</key><string>RawVibes</string>
   <key>CFBundleShortVersionString</key><string>@VERSION@</string>
   <key>CFBundleVersion</key><string>@VERSION@</string>

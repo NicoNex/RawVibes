@@ -1,5 +1,6 @@
 name: Packages
 
+# master publishes the "latest" release; a manual run on another branch only builds.
 on:
   push:
     branches: [master]
@@ -14,15 +15,15 @@ concurrency:
 
 jobs:
   arch:
-    name: Arch Linux package
+    name: Arch Linux packages (GTK and Qt)
     runs-on: ubuntu-latest
     container: archlinux:latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Install build dependencies
         run: |
           pacman -Syu --noconfirm --needed base-devel git rust gtk4 libadwaita vulkan-icd-loader \
-            gettext unzip python-onnx python-numpy cmake nasm lensfun libjxl
+            gettext unzip python-onnx python-numpy cmake nasm lensfun libjxl qt6-base qt6-declarative
       - uses: actions/checkout@v7
       - name: Build with makepkg
         # makepkg refuses to run as root.
@@ -39,9 +40,9 @@ jobs:
           if-no-files-found: error
 
   macos:
-    name: macOS disk image
+    name: macOS disk images (GTK and Qt)
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -51,29 +52,86 @@ jobs:
           python-version: "3.x"
       - name: Install build dependencies
         run: |
-          brew install gtk4 libadwaita adwaita-icon-theme librsvg gettext dylibbundler jpeg-xl cmake nasm lensfun
+          brew install gtk4 libadwaita adwaita-icon-theme librsvg gettext dylibbundler jpeg-xl cmake nasm lensfun qt
           python -m pip install onnx numpy
           echo "GETTEXT_DIR=$(brew --prefix gettext)" >> "$GITHUB_ENV"
-      - name: Build the .dmg
+      - name: Build the .dmg files
         # The log tail goes into an annotation, readable without opening the run.
         run: |
           set -o pipefail
-          make dmg 2>&1 | tee build.log || { echo "::error title=make dmg::$(tail -40 build.log | awk '{gsub(/%/,"%25"); printf "%s%%0A", $0}')"; exit 1; }
+          for t in dmg dmg-qt; do
+            make $t 2>&1 | tee build.log || { echo "::error title=make $t::$(tail -40 build.log | awk '{gsub(/%/,"%25"); printf "%s%%0A", $0}')"; exit 1; }
+          done
       - uses: actions/upload-artifact@v7
         with:
           name: rawvibes-macos
           path: target/rawvibes-*.dmg
           if-no-files-found: error
 
+  # The AI models for Windows: converting them needs onnx, which MSYS2 does not package.
+  models:
+    name: AI denoise models
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - run: |
+          python -m pip install onnx numpy
+          make models
+      - uses: actions/upload-artifact@v7
+        with:
+          name: models
+          path: models/rawnind
+          if-no-files-found: error
+
+  windows:
+    name: Windows (Qt)
+    needs: [models]
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            make zip unzip git
+          pacboy: >-
+            rust:p gcc:p cmake:p nasm:p pkgconf:p python:p gettext-tools:p libjxl:p lensfun:p
+            qt6-base:p qt6-declarative:p qt6-svg:p qt6-tools:p
+      - uses: actions/download-artifact@v8
+        with:
+          name: models
+          path: models/rawnind
+      - name: Build the .zip
+        run: |
+          set -o pipefail
+          export GETTEXT_DIR=/ucrt64
+          make zip-qt 2>&1 | tee build.log || { echo "::error title=make zip-qt::$(tail -40 build.log | awk '{gsub(/%/,"%25"); printf "%s%%0A", $0}')"; exit 1; }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rawvibes-windows
+          path: target/rawvibes-qt-*-windows.zip
+          if-no-files-found: error
+
   release:
     name: Publish the latest build
-    needs: [arch, macos]
+    if: github.ref == 'refs/heads/master'
+    needs: [arch, macos, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v8
         with:
+          pattern: rawvibes-*
           path: dist
           merge-multiple: true
       - name: Replace the "latest" release
@@ -82,8 +140,10 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           gh release delete latest --cleanup-tag --yes || true
-          gh release create latest dist/* --target "$GITHUB_SHA" --title "Latest build" --latest --notes "Built from ${GITHUB_SHA::7} on master.
+          gh release create latest dist/* --target "$GITHUB_SHA" --title "Latest build" --latest --notes "Built from ${GITHUB_SHA::7} on master. RawVibes comes with two interfaces over the same engine and edits: GTK (Linux, macOS) and Qt (Linux, macOS, Windows; HDR preview on HDR screens).
 
-          **Arch Linux:** \`sudo pacman -U rawvibes-*.pkg.tar.zst\`
+          **Arch Linux:** \`sudo pacman -U rawvibes-common-*.pkg.tar.zst\` plus \`rawvibes-[0-9]*.pkg.tar.zst\` (GTK) or \`rawvibes-qt-*.pkg.tar.zst\` (Qt).
 
-          **macOS (Apple silicon):** open the \`.dmg\`, drag RawVibes to Applications, then run \`xattr -cr /Applications/RawVibes.app\` once (the app is not signed with an Apple Developer ID)."
+          **macOS (Apple silicon):** open \`rawvibes-*.dmg\` (GTK) or \`rawvibes-qt-*.dmg\` (Qt), drag the app to Applications, then run \`xattr -cr /Applications/RawVibes.app\` (or \`RawVibes-Qt.app\`) once: the app is not signed with an Apple Developer ID.
+
+          **Windows (x64):** unzip \`rawvibes-qt-*-windows.zip\` and run \`RawVibes-Qt\\bin\\rawvibes-qt.exe\`."

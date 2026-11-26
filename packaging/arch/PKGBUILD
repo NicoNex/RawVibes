@@ -1,40 +1,59 @@
 # Maintainer: Nicolò Santamaria <nicolo.santamaria@gmail.com>
-pkgname=rawvibes
+# Two interfaces over one engine: rawvibes (GTK) and rawvibes-qt (Qt 6), sharing rawvibes-common.
+pkgbase=rawvibes
+pkgname=('rawvibes' 'rawvibes-qt' 'rawvibes-common')
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="RAW photo editor with color grading and 3D LUT export, GPU accelerated"
 arch=('x86_64' 'aarch64')
 license=('GPL-3.0-or-later')
-depends=('gtk4' 'libadwaita' 'vulkan-icd-loader' 'libjxl')
-makedepends=('cargo' 'cmake' 'nasm' 'gettext' 'unzip' 'python-onnx' 'python-numpy' 'lensfun')
+makedepends=('cargo' 'cmake' 'nasm' 'gettext' 'unzip' 'python-onnx' 'python-numpy' 'lensfun'
+             'gtk4' 'libadwaita' 'vulkan-icd-loader' 'libjxl' 'qt6-base' 'qt6-declarative')
 options=('!lto' '!debug')
 # Tarball produced by `make arch` from the committed HEAD.
 # The AI denoise weights darktable ships, converted at build time (models/README.md).
-source=("$pkgname-$pkgver.tar.gz"
+source=("$pkgbase-$pkgver.tar.gz"
         "https://github.com/darktable-org/darktable-ai/releases/download/release-5.6.0/rawdenoise-nind.dtmodel")
 noextract=('rawdenoise-nind.dtmodel')
 sha256sums=('SKIP'
             'd71b5f1e727c85a359e6f74dca9e2016c9d8fc3e2f7ac3e9b347d80ceca969af')
 
 prepare() {
-  cd "$pkgname-$pkgver"
+  cd "$pkgbase-$pkgver"
   cargo fetch --locked --target "$(rustc --print host-tuple)"
 }
 
 build() {
-  cd "$pkgname-$pkgver"
+  cd "$pkgbase-$pkgver"
   export CARGO_TARGET_DIR=target
-  cargo build --frozen --release
+  cargo build --frozen --release --workspace
   install -Dm644 "$srcdir/rawdenoise-nind.dtmodel" target/models/rawdenoise-nind.dtmodel
   make models locale lensfun
 }
 
 check() {
-  cd "$pkgname-$pkgver"
+  cd "$pkgbase-$pkgver"
   cargo test --frozen --release --workspace
 }
 
-package() {
-  cd "$pkgname-$pkgver"
-  make install DESTDIR="$pkgdir" PREFIX=/usr
+package_rawvibes() {
+  pkgdesc+=" (GTK 4 / libadwaita interface)"
+  depends=('rawvibes-common' 'gtk4' 'libadwaita' 'vulkan-icd-loader' 'libjxl')
+  cd "$pkgbase-$pkgver"
+  make install-gtk DESTDIR="$pkgdir" PREFIX=/usr
+}
+
+package_rawvibes-qt() {
+  pkgdesc+=" (Qt 6 interface, HDR preview)"
+  depends=('rawvibes-common' 'qt6-base' 'qt6-declarative' 'qt6-svg' 'vulkan-icd-loader' 'libjxl')
+  optdepends=('qt6-wayland: native Wayland windows')
+  cd "$pkgbase-$pkgver"
+  make install-qt DESTDIR="$pkgdir" PREFIX=/usr
+}
+
+package_rawvibes-common() {
+  pkgdesc="RawVibes' shared data: translations, icons, lens database and AI denoise models"
+  depends=()
+  cd "$pkgbase-$pkgver"
+  make install-data DESTDIR="$pkgdir" PREFIX=/usr
 }

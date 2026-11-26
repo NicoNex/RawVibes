@@ -107,12 +107,15 @@ jobs:
           name: models
           path: models/rawnind
       - uses: Swatinem/rust-cache@v2
-      - name: Check the Qt tools load
-        # A missing DLL shows here by name, not as moc's bare exit status.
+      - name: Put the DLLs Qt's tools load next to them
+        # cxx-qt runs moc, rcc and qmlcachegen with an empty environment: no PATH to find
+        # /ucrt64/bin's DLLs from MSYS2's share/qt6 folders.
         run: |
-          ldd /ucrt64/share/qt6/bin/moc.exe | grep -iv "/c/windows" || true
-          /ucrt64/share/qt6/bin/moc.exe -v
-          qmake6 -query QT_INSTALL_HEADERS
+          for d in "$(qmake6 -query QT_HOST_BINS)" "$(qmake6 -query QT_HOST_LIBEXECS)"; do
+            d=$(cygpath -u "$d"); [ "$d" = /ucrt64/bin ] && continue
+            for t in "$d"/*.exe; do ldd "$t"; done | awk '$3 ~ /^\/ucrt64\// {print $3}' | sort -u | xargs -r cp -n -t "$d"
+          done
+          env -i "$(cygpath -u "$(qmake6 -query QT_HOST_LIBEXECS)")/moc.exe" -v
       - name: Build the .zip
         run: |
           export GETTEXT_DIR=/ucrt64 PATH="/ucrt64/bin:$PATH"

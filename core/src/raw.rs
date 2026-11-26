@@ -224,6 +224,8 @@ pub(crate) struct Work {
     margin: u32,
     lin: wgpu::Buffer,
     scratch: Option<[wgpu::Buffer; 2]>,
+    /// Defringe's three working buffers, made the first time it runs on this work and kept for a drag.
+    fringe: Option<[wgpu::Buffer; 3]>,
     after_nr: Option<(Key, wgpu::Buffer)>,
     /// After defringe and dehaze; then after local contrast, so a local-contrast
     /// drag does not re-run the other two.
@@ -237,6 +239,12 @@ impl Work {
         let bytes = self.lin.size();
         let [a, b] = self.scratch.get_or_insert_with(|| [0, 1].map(|_| gpu.buffer(bytes, wgpu::BufferUsages::empty())));
         [&*a, &*b]
+    }
+
+    /// Defringe's buffers (clones share the GPU memory), kept across frames.
+    fn fringe(&mut self, gpu: &Gpu) -> [wgpu::Buffer; 3] {
+        let bytes = self.lin.size();
+        self.fringe.get_or_insert_with(|| [0; 3].map(|_| gpu.buffer(bytes, wgpu::BufferUsages::empty()))).clone()
     }
 }
 
@@ -1004,6 +1012,7 @@ impl Gpu {
                 margin,
                 lin,
                 scratch: None,
+                fringe: None,
                 after_nr: None,
                 after_haze: None,
                 after_tones: None,
@@ -1076,7 +1085,7 @@ impl Gpu {
             let lin = work.lin.clone();
             // Purple and green fringes share the module's three working buffers, made only when used.
             if d.defringe > 0.0 || d.defringe_green > 0.0 {
-                let fringe = [0; 3].map(|_| self.buffer(lin.size(), wgpu::BufferUsages::empty()));
+                let fringe = work.fringe(self);
                 for (amount, brighten) in [(d.defringe, false), (d.defringe_green, true)] {
                     if amount > 0.0 {
                         self.defringe(&lin, work.scratch(self), &fringe, lw, lh, s, amount, brighten);

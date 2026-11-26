@@ -917,7 +917,12 @@ impl App {
         if self.is_stale(&msg) {
             return;
         }
-        self.dirty = true;
+        // A frame changes only the frames: no state to rebuild (a thumbnail pass sends hundreds).
+        let frame_only = matches!(
+            msg,
+            Msg::Gpu(Done::Graded { .. } | Done::Thumb { .. } | Done::RollFrame { .. } | Done::Lab { .. })
+        );
+        self.dirty |= !frame_only;
         match msg {
             Msg::Open => {
                 let folder = settings::folder(settings::PHOTO_FOLDER);
@@ -1081,6 +1086,7 @@ impl App {
                     }
                 }
                 self.camera_pending = false;
+                self.schedule_save();
                 self.batch_ready();
             }
             Msg::CameraLut(path, _, _) if Some(&path) != self.path.as_ref() => {}
@@ -1173,10 +1179,7 @@ impl App {
                     return;
                 }
                 let (s, profile) = (self.tx.clone(), self.profile);
-                std::thread::spawn(move || {
-                    let small = Decoded::load_max(&path, Some(ROLL_PX)).map(|d| roll_copy(&d, profile));
-                    s.send(Msg::RollLoaded(path, small));
-                });
+                std::thread::spawn(move || s.send(flows::strip_copy(path, profile)));
             }
             Msg::RawRead(generation, path, Ok(raw)) => self.send(Job::LoadRaw(generation, path, raw)),
             Msg::RawRead(generation, path, Err(e)) => {

@@ -217,7 +217,6 @@ pub fn command(name: &str, a: &Value) -> Option<Msg> {
         "matchAmount" => Msg::MatchAmount(f(a, "v")),
         // Crop and view
         "cropEdit" => Msg::CropEdit(b(a, "on")),
-        "cropCancel" => Msg::CropCancel,
         "cropRatio" => Msg::CropRatio(u(a, "i")),
         "cropSwap" => Msg::CropSwap,
         "cropAngle" => Msg::CropAngle(f(a, "v") as f32),

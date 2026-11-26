@@ -125,7 +125,7 @@ impl App {
     /// Adds the open photo's edits to its undo history when they changed since the step shown.
     /// Stars, labels and metadata are not edits: they never make a step.
     pub(super) fn record_edits(&mut self) {
-        if self.path.is_none() || self.saved.is_none() || self.looks_loading {
+        if self.path.is_none() || self.saved.is_none() || self.looks_loading || self.camera_pending {
             return;
         }
         let now = self.sidecar_state();
@@ -445,7 +445,8 @@ impl App {
 
     /// Writes the open photo's sidecar if its edits changed since it was read or written.
     pub(super) fn save_now(&mut self) {
-        let Some(path) = self.path.clone().filter(|_| !self.looks_loading) else { return };
+        // Not halfway through loading: the looks or the camera's tone curve still to come.
+        let Some(path) = self.path.clone().filter(|_| !self.looks_loading && !self.camera_pending) else { return };
         let now = self.sidecar_state();
         if self.saved.as_ref().is_none_or(|s| *s == now) {
             return;
@@ -655,8 +656,7 @@ impl App {
             let (s, profile) = (self.tx.clone(), self.profile);
             std::thread::spawn(move || {
                 for p in fresh {
-                    let small = Decoded::load_max(&p, Some(ROLL_PX)).map(|d| roll_copy(&d, profile));
-                    s.send(Msg::RollLoaded(p, small));
+                    s.send(strip_copy(p, profile));
                 }
             });
         }
@@ -689,8 +689,7 @@ impl App {
             if WANTED.load(Ordering::Relaxed) != generation {
                 // Clicked past: only the strip copy, if the card has none yet.
                 if !has_small {
-                    let small = Decoded::load_max(&path, Some(ROLL_PX)).map(|d| roll_copy(&d, profile));
-                    s.send(Msg::RollLoaded(path, small));
+                    s.send(strip_copy(path, profile));
                 }
                 return;
             }
@@ -729,12 +728,12 @@ impl App {
         self.drafting = false;
         self.ui.ai_msg = None;
         // The sidecar sets the eyes itself.
-        self.camera_pending = false;
-        match Sidecar::load(&path) {
+        let sidecar = Sidecar::load(&path);
+        self.camera_pending = matches!(sidecar, Ok(None)) && self.camera().is_some() && self.prefs.as_in_camera;
+        match sidecar {
             Ok(Some(sc)) => self.restore_sidecar(sc),
             Ok(None) => {
                 self.set_offs(&[]);
-                self.camera_pending = self.camera().is_some() && self.prefs.as_in_camera;
                 if self.camera_pending {
                     self.input(Msg::AsInCamera(CameraPart::All));
                 }
@@ -1478,4 +1477,10 @@ fn rgba8(pixels: &[[f32; 4]]) -> Vec<u8> {
     let mut out = Vec::with_capacity(pixels.len() * 4);
     out.extend(pixels.iter().flat_map(|p| p.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)));
     out
+}
+
+/// The filmstrip's small copy of `path`, decoded at strip size.
+pub(super) fn strip_copy(path: PathBuf, profile: Profile) -> Msg {
+    let small = Decoded::load_max(&path, Some(ROLL_PX)).map(|d| roll_copy(&d, profile));
+    Msg::RollLoaded(path, small)
 }

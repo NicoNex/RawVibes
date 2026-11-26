@@ -9,6 +9,8 @@ ColumnLayout {
     id: page
     readonly property var s: Store.s
     readonly property var dev: s.develop || ({ detail: {} })
+    // The camera's as-shot white balance: Kelvin, tint.
+    readonly property var ws: dev.asShot || [5500, 0]
     readonly property bool raw: s.raw === true
     readonly property string rawTip: raw ? "" : Store.tr("RAW development: open a RAW file to use it")
     spacing: 4
@@ -82,8 +84,9 @@ ColumnLayout {
             Layout.fillWidth: true
             label: Store.tr("Temperature")
             from: (Store.c.kelvinRange || [2000, 12000])[0]; to: (Store.c.kelvinRange || [2000, 12000])[1]
-            neutral: (dev.asShot || [5500, 0])[0]
-            resetTo: () => Store.cmd("asShot")
+            neutral: ws[0]
+            // Back to as shot only once both are: else just this one, the other kept.
+            resetTo: () => Math.abs((dev.tint || 0) - ws[1]) < 1e-6 ? Store.cmd("asShot") : Store.cmd("kelvin", { v: ws[0] })
             unit: " K"
             track: Theme.temperatureTrack
             value: dev.kelvin || 5500
@@ -93,8 +96,8 @@ ColumnLayout {
             Layout.fillWidth: true
             label: Store.tr("Tint")
             track: Theme.tintTrack
-            neutral: (dev.asShot || [5500, 0])[1]
-            resetTo: () => Store.cmd("asShot")
+            neutral: ws[1]
+            resetTo: () => Math.abs((dev.kelvin || 5500) - ws[0]) < 1e-6 ? Store.cmd("asShot") : Store.cmd("tint", { v: ws[1] })
             value: dev.tint || 0
             onMoved: (v) => Store.cmd("tint", { v: v })
         }

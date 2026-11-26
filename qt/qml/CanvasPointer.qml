@@ -42,8 +42,20 @@ MouseArea {
         Store.cmd("canvasClick", { x: p.x, y: p.y })
     }
     onDoubleClicked: (e) => { const p = at(e); Store.cmd("zoom", { cmd: "toggle", x: p.x, y: p.y }) }
+    // Wheel steps summed over a frame: a fast or high-resolution wheel sends one zoom, not one per event.
+    property real wheelSteps: 0
+    property point wheelAt
     onWheel: (e) => {
-        const p = at(e)
-        Store.cmd("zoom", { cmd: "scroll", dy: -e.angleDelta.y / 120, x: p.x, y: p.y })
+        wheelSteps -= e.angleDelta.y / 120
+        wheelAt = at(e)
+        wheelSend.start()
+    }
+    Timer {
+        id: wheelSend
+        interval: 16
+        onTriggered: {
+            Store.cmd("zoom", { cmd: "scroll", dy: pt.wheelSteps, x: pt.wheelAt.x, y: pt.wheelAt.y })
+            pt.wheelSteps = 0
+        }
     }
 }

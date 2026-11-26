@@ -3,6 +3,7 @@
 // 2D content, so only the photo lives here; the rest of the interface stays on an SDR surface.
 #pragma once
 
+#include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtGui/QColorSpace>
 #include <QtGui/QGuiApplication>
@@ -31,9 +32,9 @@ public:
 #ifdef Q_OS_LINUX
         // NVIDIA's Vulkan driver gives Wayland an HDR10 swapchain but never tags the surface PQ, so the
         // compositor reads the codes as sRGB (washed out); Qt tags it from the format's colour space.
-        // shortcut: NVIDIA only, since Mesa tags the surface itself and a second tag is a protocol error;
-        // drop it once NVIDIA's driver tags its HDR10 swapchains.
-        if (QGuiApplication::platformName() == QLatin1String("wayland") && QFile::exists(QStringLiteral("/proc/driver/nvidia/version"))) {
+        // shortcut: only when every GPU is NVIDIA, since Mesa tags the surface itself and a second tag is a
+        // protocol error (a hybrid laptop may render on Mesa); drop it once NVIDIA's driver tags HDR10 swapchains.
+        if (QGuiApplication::platformName() == QLatin1String("wayland") && onlyNvidia()) {
             QSurfaceFormat f = requestedFormat();
             f.setColorSpace(QColorSpace(QColorSpace::Primaries::Bt2020, QColorSpace::TransferFunction::St2084));
             setFormat(f);
@@ -45,6 +46,20 @@ public:
                 if (auto *p = qobject_cast<QQuickWindow *>(QWindow::parent())) p->update();
             }, Qt::QueuedConnection);
     }
+#ifdef Q_OS_LINUX
+    // Every DRM card's PCI vendor is NVIDIA's (0x10de), and there is at least one.
+    static bool onlyNvidia() {
+        const QStringList cards = QDir(QStringLiteral("/sys/class/drm")).entryList({QStringLiteral("card?")}, QDir::Dirs);
+        bool any = false;
+        for (const QString &c : cards) {
+            QFile f(QStringLiteral("/sys/class/drm/%1/device/vendor").arg(c));
+            if (!f.open(QIODevice::ReadOnly)) continue;
+            if (f.readAll().trimmed() != "0x10de") return false;
+            any = true;
+        }
+        return any;
+    }
+#endif
     bool hdr() const { return m_hdr; }
     double white() const { return m_white; }
     // Tells hdrChanged again after the next frame, changed or not: the preview was switched on, or

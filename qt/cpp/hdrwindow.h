@@ -12,14 +12,25 @@ class RvHdrWindow : public QQuickWindow {
     // in units of SDR white: scene-referred scRGB is 80 nits, display-referred (macOS EDR) is SDR white.
     Q_PROPERTY(bool hdr READ hdr NOTIFY hdrChanged)
     Q_PROPERTY(double white READ white NOTIFY hdrChanged)
+    // A frame has been rendered, so `hdr` is known: an SDR window steps aside after it.
+    Q_PROPERTY(bool probed READ probed NOTIFY hdrChanged)
+    // HDR10 (Rec.2020 PQ, `white` in cd/m²) rather than scRGB (`white` a multiplier).
+    Q_PROPERTY(bool pq READ pq NOTIFY hdrChanged)
 public:
     explicit RvHdrWindow(QWindow *parent = nullptr) : QQuickWindow(parent) {
-        // Read by the Qt Quick renderer when it creates the swapchain.
+        // Read by the Qt Quick renderer when it creates the swapchain. HDR10 is what Vulkan drivers on
+        // Wayland offer (NVIDIA has no extended sRGB) and D3D too; macOS EDR takes scRGB.
+#ifdef Q_OS_MACOS
         setProperty("_qt_sg_hdr_format", QByteArrayLiteral("scrgb"));
+#else
+        setProperty("_qt_sg_hdr_format", QByteArrayLiteral("hdr10"));
+#endif
         connect(this, &QQuickWindow::afterRendering, this, &RvHdrWindow::check, Qt::DirectConnection);
     }
     bool hdr() const { return m_hdr; }
     double white() const { return m_white; }
+    bool probed() const { return m_probed; }
+    bool pq() const { return m_pq; }
 signals:
     void hdrChanged();
 
@@ -30,21 +41,33 @@ private:
         QRhiSwapChain *sc = swapChain();
         if (!sc) return;
         const bool hdr = sc->format() != QRhiSwapChain::SDR;
+        const bool pq = sc->format() == QRhiSwapChain::HDR10;
         const QRhiSwapChainHdrInfo info = sc->hdrInfo();
-        const double white = info.luminanceBehavior == QRhiSwapChainHdrInfo::SceneReferred
-            ? (info.sdrWhiteLevel > 0 ? info.sdrWhiteLevel : 203.0) / 80.0 : 1.0;
-        if (hdr == m_rtHdr && qFuzzyCompare(white, m_rtWhite)) return;
+        // SDR white in cd/m² as the system sets it, else BT.2408's 203.
+        const double nits = info.luminanceBehavior == QRhiSwapChainHdrInfo::SceneReferred && info.sdrWhiteLevel > 0
+            ? info.sdrWhiteLevel : 203.0;
+        const double white = pq ? nits
+            : info.luminanceBehavior == QRhiSwapChainHdrInfo::SceneReferred ? nits / 80.0 : 1.0;
+        if (m_rtProbed && hdr == m_rtHdr && qFuzzyCompare(white, m_rtWhite)) return;
+        if (!m_rtProbed)
+            qInfo("rawvibes-qt: HDR window swapchain format %d", int(sc->format()));
+        m_rtProbed = true;
         m_rtHdr = hdr;
         m_rtWhite = white;
-        QMetaObject::invokeMethod(this, [this, hdr, white] {
+        QMetaObject::invokeMethod(this, [this, hdr, pq, white] {
+            m_probed = true;
+            m_pq = pq;
             m_hdr = hdr;
             m_white = white;
             emit hdrChanged();
         }, Qt::QueuedConnection);
     }
     bool m_hdr = false;
+    bool m_probed = false;
+    bool m_pq = false;
     double m_white = 203.0 / 80.0;
-    // Render thread only; a first frame equal to the GUI's defaults has nothing to tell it.
+    // Render thread only.
+    bool m_rtProbed = false;
     bool m_rtHdr = false;
     double m_rtWhite = 203.0 / 80.0;
 };

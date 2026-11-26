@@ -308,7 +308,7 @@ pub enum Msg {
     ExportSettings(PhotoFormat, u8, bool),
     HdrPreview(bool),
     /// The HDR surface's scale for SDR white, as its swapchain reports it.
-    HdrWhite(bool, f32),
+    HdrWhite(bool, f32, bool),
     Headroom(f32),
     HeadroomSave,
     ExportEstimateRun(u64, u32, u32),
@@ -639,7 +639,7 @@ impl App {
             if let Done::Graded { hdr, .. } = &mut d {
                 // Converted only for a surface that shows it; an SDR one gets the SDR frame.
                 match hdr.as_mut().filter(|_| crate::hdr::surface()) {
-                    Some(h) => crate::hdr::to_scrgb(h, crate::hdr::white()),
+                    Some(h) => crate::hdr::convert(h),
                     None => *hdr = None,
                 }
             }
@@ -1588,8 +1588,16 @@ impl App {
                     _ => self.export_frame_request(),
                 }
             }
-            Msg::HdrWhite(hdr, w) => {
-                crate::hdr::set_surface(hdr, w);
+            Msg::HdrWhite(hdr, w, pq) => {
+                // Said once per change: whether the screen and driver gave the preview an HDR swapchain.
+                match (hdr, pq) {
+                    (false, _) => {
+                        eprintln!("rawvibes-qt: HDR preview: the swapchain is SDR (no HDR screen, or HDR is off)")
+                    }
+                    (true, true) => eprintln!("rawvibes-qt: HDR preview: HDR10 swapchain, SDR white at {w} cd/m²"),
+                    (true, false) => eprintln!("rawvibes-qt: HDR preview: scRGB swapchain, SDR white ×{w}"),
+                }
+                crate::hdr::set_surface(hdr, w, pq);
                 self.sent = None;
                 self.render();
             }
@@ -1597,7 +1605,7 @@ impl App {
                 self.hdr_preview = on;
                 if !on {
                     // Nothing more to convert or keep until it is on again.
-                    crate::hdr::set_surface(false, crate::hdr::white());
+                    crate::hdr::set_surface(false, crate::hdr::white(), false);
                     self.drop_image("hdr");
                 }
                 let _ = settings::set_flag(settings::HDR_PREVIEW, on);

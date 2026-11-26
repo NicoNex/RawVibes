@@ -297,7 +297,7 @@ pub fn command(name: &str, a: &Value) -> Option<Msg> {
         ),
         "exportGo" => Msg::ExportGo,
         "exportClosed" => Msg::ExportClosed,
-        "hdrWhite" => Msg::HdrWhite(b(a, "hdr"), f(a, "v") as f32),
+        "hdrWhite" => Msg::HdrWhite(b(a, "hdr"), f(a, "v") as f32, b(a, "pq")),
         "hdrPreview" => Msg::HdrPreview(b(a, "on")),
         "headroom" => Msg::Headroom(f(a, "v") as f32),
         // Metadata and preferences

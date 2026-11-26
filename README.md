@@ -4,23 +4,27 @@
 
 # RawVibes
 
-### Free RAW photo editor for Linux and macOS that turns your edit into a camera LUT
+### Free RAW photo editor for Linux, macOS and Windows that turns your edit into a camera LUT
 
 RawVibes is a free, open-source RAW photo editor with a colorist's grading tools
 built in. Develop RAW files from Panasonic, Canon, Nikon, Sony, Fujifilm and most
 other cameras on the GPU, grade them with colour wheels, curves and your LUT
 library, and export the photo at full resolution, in SDR or in HDR with the
 highlights your sensor caught. Then export the same grade as a 3D LUT, `.cube` or
-`.vlt`, and load it on your camera as a Real Time LUT.
+`.vlt`, and load it on your camera as a Real Time LUT. On an HDR screen you see the
+HDR rendition while you edit, on all three systems.
 
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/NicoNex/RawVibes?include_prereleases&label=release)](https://github.com/NicoNex/RawVibes/releases/latest)
-![Linux · macOS](https://img.shields.io/badge/platform-Linux%20·%20macOS-lightgrey)
+![Linux · macOS · Windows](https://img.shields.io/badge/platform-Linux%20·%20macOS%20·%20Windows-lightgrey)
+![HDR preview](https://img.shields.io/badge/HDR-preview%20%2B%20export-f59e0b)
 ![Rust, 2024 edition](https://img.shields.io/badge/Rust-2024_edition-orange?logo=rust)
 ![GTK4 + libadwaita](https://img.shields.io/badge/GTK4-libadwaita-4a86cf?logo=gnome)
-![GPU: Vulkan · Metal](https://img.shields.io/badge/GPU-Vulkan%20·%20Metal-8b5cf6)
+![Qt 6](https://img.shields.io/badge/Qt-6-41cd52?logo=qt)
+![GPU: Vulkan · Metal · DirectX 12](https://img.shields.io/badge/GPU-Vulkan%20·%20Metal%20·%20DirectX%2012-8b5cf6)
 
 **[Download](https://github.com/NicoNex/RawVibes/releases/latest)** ·
+[Platforms](#linux-macos-and-windows) ·
 [Features](#features) ·
 [Install](#install) ·
 [Shortcuts](#keyboard-shortcuts) ·
@@ -56,11 +60,32 @@ with you.
   AVIF and PNG in Rec.2100 PQ. Your grade and LUTs look the same in both.
 - **On the GPU from the first pixel.** RAW decoding, demosaicing, development, lens
   corrections, grade and AI denoise run on the GPU through wgpu (Vulkan on Linux,
-  Metal on macOS). Sliders draw a fast draft while you drag and the full-quality
-  frame when you stop.
+  Metal on macOS, DirectX 12 or Vulkan on Windows). Sliders draw a fast draft while
+  you drag and the full-quality frame when you stop.
 - **Your files stay as they are.** Edits are saved as you make them in a small
   sidecar next to the photo (`photo.RW2.rawvibes.json`). Reopen RawVibes and your
   last photos are back where you left them.
+
+---
+
+## Linux, macOS and Windows
+
+RawVibes has two interfaces over the same engine: a GTK 4 / libadwaita one that
+looks at home on GNOME, and a Qt 6 one that runs everywhere and shows the HDR
+preview on every system. Both read and write the same sidecars, so a photo edited
+in one opens with its edits in the other.
+
+| | GTK 4 interface | Qt 6 interface |
+|---|---|---|
+| **Linux** | Yes, with HDR preview | Yes, with HDR preview |
+| **macOS** | Yes | Yes, with HDR preview (best choice for HDR screens) |
+| **Windows** | | Yes, with HDR preview |
+
+On Linux, pick the one you like. On macOS, take the Qt interface if your screen is
+HDR (every recent MacBook Pro is): only it shows the brighter highlights while you
+edit. On Windows, the Qt interface is the app.
+
+<img src="docs/screenshots/qt-photo.jpg" alt="The Qt interface of RawVibes on a Lumix S9 RAW of an Icelandic sunset over a glacier lagoon, with the HDR preview switched on in the Photo tab" width="100%">
 
 ---
 
@@ -116,8 +141,11 @@ geometry.
   (1–3 stops above SDR white, Photo tab), with the same look: the grade and LUTs stay
   SDR, and the HDR only extends the highlights. The HDR exports carry it (see
   *Export the photo*).
-- **HDR preview** (Linux): on an HDR screen, with HDR on in the system settings, the
-  preview shows the HDR rendition. GTK hands it to the compositor as Rec.2100.
+- **HDR preview:** on an HDR screen, with HDR on in the system settings, the
+  preview shows the HDR rendition. The GTK interface (Linux) hands it to the
+  compositor as Rec.2100. The Qt interface (Linux, macOS, Windows) draws the photo on
+  an HDR swapchain: HDR10 on Linux and Windows, extended-range (EDR) on macOS. The
+  rest of the window stays SDR, so the controls never glare.
 - **Merge brackets to HDR** (main menu): two or more RAWs of one scene at different
   exposures become one DNG with their combined range, in the RAW domain before
   demosaic, as Lightroom and darktable do. The frames are aligned (handheld shots
@@ -152,6 +180,8 @@ photo into before and after.
 Press `B` and every LUT in your folder is rendered on the photo you are editing
 (the screenshot at the top), with search (`Ctrl+F`) and a folder filter. Click a LUT to add it after the grade;
 stack as many as you want, each with its own intensity.
+
+<img src="docs/screenshots/qt-grade.jpg" alt="The Qt interface of RawVibes rendering every LUT of the library on an Icelandic sunset, with the before/after split on the photo" width="100%">
 
 ### Check your work
 
@@ -319,7 +349,9 @@ and the others as well as on V-Log.
   the SDR curve bit for bit. Its ratio to the SDR curve, taken on the scene before
   the grade, is one gain per pixel applied over the graded SDR, so hue and look
   hold. PQ files place SDR white at 203 cd/m² (ITU-R BT.2408) and carry their
-  content light level; the GTK preview goes to the compositor as Rec.2100 linear.
+  content light level. The GTK preview goes to the compositor as Rec.2100 linear; the
+  Qt preview goes to an HDR swapchain as Rec.2100 PQ (HDR10) or as scRGB (macOS EDR),
+  SDR white at the level the system sets.
 - **Bracket merge in the RAW domain:** exposure ratios measured from the data,
   coarse-to-fine alignment, inverse-variance weights from each sensor's
   Poisson–Gaussian noise (Granados et al. 2010) and per-block ghost rejection, to
@@ -330,12 +362,13 @@ and the others as well as on V-Log.
 - **Slider audit.** A test sweeps every grade and development slider and every
   curve over its full range on images with a known answer: identity at neutral,
   monotone, no dead zones, balanced around zero, finite output.
-- **Separate engine.** `rawvibes-core` has no UI dependency, so another front end
-  (a CLI, a plug-in) can reuse it.
+- **Separate engine.** `rawvibes-core` has no UI dependency: the GTK and Qt
+  interfaces both sit on it, and another front end (a CLI, a plug-in) can too.
 
 ```
 core/    rawvibes-core: RAW development, colour science, profiles, lens corrections, metadata, LUT I/O, GPU engine (wgpu + WGSL), AI denoise
 gtk/     rawvibes: GTK4 / libadwaita desktop app (Relm4)
+qt/      rawvibes-qt: Qt 6 / QML desktop app (cxx-qt), with the HDR swapchain preview
 models/  RawNIND denoise weights (fetched with `make models`)
 po/      translations (gettext)
 tools/   lensfun database converter, model converter
@@ -345,16 +378,19 @@ tools/   lensfun database converter, model converter
 
 ## Install
 
-Every push to `master` builds an Arch Linux package and a macOS disk image and
-publishes them in the [latest release](https://github.com/NicoNex/RawVibes/releases/latest).
-Once installed, RawVibes shows up under *Open With* when you right-click a photo or
-a RAW.
+Every push to `master` builds the Arch Linux packages, two macOS disk images (GTK
+and Qt) and a Windows zip, and publishes them in the
+[latest release](https://github.com/NicoNex/RawVibes/releases/latest). Once
+installed, RawVibes shows up under *Open With* when you right-click a photo or a RAW.
 
 ### Arch Linux
 
+Three packages: `rawvibes` (GTK), `rawvibes-qt` (Qt) and `rawvibes-common`, the
+translations, lens database and AI models they share. Install one interface or both.
+
 ```sh
-make arch                       # builds a package from the committed HEAD
-sudo pacman -U packaging/arch/rawvibes-*.pkg.tar.zst
+make arch                       # builds the packages from the committed HEAD
+sudo pacman -U packaging/arch/rawvibes-common-*.pkg.tar.zst packaging/arch/rawvibes-qt-*.pkg.tar.zst
 ```
 
 ### From source (any Linux)
@@ -365,21 +401,36 @@ profiles need the lensfun database (`lensfun` package) at build time.
 
 ```sh
 make models                     # fetch and convert the AI denoise weights (curl, unzip, python3 + onnx, numpy)
-make run FILE=photo.RW2         # debug build, optionally open a photo
+make run FILE=photo.RW2         # GTK, debug build, optionally open a photo
+make run-qt FILE=photo.RW2      # Qt, optimised build (run-qt-debug for a debug one)
 make release                    # optimised build
-sudo make install               # installs to /usr/local; use PREFIX=~/.local for a user install
+sudo make install               # GTK to /usr/local; use PREFIX=~/.local for a user install
+sudo make install-data install-qt   # the Qt interface
 ```
+
+The Qt interface needs Qt ≥ 6.7 (`qt6-base`, `qt6-declarative`, `qt6-svg`); the
+HDR preview needs a Vulkan driver with an HDR swapchain and a compositor with HDR on.
 
 Other targets: `make test`, `make check` (format, clippy and tests), `make pot`
 (refresh translations), `make clean`.
 
 ### macOS (Apple silicon)
 
-Open the `.dmg`, drag RawVibes to Applications, and follow its `README.txt`: the
-app is not signed with an Apple Developer ID, so you clear the quarantine flag once
-with `xattr -cr /Applications/RawVibes.app`. To build the disk image yourself, install
-`gtk4 libadwaita adwaita-icon-theme librsvg jpeg-xl cmake nasm gettext dylibbundler` with Homebrew and
-run `make dmg`.
+Two disk images: `rawvibes-qt-*.dmg` (Qt, with the HDR preview) and `rawvibes-*.dmg`
+(GTK). Open one, drag the app to Applications, and follow its `README.txt`: the app
+is not signed with an Apple Developer ID, so you clear the quarantine flag once with
+`xattr -cr /Applications/RawVibes-Qt.app` (or `RawVibes.app`). To build them
+yourself, install `qt gtk4 libadwaita adwaita-icon-theme librsvg jpeg-xl cmake nasm
+gettext dylibbundler lensfun` with Homebrew and run `make dmg-qt` or `make dmg`.
+
+### Windows (x64)
+
+Unzip `rawvibes-qt-*-windows.zip` anywhere and run
+`RawVibes-Qt\bin\rawvibes-qt.exe`. For the HDR preview, switch on *Use HDR* in
+*Settings → System → Display*. To build it yourself, open an
+[MSYS2](https://www.msys2.org/) UCRT64 shell, install Rust, Qt 6 (base,
+declarative, svg, tools), libjxl, gettext, lensfun, cmake and nasm, and run
+`make zip-qt`.
 
 ---
 
@@ -421,6 +472,9 @@ picks it up. Pull requests for new languages are welcome.
 
 ## FAQ
 
+**Does it run on Windows?**
+Yes, with the Qt interface: download the Windows zip from the latest release.
+
 **Is RawVibes a free alternative to Lightroom on Linux?**
 For developing and grading single photos and shoots, yes: RAW development, lens
 corrections, colour grading, ratings, metadata and batch export. It has no photo
@@ -448,9 +502,9 @@ the table above).
 **Can I export HDR photos?**
 Yes. With an HDR export format, the highlights of a RAW or log photo go up to 3
 stops above SDR white. Choose *JPEG HDR* for phones and browsers: SDR screens show
-the normal JPEG. Choose *JPEG XL*, *AVIF* or *PNG HDR* for Rec.2100 PQ. On Linux,
-with HDR switched on in the system settings, the preview shows the HDR rendition
-too.
+the normal JPEG. Choose *JPEG XL*, *AVIF* or *PNG HDR* for Rec.2100 PQ. With HDR
+switched on in the system settings, the preview shows the HDR rendition too: on
+Linux with either interface, on macOS and Windows with the Qt one.
 
 **Does the AI denoise send my photos anywhere?**
 No. The model ships with the app and runs on your GPU.

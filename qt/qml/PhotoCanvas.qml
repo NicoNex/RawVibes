@@ -32,7 +32,8 @@ Rectangle {
         anchors { fill: parent; margins: canvas.margin }
         source: Store.img("photo")
         // Under the HDR surface it would only be drawn over.
-        visible: s.canvas === "image" && !hdrView.visible
+        // Under the HDR window too, until that one turns out to show HDR.
+        visible: s.canvas === "image" && !(hdrView.visible && hdr.hdr)
         fillMode: Image.PreserveAspectFit
         cache: false
         smooth: true
@@ -94,7 +95,7 @@ Rectangle {
     HdrWindow {
         id: hdr
         color: "black"
-        onHdrChanged: Store.cmd("hdrWhite", { hdr: hdr.hdr, v: hdr.white })
+        onHdrChanged: Store.cmd("hdrWhite", { hdr: hdr.hdr, v: hdr.white, pq: hdr.pq })
         Image {
             anchors.fill: parent
             // The SDR frame until the swapchain turns out HDR: an SDR screen gets an SDR one.
@@ -112,9 +113,25 @@ Rectangle {
         window: hdr
         x: canvas.shown.x; y: canvas.shown.y
         width: canvas.shown.width; height: canvas.shown.height
-        // Shown from the first frame on: the window must render once to learn its swapchain is HDR.
-        visible: s.hdrPreview && Store.f.photo > 0 && s.canvas === "image"
+        // Shown until its first frame tells whether its swapchain is HDR; an SDR one then steps aside,
+        // and the photo under it is the same SDR frame.
+        visible: s.hdrPreview && Store.f.photo > 0 && (hdr.hdr || !(hdr.probed || probe.gaveUp)) && s.canvas === "image"
                  && !(s.crop && s.crop.editing) && !s.compare && !Store.covered
+    }
+    // A window that never draws (no screen to show it on) never tells: after a while it counts as SDR.
+    Timer {
+        id: probe
+        property bool gaveUp: false
+        interval: 2000
+        running: hdrView.visible && !hdr.probed
+        onTriggered: gaveUp = true
+    }
+    // On Wayland the HDR window is a subsurface its parent commits: a new frame shows once the
+    // editor's window draws too, so it draws with every frame.
+    Connections {
+        target: Store
+        enabled: hdrView.visible
+        function onFChanged() { if (canvas.Window.window) canvas.Window.window.update() }
     }
 
     // The crop over the whole straightened frame, while editing it.

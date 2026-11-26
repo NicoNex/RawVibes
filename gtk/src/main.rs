@@ -2130,18 +2130,44 @@ fn label_menu(sender: &ComponentSender<App>) -> gtk::MenuButton {
 
 /// The Photo / Grade / LUT Lab switch: icon tabs atop each side panel, bound to the page shown.
 fn section_tabs(stack: &adw::ViewStack, panes: &[&gtk::Box]) {
+    // Full-width tabs, icon over name, the active one underlined: the panel's top level, never
+    // mistaken for the small toggles inside it (scopes, NR mode…).
     for pane in panes {
-        let tabs = adw::ToggleGroup::builder().halign(gtk::Align::Center).margin_top(8).margin_bottom(2).build();
-        for (name, icon, tip) in [
-            ("photo", "camera-shutter-symbolic", gettext("Photo: develop, correct and crop (Alt+1)")),
-            ("grade", "rawvibes-grade-symbolic", gettext("Grade: colour and looks (Alt+2)")),
-            ("meta", "tag-outline-symbolic", gettext("Metadata: title, keywords, rights (Alt+3)")),
-            ("lab", "rawvibes-lut-symbolic", gettext("LUT Lab: combine and convert LUTs (Alt+4)")),
+        let bar = gtk::Box::builder().homogeneous(true).css_classes(["section-tabs"]).build();
+        let mut group: Option<gtk::ToggleButton> = None;
+        for (name, icon, label, tip) in [
+            ("photo", "camera-shutter-symbolic", gettext("Photo"), gettext("Photo: develop, correct and crop (Alt+1)")),
+            ("grade", "rawvibes-grade-symbolic", gettext("Grade"), gettext("Grade: colour and looks (Alt+2)")),
+            ("meta", "tag-outline-symbolic", gettext("Metadata"), gettext("Metadata: title, keywords, rights (Alt+3)")),
+            ("lab", "rawvibes-lut-symbolic", gettext("LUT Lab"), gettext("LUT Lab: combine and convert LUTs (Alt+4)")),
         ] {
-            tabs.add(adw::Toggle::builder().name(name).icon_name(icon).tooltip(&tip).build());
+            let content = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).build();
+            content.append(&gtk::Image::from_icon_name(icon));
+            content.append(&gtk::Label::builder().label(&label).css_classes(["caption"]).build());
+            let tab = gtk::ToggleButton::builder()
+                .child(&content)
+                .tooltip_text(&tip)
+                .css_classes(["flat", "section-tab"])
+                .build();
+            tab.update_property(&[gtk::accessible::Property::Label(&label)]);
+            tab.set_group(group.as_ref());
+            group.get_or_insert_with(|| tab.clone());
+            tab.set_active(stack.visible_child_name().as_deref() == Some(name));
+            let st = stack.clone();
+            tab.connect_toggled(move |t| {
+                if t.is_active() && st.visible_child_name().as_deref() != Some(name) {
+                    st.set_visible_child_name(name);
+                }
+            });
+            let t = tab.clone();
+            stack.connect_visible_child_name_notify(move |s| {
+                if s.visible_child_name().as_deref() == Some(name) && !t.is_active() {
+                    t.set_active(true);
+                }
+            });
+            bar.append(&tab);
         }
-        stack.bind_property("visible-child-name", &tabs, "active-name").bidirectional().sync_create().build();
-        pane.prepend(&tabs);
+        pane.prepend(&bar);
     }
 }
 
@@ -2342,6 +2368,13 @@ editablelabel.slider-value text { background: none; box-shadow: none; outline: n
   caret-color: var(--accent-color); }
 editablelabel.slider-value text selection { background-color: color-mix(in srgb, var(--accent-bg-color) 55%, transparent); }
 .slider-reset { min-width: 24px; min-height: 24px; padding: 0; }
+.section-tabs { border-bottom: 1px solid var(--border-color); margin-bottom: 4px; }
+.section-tab { border-radius: 0; padding: 8px 2px 6px 2px; box-shadow: inset 0 -2px transparent;
+  color: alpha(currentColor, 0.65); transition: box-shadow 150ms ease, color 150ms ease; }
+.section-tab image { -gtk-icon-size: 20px; }
+.section-tab:hover { color: currentColor; }
+.section-tab:checked { background: none; color: currentColor; box-shadow: inset 0 -2px var(--accent-bg-color); }
+.section-tab:checked image { color: var(--accent-color); }
 scale.track-temp trough { background-image: linear-gradient(to right, #4f86e8, #e8e8e8, #f2b84b); }
 scale.track-tint trough { background-image: linear-gradient(to right, #4cbf5a, #e8e8e8, #d85bd0); }
 scale.track-temp trough highlight, scale.track-tint trough highlight { background: none; }

@@ -31,8 +31,7 @@ jobs:
           useradd -m builder
           chown -R builder .
           sudo -u builder git config --global --add safe.directory "$PWD"
-          set -o pipefail
-          sudo -u builder make arch 2>&1 | tee build.log || { echo "::error title=make arch::$(tail -40 build.log | awk '{gsub(/%/,"%25"); printf "%s%%0A", $0}')"; exit 1; }
+          sudo -u builder bash tools/ci-make.sh arch
       - uses: actions/upload-artifact@v7
         with:
           name: rawvibes-arch
@@ -41,34 +40,31 @@ jobs:
 
   macos:
     name: macOS disk images (GTK and Qt)
+    needs: [models]
     runs-on: macos-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.x"
       - name: Install build dependencies
         run: |
           brew install gtk4 libadwaita adwaita-icon-theme librsvg gettext dylibbundler jpeg-xl cmake nasm lensfun qt
-          python -m pip install onnx numpy
           echo "GETTEXT_DIR=$(brew --prefix gettext)" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v8
+        with:
+          name: models
+          path: models/rawnind
       - name: Build the .dmg files
-        # The log tail goes into an annotation, readable without opening the run.
-        run: |
-          set -o pipefail
-          for t in dmg dmg-qt; do
-            make $t 2>&1 | tee build.log || { echo "::error title=make $t::$(tail -40 build.log | awk '{gsub(/%/,"%25"); printf "%s%%0A", $0}')"; exit 1; }
-          done
+        # The models came converted: -o keeps make from fetching the archive to convert them again.
+        run: bash tools/ci-make.sh -o target/models/rawdenoise-nind.dtmodel dmg dmg-qt
       - uses: actions/upload-artifact@v7
         with:
           name: rawvibes-macos
           path: target/rawvibes-*.dmg
           if-no-files-found: error
 
-  # The AI models for Windows: converting them needs onnx, which MSYS2 does not package.
+  # The AI models, converted once for macOS and Windows (MSYS2 does not package onnx).
   models:
     name: AI denoise models
     runs-on: ubuntu-latest
@@ -110,6 +106,7 @@ jobs:
         with:
           name: models
           path: models/rawnind
+      - uses: Swatinem/rust-cache@v2
       - name: Check the Qt tools load
         # A missing DLL shows here by name, not as moc's bare exit status.
         run: |
@@ -118,9 +115,8 @@ jobs:
           qmake6 -query QT_INSTALL_HEADERS
       - name: Build the .zip
         run: |
-          set -o pipefail
           export GETTEXT_DIR=/ucrt64 PATH="/ucrt64/bin:$PATH"
-          make zip-qt 2>&1 | tee build.log || { echo "::error title=make zip-qt::$(tail -40 build.log | awk '{gsub(/%/,"%25"); printf "%s%%0A", $0}')"; exit 1; }
+          bash tools/ci-make.sh zip-qt
       - uses: actions/upload-artifact@v7
         with:
           name: rawvibes-windows

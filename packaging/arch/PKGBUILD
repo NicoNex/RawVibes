@@ -40,7 +40,7 @@ package_rawvibes() {
   pkgdesc+=" (GTK 4 / libadwaita interface)"
   depends=('rawvibes-common' 'gtk4' 'libadwaita' 'vulkan-icd-loader' 'libjxl')
   cd "$pkgbase-$pkgver"
-  CARGO_TARGET_DIR=target CARGO_NET_OFFLINE=true make install-gtk DESTDIR="$pkgdir" PREFIX=/usr
+  make install-gtk DESTDIR="$pkgdir" PREFIX=/usr
 }
 
 package_rawvibes-qt() {
@@ -48,7 +48,7 @@ package_rawvibes-qt() {
   depends=('rawvibes-common' 'qt6-base' 'qt6-declarative' 'qt6-svg' 'vulkan-icd-loader' 'libjxl')
   optdepends=('qt6-wayland: native Wayland windows')
   cd "$pkgbase-$pkgver"
-  CARGO_TARGET_DIR=target CARGO_NET_OFFLINE=true make install-qt DESTDIR="$pkgdir" PREFIX=/usr
+  make install-qt DESTDIR="$pkgdir" PREFIX=/usr
 }
 
 package_rawvibes-common() {

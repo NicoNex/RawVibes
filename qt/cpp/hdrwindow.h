@@ -3,6 +3,7 @@
 // 2D content, so only the photo lives here; the rest of the interface stays on an SDR surface.
 #pragma once
 
+#include <QtGui/QGuiApplication>
 #include <QtQuick/QQuickWindow>
 #include <rhi/qrhi.h>
 #include <atomic>
@@ -25,6 +26,11 @@ public:
         setProperty("_qt_sg_hdr_format", QByteArrayLiteral("hdr10"));
 #endif
         connect(this, &QQuickWindow::afterRendering, this, &RvHdrWindow::check, Qt::DirectConnection);
+        // On Wayland this window is a subsurface its parent commits: a new frame shows once the parent draws too.
+        if (QGuiApplication::platformName() == QLatin1String("wayland"))
+            connect(this, &QQuickWindow::frameSwapped, this, [this] {
+                if (auto *p = qobject_cast<QQuickWindow *>(QWindow::parent())) p->update();
+            }, Qt::QueuedConnection);
     }
     bool hdr() const { return m_hdr; }
     double white() const { return m_white; }
@@ -43,15 +49,15 @@ private:
         if (!sc) return;
         const bool hdr = sc->format() != QRhiSwapChain::SDR;
         const bool pq = sc->format() == QRhiSwapChain::HDR10;
+        // The format every frame (cheap); the screen's HDR info (a system query on some backends)
+        // only when asked to, or when the format changed.
+        if (!m_reprobe.exchange(false) && hdr == m_rtHdr) return;
         const QRhiSwapChainHdrInfo info = sc->hdrInfo();
-        // SDR white in cd/m² as the system sets it, else BT.2408's 203.
-        const double nits = info.luminanceBehavior == QRhiSwapChainHdrInfo::SceneReferred && info.sdrWhiteLevel > 0
-            ? info.sdrWhiteLevel : 203.0;
-        const double white = pq ? nits
-            : info.luminanceBehavior == QRhiSwapChainHdrInfo::SceneReferred ? nits / 80.0 : 1.0;
-        if (!m_reprobe.exchange(false) && hdr == m_rtHdr && qFuzzyCompare(white, m_rtWhite)) return;
+        const bool scene = info.luminanceBehavior == QRhiSwapChainHdrInfo::SceneReferred;
+        // SDR white in cd/m² as the system sets it, else BT.2408's 203 (core's SDR_WHITE).
+        const double nits = scene && info.sdrWhiteLevel > 0 ? info.sdrWhiteLevel : 203.0;
+        const double white = pq ? nits : scene ? nits / 80.0 : 1.0;
         m_rtHdr = hdr;
-        m_rtWhite = white;
         QMetaObject::invokeMethod(this, [this, hdr, pq, white] {
             m_pq = pq;
             m_hdr = hdr;
@@ -66,5 +72,4 @@ private:
     std::atomic<bool> m_reprobe{true};
     // Render thread only.
     bool m_rtHdr = false;
-    double m_rtWhite = 203.0 / 80.0;
 };

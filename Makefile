@@ -28,8 +28,6 @@ DTMODEL    := target/models/rawdenoise-nind.dtmodel
 # macOS: shasum (its sha256sum -c reads no stdin); Linux: sha256sum.
 SHA256     := $(shell command -v shasum >/dev/null && echo shasum -a 256 || echo sha256sum)
 
-# The binaries are phony: cargo knows when they are stale, make does not.
-.PHONY: target/release/$(BIN) target/release/$(BIN)-qt
 .PHONY: all build run release run-release qt run-qt qt-debug run-qt-debug test check fmt clean install install-data install-gtk install-qt uninstall arch dmg dmg-qt zip-qt pot locale models lensfun
 
 all: release
@@ -91,7 +89,7 @@ pot:
 	for l in $(LINGUAS); do msgmerge -U --backup=none po/$$l.po po/$(BIN).pot; done
 
 target/release/$(BIN):
-	$(CARGO) build --release -p $(BIN)
+	$(CARGO) build --release
 
 models: $(MODELS)
 
@@ -107,17 +105,15 @@ $(MODELS) &: $(DTMODEL)
 	unzip -o -q $(DTMODEL) -d target/models
 	python3 tools/convert_rawnind.py target/models/rawdenoise-nind models/rawnind || { rm -rf models/rawnind; exit 1; }
 
-target/release/$(BIN)-qt:
-	$(CARGO) build --release -p $(BIN)-qt
+# install-gtk and install-qt take the binaries as built (`make release` builds both).
+install: release install-data install-gtk
 
-install: install-data install-gtk
-
-install-gtk: target/release/$(BIN)
+install-gtk:
 	install -Dm755 target/release/$(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
 	install -Dm644 data/$(APP_ID).desktop $(DESTDIR)$(PREFIX)/share/applications/$(APP_ID).desktop
 	$(REFRESH_CACHES)
 
-install-qt: target/release/$(BIN)-qt
+install-qt:
 	install -Dm755 target/release/$(BIN)-qt $(DESTDIR)$(PREFIX)/bin/$(BIN)-qt
 	install -Dm644 data/$(APP_ID).Qt.desktop $(DESTDIR)$(PREFIX)/share/applications/$(APP_ID).Qt.desktop
 	$(REFRESH_CACHES)
@@ -129,15 +125,11 @@ REFRESH_CACHES = if [ -z "$(DESTDIR)" ]; then update-desktop-database -q $(PREFI
 # What both interfaces read: translations, icons, the lens database and the AI models
 # (when `make models` fetched them: no network here, packagers run it first).
 install-data: locale lensfun
-	for l in $(LINGUAS); do install -Dm644 target/locale/$$l/LC_MESSAGES/$(BIN).mo \
-	  $(DESTDIR)$(PREFIX)/share/locale/$$l/LC_MESSAGES/$(BIN).mo; done
+	$(call share_data,$(DESTDIR)$(PREFIX))
 	install -Dm644 data/$(APP_ID).svg $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/$(APP_ID).svg
 	install -Dm644 -t $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/actions data/icons/hicolor/scalable/actions/*.svg
 	install -Dm644 LICENSE $(DESTDIR)$(PREFIX)/share/licenses/$(BIN)/LICENSE
-	if [ -f target/lensfun.json ]; then install -Dm644 target/lensfun.json $(DESTDIR)$(PREFIX)/share/$(BIN)/lensfun.json; \
-	  install -Dm644 LENSFUN.md $(DESTDIR)$(PREFIX)/share/licenses/$(BIN)/LENSFUN.md; fi
-	if [ -f models/rawnind/bayer.bin ]; then for f in $(MODELS) models/README.md; do \
-	  install -Dm644 $$f $(DESTDIR)$(PREFIX)/share/$(BIN)/$$f; done; fi
+	if [ -f target/lensfun.json ]; then install -Dm644 LENSFUN.md $(DESTDIR)$(PREFIX)/share/licenses/$(BIN)/LENSFUN.md; fi
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)-qt \
@@ -193,7 +185,7 @@ dmg: release models target/RawVibes.icns
 # the UI imports, and every other Homebrew library it links. Needs Homebrew qt, gettext, jpeg-xl,
 # cmake, nasm, librsvg and lensfun.
 QTAPP := target/RawVibes-Qt.app
-dmg-qt: qt models target/RawVibes.icns
+dmg-qt: release models target/RawVibes.icns
 	rm -rf $(QTAPP) target/dmg-qt target/$(BIN)-qt-$(VERSION).dmg
 	install -d $(QTAPP)/Contents/MacOS $(QTAPP)/Contents/Resources
 	install -m755 target/release/$(BIN)-qt $(QTAPP)/Contents/MacOS/$(BIN)-qt
@@ -214,12 +206,12 @@ dmg-qt: qt models target/RawVibes.icns
 WINQT := target/RawVibes-Qt
 zip-qt: qt
 	rm -rf $(WINQT) target/$(BIN)-qt-$(VERSION)-windows.zip
-	install -d $(WINQT)/bin/imageformats $(WINQT)/bin/iconengines
+	install -d $(WINQT)/bin
 	cp target/release/$(BIN)-qt.exe $(WINQT)/bin/
 	windeployqt6 --release --qmldir qt/qml --no-translations $(WINQT)/bin/$(BIN)-qt.exe
 	# The icons are SVG: Qt's SVG plugins, which no linked module pulls in.
-	cp -n "$$(qtpaths6 --query QT_INSTALL_PLUGINS)"/imageformats/qsvg.dll $(WINQT)/bin/imageformats/
-	cp -n "$$(qtpaths6 --query QT_INSTALL_PLUGINS)"/iconengines/qsvgicon.dll $(WINQT)/bin/iconengines/
+	p="$$(qtpaths6 --query QT_INSTALL_PLUGINS)"; for d in imageformats/qsvg iconengines/qsvgicon; do \
+	  install -Dm644 "$$p/$$d.dll" $(WINQT)/bin/$$d.dll; done
 	ldd $(WINQT)/bin/*.exe $$(find $(WINQT)/bin -name '*.dll') | awk '$$3 ~ /^\/ucrt64\// {print $$3}' \
 	  | sort -u | xargs -r cp -n -t $(WINQT)/bin
 	$(call share_data,$(WINQT))

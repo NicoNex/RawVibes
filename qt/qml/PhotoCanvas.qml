@@ -124,17 +124,13 @@ Rectangle {
     // a window that never draws (no screen to show it on) never answers and counts as SDR.
     Timer { id: probe; interval: 2000 }
     function reprobe() {
-        if (!s.hdrPreview || !(Store.f.photo > 0)) return
+        if (!previewOn) return
         hdr.reprobe()
         probe.restart()
     }
     readonly property bool previewOn: s.hdrPreview && Store.f.photo > 0
     onPreviewOnChanged: reprobe()
     Connections { target: canvas.Window.window; function onScreenChanged() { canvas.reprobe() } }
-    // On Wayland the HDR window is a subsurface its parent commits: a new HDR frame shows once the
-    // editor's window draws too.
-    readonly property real hdrFrame: Store.f.hdr || 0
-    onHdrFrameChanged: if (Qt.platform.os === "linux" && hdrView.visible && canvas.Window.window) canvas.Window.window.update()
 
     // The crop over the whole straightened frame, while editing it.
     Item {

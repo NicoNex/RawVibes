@@ -22,7 +22,7 @@ pub fn surface() -> bool {
     SURFACE.load(Ordering::Acquire)
 }
 
-pub fn white() -> f32 {
+fn white() -> f32 {
     f32::from_bits(WHITE.load(Ordering::Relaxed))
 }
 
@@ -36,11 +36,6 @@ pub fn set_surface(hdr: bool, white: f32, pq: bool) {
     SURFACE.store(hdr, Ordering::Release);
 }
 
-/// The preview is off: nothing to convert. White and PQ keep matching each other.
-pub fn off() {
-    SURFACE.store(false, Ordering::Release);
-}
-
 /// `rgba16f` (rec2100-linear) converted in place for the surface: HDR10 or scRGB.
 pub fn convert(rgba16f: &mut [u8]) {
     if PQ.load(Ordering::Relaxed) { to_pq(rgba16f, white()) } else { to_scrgb(rgba16f, white()) }
@@ -48,7 +43,7 @@ pub fn convert(rgba16f: &mut [u8]) {
 
 /// `rgba16f` (rec2100-linear, half floats) converted in place to Rec.2100 PQ code values,
 /// SDR white at `white` cd/m²; the swapchain shows them as they are.
-pub fn to_pq(rgba16f: &mut [u8], white: f32) {
+fn to_pq(rgba16f: &mut [u8], white: f32) {
     // Every half float in, its PQ code out: 65536 encodes per white, not three per pixel per frame.
     static TABLE: Mutex<(u32, Vec<u16>)> = Mutex::new((0, Vec::new()));
     let mut table = TABLE.lock().unwrap_or_else(|e| e.into_inner());
@@ -71,22 +66,28 @@ pub fn to_pq(rgba16f: &mut [u8], white: f32) {
 
 /// `rgba16f` (rec2100-linear, half floats) converted in place to scRGB, SDR white at `white`;
 /// out-of-709 colours go negative, as scRGB allows.
-pub fn to_scrgb(rgba16f: &mut [u8], white: f32) {
+fn to_scrgb(rgba16f: &mut [u8], white: f32) {
     let m = rec2020_to_rec709().map(|row| row.map(|v| v * white));
-    // Bit copies, then half's batched conversions (SIMD where the CPU has it), not one value at a time.
-    let mut halves: Vec<f16> = rgba16f.as_chunks::<2>().0.iter().map(|&b| f16::from_le_bytes(b)).collect();
-    let mut f = vec![0f32; halves.len()];
-    halves.convert_to_f32_slice(&mut f);
-    for px in f.as_chunks_mut::<4>().0 {
-        let rgb = [px[0], px[1], px[2]];
-        for (i, row) in m.iter().enumerate() {
-            px[i] = row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2];
+    // 1024 pixels at a time: half's batched conversions (SIMD where the CPU has it) into stack scratch.
+    rgba16f.par_chunks_mut(8 * 1024).for_each(|chunk| {
+        let mut halves = [f16::ZERO; 4 * 1024];
+        let mut f = [0f32; 4 * 1024];
+        let n = chunk.len() / 2;
+        for (h, b) in halves.iter_mut().zip(chunk.as_chunks::<2>().0) {
+            *h = f16::from_le_bytes(*b);
         }
-    }
-    halves.convert_from_f32_slice(&f);
-    for (out, h) in rgba16f.as_chunks_mut::<2>().0.iter_mut().zip(halves) {
-        *out = h.to_le_bytes();
-    }
+        halves[..n].convert_to_f32_slice(&mut f[..n]);
+        for px in f[..n].as_chunks_mut::<4>().0 {
+            let rgb = [px[0], px[1], px[2]];
+            for (i, row) in m.iter().enumerate() {
+                px[i] = row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2];
+            }
+        }
+        halves[..n].convert_from_f32_slice(&f[..n]);
+        for (out, h) in chunk.as_chunks_mut::<2>().0.iter_mut().zip(&halves[..n]) {
+            *out = h.to_le_bytes();
+        }
+    });
 }
 
 #[cfg(test)]

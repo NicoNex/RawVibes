@@ -307,7 +307,8 @@ pub enum Msg {
     ExportPhoto(Option<PhotoFormat>),
     ExportSettings(PhotoFormat, u8, bool),
     HdrPreview(bool),
-    /// The HDR surface's scale for SDR white, as its swapchain reports it.
+    /// The HDR window's swapchain: HDR or not, SDR white on it (a multiplier on scRGB,
+    /// cd/m² on HDR10), and whether it is HDR10.
     HdrWhite(bool, f32, bool),
     Headroom(f32),
     HeadroomSave,
@@ -1605,7 +1606,6 @@ impl App {
                 self.hdr_preview = on;
                 if !on {
                     // Nothing more to convert or keep until it is on again.
-                    crate::hdr::off();
                     self.drop_image("hdr");
                 }
                 let _ = settings::set_flag(settings::HDR_PREVIEW, on);

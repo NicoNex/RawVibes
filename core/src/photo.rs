@@ -241,7 +241,9 @@ fn load_raster(path: &Path, max: Option<u32>) -> Result<Photo, String> {
     }
     let img = img.into_rgba32f();
     let (width, height) = img.dimensions();
-    let pixels = img.pixels().map(|p| [p[0], p[1], p[2], 1.0]).collect();
+    // Reused in place, not collected again: a 50 MP RGBA32F image is ~800 MB.
+    let mut pixels: Vec<[f32; 4]> = bytemuck::allocation::cast_vec(img.into_raw());
+    pixels.iter_mut().for_each(|p| p[3] = 1.0);
     Ok(Photo { width, height, pixels })
 }
 

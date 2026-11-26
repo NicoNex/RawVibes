@@ -162,7 +162,8 @@ impl Lut3d {
             }
             data.push([v[0] / VLT_MAX, v[1] / VLT_MAX, v[2] / VLT_MAX]);
         }
-        if size < 2 || data.len() != size * size * size {
+        // Checked: a huge size must not wrap round to a small cube in release builds.
+        if size < 2 || size.checked_pow(3) != Some(data.len()) {
             return Err(format!("expected {size}³ entries, found {}", data.len()));
         }
         Ok(Self { title: String::new(), size, data, format: Format::Vlt })
@@ -240,7 +241,8 @@ impl Lut3d {
                 _ => {} // unknown keywords (LUT_IN_VIDEO_RANGE etc.) are ignored
             }
         }
-        if size < 2 || data.len() != size * size * size {
+        // Checked: a huge size must not wrap round to a small cube in release builds.
+        if size < 2 || size.checked_pow(3) != Some(data.len()) {
             return Err(format!("expected {}³ entries, found {}", size, data.len()));
         }
         Ok(Self { title, size, data, format: Format::Cube })
@@ -360,6 +362,8 @@ mod tests {
         assert_eq!(back.data[1], [0.5, 0.0, 0.0]); // red fastest
         assert_eq!(back.data[9], [0.0, 0.0, 0.5]);
         assert!(Lut3d::parse("LUT_3D_SIZE 2\n0 0 0\n").is_err());
+        // 2^22 cubed wraps to 0 in 64 bits: an empty file must not pass as that cube.
+        assert!(Lut3d::parse("LUT_3D_SIZE 4194304\n").is_err());
     }
 
     #[test]

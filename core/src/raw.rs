@@ -67,7 +67,12 @@ pub fn read_raw(path: &Path) -> Result<RawData, String> {
             }
         }
         let crop = rect.map_or([0, 0, w, h], |r| [r.p.x as u32, r.p.y as u32, r.d.w as u32, r.d.h as u32]);
-        let data = raw.data.as_f32().into_owned();
+        let camera = camera(&raw);
+        // Moved out, not copied: after apply_scaling the mosaic is already f32 (~96 MB at 24 MP).
+        let data = match std::mem::replace(&mut raw.data, rawler::RawImageData::Float(Vec::new())) {
+            rawler::RawImageData::Float(v) => v,
+            other => other.as_f32().into_owned(),
+        };
         return Ok(RawData {
             pixels: if sensor == SensorType::Xtrans { Pixels::XTrans(data) } else { Pixels::Bayer(data) },
             width: w,
@@ -76,7 +81,7 @@ pub fn read_raw(path: &Path) -> Result<RawData, String> {
             pattern_size: [cfa.width as u32, cfa.height as u32],
             crop,
             orientation,
-            camera: camera(&raw),
+            camera,
         });
     }
     let (rgb, w, h, camera) = cpu_rgb(&raw)?;
@@ -1069,11 +1074,13 @@ impl Gpu {
         }
         if from < 2 && haze_on {
             let lin = work.lin.clone();
-            // Purple and green fringes share the module's three working buffers.
-            let fringe = [0; 3].map(|_| self.buffer(lin.size(), wgpu::BufferUsages::empty()));
-            for (amount, brighten) in [(d.defringe, false), (d.defringe_green, true)] {
-                if amount > 0.0 {
-                    self.defringe(&lin, work.scratch(self), &fringe, lw, lh, s, amount, brighten);
+            // Purple and green fringes share the module's three working buffers, made only when used.
+            if d.defringe > 0.0 || d.defringe_green > 0.0 {
+                let fringe = [0; 3].map(|_| self.buffer(lin.size(), wgpu::BufferUsages::empty()));
+                for (amount, brighten) in [(d.defringe, false), (d.defringe_green, true)] {
+                    if amount > 0.0 {
+                        self.defringe(&lin, work.scratch(self), &fringe, lw, lh, s, amount, brighten);
+                    }
                 }
             }
             if d.dehaze != 0.0 {

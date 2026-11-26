@@ -4,3 +4,6 @@
 /packaging/arch/*.tar.gz
 /packaging/arch/*.pkg.tar.zst
 /models/rawnind
+
+# makepkg downloads the AI model here (PKGBUILD source)
+packaging/arch/*.dtmodel

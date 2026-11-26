@@ -3,7 +3,7 @@
 #   make release / run-release  optimised build
 #   make qt / run-qt            the Qt interface, optimised; qt-debug / run-qt-debug for a debug build
 #   make install PREFIX=~/.local     the GTK interface; install-qt the Qt one (both share install-data)
-#   make arch                   build the Arch Linux packages with makepkg (rawvibes, rawvibes-qt, rawvibes-common)
+#   make arch / arch-qt         build the Arch Linux package with makepkg: rawvibes (GTK) or rawvibes-qt (Qt)
 #   make dmg / dmg-qt           build a macOS .dmg, GTK or Qt (run on macOS; dylibbundler / macdeployqt)
 #   make zip-qt                 the Qt interface for Windows as a .zip (run in MSYS2 UCRT64, needs windeployqt6)
 #   make pot                    refresh po/rawvibes.pot and merge it into po/*.po
@@ -28,7 +28,7 @@ DTMODEL    := target/models/rawdenoise-nind.dtmodel
 # macOS: shasum (its sha256sum -c reads no stdin); Linux: sha256sum.
 SHA256     := $(shell command -v shasum >/dev/null && echo shasum -a 256 || echo sha256sum)
 
-.PHONY: all build run release run-release qt run-qt qt-debug run-qt-debug test check fmt clean install install-data install-gtk install-qt uninstall arch dmg dmg-qt zip-qt pot locale models lensfun
+.PHONY: all build run release run-release qt run-qt qt-debug run-qt-debug test check fmt clean install install-data install-gtk install-qt uninstall arch arch-qt dmg dmg-qt zip-qt pot locale models lensfun
 
 all: release
 
@@ -139,12 +139,16 @@ uninstall:
 	      $(foreach l,$(LINGUAS),$(DESTDIR)$(PREFIX)/share/locale/$(l)/LC_MESSAGES/$(BIN).mo)
 	rm -rf $(DESTDIR)$(PREFIX)/share/licenses/$(BIN) $(DESTDIR)$(PREFIX)/share/$(BIN)
 
-# Packages the committed HEAD (commit first!).
-arch:
+# Packages the committed HEAD (commit first!): one package, the interface and everything it needs.
+arch: UI := gtk
+arch: PKG := $(BIN)
+arch-qt: UI := qt
+arch-qt: PKG := $(BIN)-qt
+arch arch-qt:
 	git archive --format=tar.gz --prefix=$(BIN)-$(VERSION)/ -o $(ARCHDIR)/$(BIN)-$(VERSION).tar.gz HEAD
 	sed -i 's/^pkgver=.*/pkgver=$(VERSION)/' $(ARCHDIR)/PKGBUILD
-	cd $(ARCHDIR) && makepkg -sf --needed
-	@echo "Install with: sudo pacman -U $(ARCHDIR)/$(BIN)-common-$(VERSION)-*.pkg.tar.zst and $(ARCHDIR)/$(BIN)-$(VERSION)-*.pkg.tar.zst (GTK) or $(ARCHDIR)/$(BIN)-qt-$(VERSION)-*.pkg.tar.zst (Qt)"
+	cd $(ARCHDIR) && RAWVIBES_UI=$(UI) makepkg -sf --needed
+	@echo "Install with: sudo pacman -U $(ARCHDIR)/$(PKG)-$(VERSION)-*.pkg.tar.zst"
 
 # Self-contained .app: dylibbundler copies the linked dylibs, and the GTK runtime data
 # (schemas, icon themes, pixbuf loaders) comes from Homebrew into the bundle; the

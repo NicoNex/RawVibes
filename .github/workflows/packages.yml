@@ -32,6 +32,7 @@ jobs:
           chown -R builder .
           sudo -u builder git config --global --add safe.directory "$PWD"
           sudo -u builder bash tools/ci-make.sh arch
+          sudo -u builder bash tools/ci-make.sh arch-qt
       - uses: actions/upload-artifact@v7
         with:
           name: rawvibes-arch
@@ -147,7 +148,7 @@ jobs:
           gh release delete latest --cleanup-tag --yes || true
           gh release create latest dist/* --target "$GITHUB_SHA" --title "Latest build" --latest --notes "Built from ${GITHUB_SHA::7} on master. RawVibes comes with two interfaces over the same engine and edits: GTK (Linux, macOS) and Qt (Linux, macOS, Windows; HDR preview on HDR screens).
 
-          **Arch Linux:** \`sudo pacman -U rawvibes-common-*.pkg.tar.zst\` plus \`rawvibes-[0-9]*.pkg.tar.zst\` (GTK) or \`rawvibes-qt-*.pkg.tar.zst\` (Qt).
+          **Arch Linux:** \`sudo pacman -U rawvibes-[0-9]*.pkg.tar.zst\` (GTK) or \`rawvibes-qt-*.pkg.tar.zst\` (Qt), one of the two.
 
           **macOS (Apple silicon):** open \`rawvibes-*.dmg\` (GTK) or \`rawvibes-qt-*.dmg\` (Qt), drag the app to Applications, then run \`xattr -cr /Applications/RawVibes.app\` (or \`RawVibes-Qt.app\`) once: the app is not signed with an Apple Developer ID.
 

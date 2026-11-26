@@ -385,12 +385,15 @@ installed, RawVibes shows up under *Open With* when you right-click a photo or a
 
 ### Arch Linux
 
-Three packages: `rawvibes` (GTK), `rawvibes-qt` (Qt) and `rawvibes-common`, the
-translations, lens database and AI models they share. Install one interface or both.
+One package per interface, each complete: `rawvibes` (GTK) or `rawvibes-qt` (Qt).
+They carry the same data, so install one of the two.
 
 ```sh
-make arch                       # builds the packages from the committed HEAD
-sudo pacman -U packaging/arch/rawvibes-common-*.pkg.tar.zst packaging/arch/rawvibes-qt-*.pkg.tar.zst
+make arch                       # rawvibes (GTK), built from the committed HEAD
+sudo pacman -U packaging/arch/rawvibes-0*.pkg.tar.zst
+
+make arch-qt                    # or rawvibes-qt (Qt)
+sudo pacman -U packaging/arch/rawvibes-qt-*.pkg.tar.zst
 ```
 
 ### From source (any Linux)

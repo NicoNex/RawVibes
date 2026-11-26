@@ -5,20 +5,22 @@ import RawVibes
 // Every filmstrip photo at once, each through its own grade: pick one to edit it.
 Rectangle {
     readonly property var roll: Store.s.roll || []
+    // The roll positions the filter shows: hidden photos leave no empty cell.
+    readonly property var shown: roll.map((c, i) => c.shown !== false ? i : -1).filter(i => i >= 0)
     color: Theme.canvas
     GridView {
         id: g
         anchors { fill: parent; margins: 16 }
-        readonly property int cols: Math.max(2, Math.ceil(Math.sqrt(roll.length * width / Math.max(1, height))))
+        readonly property int cols: Math.max(2, Math.ceil(Math.sqrt(shown.length * width / Math.max(1, height))))
         cellWidth: width / cols
         cellHeight: cellWidth * 0.72
-        model: roll.length
+        model: shown.length
         clip: true
         delegate: Item {
             required property int index
-            readonly property var it: roll[index] || ({})
+            readonly property int at: shown[index]
+            readonly property var it: roll[at] || ({})
             width: g.cellWidth; height: g.cellHeight
-            visible: it.shown !== false
             Rectangle {
                 anchors { fill: parent; margins: 6 }
                 radius: Theme.radius
@@ -38,7 +40,7 @@ Rectangle {
                     color: Theme.dim; font.pixelSize: Theme.small; elide: Text.ElideMiddle
                 }
                 HoverHandler { id: h }
-                TapHandler { onTapped: { Store.cmd("rollSelect", { i: index }); Store.cmd("grid", { on: false }) } }
+                TapHandler { onTapped: { Store.cmd("rollSelect", { i: at }); Store.cmd("grid", { on: false }) } }
             }
         }
     }

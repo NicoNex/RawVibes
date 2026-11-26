@@ -63,15 +63,17 @@ ColumnLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 clip: true
-                model: [{ label: Store.tr("Automatic (from the photo)"), cmd: "auto" }, { label: Store.tr("No profile"), cmd: "none" }]
-                       .concat((dev.lensResults || []).map(l => ({ label: l.maker + " " + l.model, maker: l.maker, model: l.model })))
+                // A count, not a fresh array per publish: the rows are kept while the state changes.
+                model: 2 + (dev.lensResults || []).length
                 delegate: ItemDelegate {
+                    required property int index
+                    readonly property var lens: index < 2 ? null : (dev.lensResults || [])[index - 2] || {}
                     width: ListView.view.width
-                    text: modelData.label
+                    text: index === 0 ? Store.tr("Automatic (from the photo)") : index === 1 ? Store.tr("No profile") : lens.maker + " " + lens.model
                     onClicked: {
-                        if (modelData.cmd === "auto") Store.cmd("lensPick", {})
-                        else if (modelData.cmd === "none") Store.cmd("lensNone")
-                        else Store.cmd("lensPick", { maker: modelData.maker, model: modelData.model })
+                        if (index === 0) Store.cmd("lensPick", {})
+                        else if (index === 1) Store.cmd("lensNone")
+                        else Store.cmd("lensPick", { maker: lens.maker, model: lens.model })
                         pop.close()
                     }
                 }

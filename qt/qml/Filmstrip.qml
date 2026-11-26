@@ -8,6 +8,8 @@ Rectangle {
     id: fs
     readonly property var s: Store.s
     readonly property var roll: s.roll || []
+    // The roll positions the filter shows: hidden photos get no card (and leave no gap).
+    readonly property var shown: roll.map((c, i) => c.shown !== false ? i : -1).filter(i => i >= 0)
     color: Theme.panel
     implicitHeight: 112
 
@@ -34,15 +36,15 @@ Rectangle {
             orientation: ListView.Horizontal
             spacing: 8
             clip: true
-            model: fs.roll.length
+            model: fs.shown.length
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
             delegate: Rectangle {
                 id: card
                 required property int index
-                readonly property var it: fs.roll[index] || ({})
-                visible: it.shown !== false
-                width: visible ? height * 1.4 : 0
+                readonly property int at: fs.shown[index]
+                readonly property var it: fs.roll[at] || ({})
+                width: height * 1.4
                 height: list.height - 8
                 radius: Theme.radius
                 color: Theme.canvas
@@ -73,7 +75,7 @@ Rectangle {
                     color: Theme.accent; font.pixelSize: 9
                 }
                 HoverHandler { id: hover }
-                TapHandler { onTapped: Store.cmd("rollSelect", { i: card.index }) }
+                TapHandler { onTapped: Store.cmd("rollSelect", { i: card.at }) }
                 Accessible.role: Accessible.Button
                 Accessible.name: Store.tr("Edit this photo") + ": " + (card.it.name || "")
                 ToolTip.visible: hover.hovered; ToolTip.text: card.it.name || ""; ToolTip.delay: 700
@@ -83,7 +85,7 @@ Rectangle {
                     name: "window-close"; size: 12
                     width: 22; height: 22
                     tip: Store.tr("Remove from the filmstrip")
-                    onClicked: Store.cmd("rollRemove", { i: card.index })
+                    onClicked: Store.cmd("rollRemove", { i: card.at })
                 }
             }
         }

@@ -47,7 +47,6 @@ ColumnLayout {
                 visible: sec.eye !== ""
                 name: sec.off ? "view-conceal" : "view-reveal"
                 tip: sec.off ? Store.tr("Enable section") : Store.tr("Disable section")
-                checked: false
                 onClicked: Store.cmd("off", { key: sec.eye, off: !sec.off })
             }
         }

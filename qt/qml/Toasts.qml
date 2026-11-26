@@ -9,13 +9,12 @@ ColumnLayout {
     spacing: 8
     readonly property int count: queue.count
     ListModel { id: queue }
-    function show(text, action, id) {
-        queue.append({ text: text, action: action, cmdId: id, at: Date.now() })
-        while (queue.count > 3) queue.remove(0)
-    }
     Connections {
         target: Backend
-        function onToast(text, action, id) { toasts.show(text, action, id) }
+        function onToast(text, action, id) {
+            queue.append({ text: text, action: action, cmdId: id })
+            while (queue.count > 3) queue.remove(0)
+        }
     }
     Repeater {
         model: queue

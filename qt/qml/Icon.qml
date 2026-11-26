@@ -9,7 +9,6 @@ AbstractButton {
     property string name
     property string tip
     property int size: 16
-    property bool round: true
     implicitWidth: 30; implicitHeight: 30
     hoverEnabled: true
     focusPolicy: Qt.StrongFocus
@@ -23,7 +22,7 @@ AbstractButton {
     icon.color: checked ? Theme.accent : (hovered ? Theme.text : Theme.dim)
     contentItem: IconLabel { icon: b.icon; display: AbstractButton.IconOnly }
     background: Rectangle {
-        radius: b.round ? height / 2 : Theme.radius
+        radius: height / 2
         color: b.down ? Theme.line : (b.hovered || b.checked ? Theme.raised : "transparent")
         border.color: b.visualFocus ? Theme.accent : "transparent"
     }

@@ -47,10 +47,10 @@ fn main() {
     println!("cargo:rerun-if-changed=../data/icons");
     println!("cargo:rerun-if-changed=qml");
     println!("cargo:rerun-if-changed=cpp");
-    CxxQtBuilder::new_qml_module(QmlModule::new("RawVibes").qml_files(qml))
-        .qt_module("Gui")
-        .qt_module("Quick")
-        .qt_module("QuickControls2")
+    const QT_MODULES: [&str; 3] = ["Gui", "Quick", "QuickControls2"];
+    QT_MODULES
+        .iter()
+        .fold(CxxQtBuilder::new_qml_module(QmlModule::new("RawVibes").qml_files(qml)), |b, m| b.qt_module(m))
         .qrc_resources(QResources::new().resource(QResource::new().prefix("/").files(icons)))
         .include_dir("cpp")
         .include_dir(&rhi)
@@ -62,8 +62,8 @@ fn main() {
     // C++ (RvHdrWindow's QQuickWindow symbols), so they are named again after it.
     let target = |k: &str| std::env::var(k).unwrap_or_default();
     if target("CARGO_CFG_TARGET_OS") == "windows" && target("CARGO_CFG_TARGET_ENV") == "gnu" {
-        for lib in ["Qt6QuickControls2", "Qt6Quick", "Qt6Gui", "Qt6Core"] {
-            println!("cargo:rustc-link-arg=-l{lib}");
+        for m in QT_MODULES.iter().rev().chain(&["Core"]) {
+            println!("cargo:rustc-link-arg=-lQt6{m}");
         }
     }
 }

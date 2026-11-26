@@ -11,8 +11,8 @@ ColumnLayout {
     readonly property var dev: s.develop || ({ detail: {} })
     // The camera's as-shot white balance: Kelvin, tint.
     readonly property var ws: dev.asShot || [5500, 0]
+    readonly property var kelvins: Store.c.kelvinRange || [2000, 12000]
     readonly property bool raw: s.raw === true
-    readonly property string rawTip: raw ? "" : Store.tr("RAW development: open a RAW file to use it")
     spacing: 4
 
     component Detail: ValueSlider {
@@ -24,7 +24,7 @@ ColumnLayout {
     component Dev: Section {
         enabled: page.raw
         ToolTip.visible: !page.raw && devHover.hovered
-        ToolTip.text: page.rawTip
+        ToolTip.text: Store.tr("RAW development: open a RAW file to use it")
         HoverHandler { id: devHover }
     }
 
@@ -83,7 +83,7 @@ ColumnLayout {
         ValueSlider {
             Layout.fillWidth: true
             label: Store.tr("Temperature")
-            from: (Store.c.kelvinRange || [2000, 12000])[0]; to: (Store.c.kelvinRange || [2000, 12000])[1]
+            from: kelvins[0]; to: kelvins[1]
             neutral: ws[0]
             unit: " K"
             track: Theme.temperatureTrack

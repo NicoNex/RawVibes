@@ -964,16 +964,16 @@ impl App {
     pub(super) fn edit_develop(&mut self, edit: DevelopEdit) {
         let Some(cam) = self.camera().cloned() else { return };
         let mut dev = self.develop;
-        let [k, t] = dev.wb.unwrap_or_else(|| cam.as_shot_kelvin_tint());
+        let shot = cam.as_shot_kelvin_tint();
+        let [k, t] = dev.wb.unwrap_or(shot);
         match edit {
             DevelopEdit::AsShot | DevelopEdit::Preset(0) => dev.wb = None,
             DevelopEdit::Preset(i) => match WB_PRESETS.get(i as usize - 1) {
                 Some(&(_, k, t)) => dev.wb = Some([k, t]),
                 None => return, // Custom: whatever the sliders say
             },
-            // Both sliders back on the camera's values (a reset): As shot again, not a Custom copy of it.
-            DevelopEdit::Kelvin(v) => dev.wb = Some([v, t]).filter(|w| !same_wb(*w, cam.as_shot_kelvin_tint())),
-            DevelopEdit::Tint(v) => dev.wb = Some([k, v]).filter(|w| !same_wb(*w, cam.as_shot_kelvin_tint())),
+            DevelopEdit::Kelvin(v) => dev.wb = Some([v, t]),
+            DevelopEdit::Tint(v) => dev.wb = Some([k, v]),
             DevelopEdit::Exposure(v) => dev.exposure = v,
             DevelopEdit::CameraExposure => dev.exposure = cam.baseline_ev,
             DevelopEdit::Detail(field, v) => *field(&mut dev.detail) = v,
@@ -989,6 +989,8 @@ impl App {
                 return;
             }
         }
+        // Back on the camera's values (a reset, a pick, a preset): As shot, not a Custom copy of it.
+        dev.wb = dev.wb.filter(|w| !same_wb(*w, shot));
         if dev != self.develop {
             self.develop = dev;
             self.develop_changed();

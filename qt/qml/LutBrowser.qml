@@ -39,7 +39,9 @@ ColumnLayout {
     Choice {
         Layout.fillWidth: true
         visible: (s.groups || []).length > 2
-        model: s.groups || []
+        // Rebuilt only when the folders change, not on every publish (a hover publishes).
+        readonly property string groupsKey: (s.groups || []).join("\n")
+        model: groupsKey.split("\n")
         currentIndex: s.groupIndex || 0
         Accessible.name: Store.tr("Subfolder")
         onActivated: (i) => Store.cmd("group", { i: i })

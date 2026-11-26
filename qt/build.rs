@@ -24,24 +24,24 @@ fn main() {
     .expect("Qt's RHI headers (rhi/qrhi.h)");
     let qml = std::fs::read_dir("qml")
         .expect("qml/ exists")
-        .map(|e| e.expect("readable qml/").path())
-        .filter(|p| p.extension().is_some_and(|e| e == "qml"))
-        .map(|p| {
-            let singleton = p.file_stem().is_some_and(|s| s == "Theme" || s == "Store");
-            QmlFile::from(p).singleton(singleton)
+        .map(|e| e.expect("readable qml/").file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".qml"))
+        .map(|n| {
+            let singleton = n == "Theme.qml" || n == "Store.qml";
+            // "qml/X.qml", not Path::join: qmlcachegen puts the path in a C++ string, where Windows' '\' is an escape.
+            QmlFile::from(format!("qml/{n}")).singleton(singleton)
         })
         .collect::<Vec<_>>();
     // Symbolic icons as resources: Windows and macOS have no icon theme to find them in.
     // RawVibes' own icons from data/icons, the theme's from icons/.
     let icons = ["icons", "../data/icons/hicolor/scalable/actions"]
         .iter()
-        .flat_map(|d| std::fs::read_dir(d).unwrap_or_else(|e| panic!("{d}: {e}")))
-        .map(|e| e.expect("readable icon folder").path())
-        .filter(|p| p.extension().is_some_and(|e| e == "svg"))
-        .map(|p| {
-            let name = p.file_name().expect("a file").to_string_lossy().into_owned();
-            QResourceFile::new(&p).alias(format!("icons/{name}"))
+        .flat_map(|d| {
+            let names = std::fs::read_dir(d).unwrap_or_else(|e| panic!("{d}: {e}"));
+            names.map(move |e| (d, e.expect("readable icon folder").file_name().to_string_lossy().into_owned()))
         })
+        .filter(|(_, name)| name.ends_with(".svg"))
+        .map(|(d, name)| QResourceFile::new(format!("{d}/{name}")).alias(format!("icons/{name}")))
         .collect::<Vec<_>>();
     println!("cargo:rerun-if-changed=icons");
     println!("cargo:rerun-if-changed=../data/icons");

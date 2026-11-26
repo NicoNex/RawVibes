@@ -49,7 +49,7 @@ ColumnLayout {
             icon.color: Theme.text
             checkable: true
             checked: s.browsing === true
-            ToolTip.visible: hovered; ToolTip.text: Store.tr("Browse the LUT library on this photo (B)"); ToolTip.delay: 600
+            tip: Store.tr("Browse the LUT library on this photo (B)")
             onClicked: Store.cmd("browse", { on: !s.browsing })
         }
         Icon { name: "document-open"; tip: Store.tr("Add a LUT from a file"); onClicked: Store.cmd("layerAdd", { which: "look", kind: "file" }) }

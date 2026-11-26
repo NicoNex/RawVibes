@@ -16,7 +16,7 @@ StackLayout {
             visible: s.raw === true
             flat: true
             text: Store.tr("Camera JPEG")
-            ToolTip.visible: hovered; ToolTip.text: Store.tr("As in camera: match the JPEG the camera embedded in the RAW"); ToolTip.delay: 600
+            tip: Store.tr("As in camera: match the JPEG the camera embedded in the RAW")
             onClicked: Store.cmd("matchCamera")
         }
     }

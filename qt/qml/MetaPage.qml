@@ -75,7 +75,7 @@ ColumnLayout {
                 readonly property string word: mp.m.keywords[index]
                 text: word + "  ✕"
                 flat: true
-                ToolTip.visible: hovered; ToolTip.text: Store.tr("Remove “{}”").replace("{}", word); ToolTip.delay: 600
+                tip: Store.tr("Remove “{}”").replace("{}", word)
                 onClicked: Store.cmd("meta", { field: "keywords", text: mp.m.keywords.filter(w => w !== word).join(", ") })
                 background: Rectangle { radius: height / 2; color: parent.hovered ? Theme.line : Theme.raised }
             }

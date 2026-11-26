@@ -48,7 +48,7 @@ Icon {
                 Layout.fillWidth: true
                 text: Store.tr("Save Current Grade…")
                 highlighted: true
-                ToolTip.visible: hovered; ToolTip.text: Store.tr("Save the grade as a preset (Ctrl+S)"); ToolTip.delay: 600
+                tip: Store.tr("Save the grade as a preset (Ctrl+S)")
                 onClicked: { Store.cmd("presetSave"); pop.close() }
             }
             RowLayout {

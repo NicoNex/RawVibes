@@ -20,7 +20,7 @@ ColumnLayout {
         Btn {
             text: Store.tr("Change…")
             flat: true
-            ToolTip.visible: hovered; ToolTip.text: Store.tr("Choose the lens profile"); ToolTip.delay: 600
+            tip: Store.tr("Choose the lens profile")
             onClicked: { pop.open(); search.forceActiveFocus(); Store.cmd("lensSearch", { text: search.text }) }
         }
     }

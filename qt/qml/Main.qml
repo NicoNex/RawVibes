@@ -138,7 +138,7 @@ ApplicationWindow {
                     text: Store.tr("Export")
                     highlighted: true
                     enabled: s.hasSource === true
-                    ToolTip.visible: hovered; ToolTip.text: Store.tr("Export the edited photo (Ctrl+E)"); ToolTip.delay: 600
+                    tip: Store.tr("Export the edited photo (Ctrl+E)")
                     onClicked: Store.cmd("exportPhoto", {})
                 }
                 Btn {
@@ -147,7 +147,7 @@ ApplicationWindow {
                     highlighted: true
                     enabled: s.hasSource === true
                     icon.source: "qrc:/icons/pan-down-symbolic.svg"; icon.color: Theme.accentInk; icon.width: 12; icon.height: 12
-                    ToolTip.visible: hovered; ToolTip.text: Store.tr("Photo and LUT formats"); ToolTip.delay: 600
+                    tip: Store.tr("Photo and LUT formats")
                     onClicked: exportMenu.popup(exportMore, 0, exportMore.height)
                 }
                 Menu {

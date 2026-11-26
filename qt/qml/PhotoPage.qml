@@ -196,7 +196,7 @@ ColumnLayout {
                 text: Store.tr("Edit crop")
                 checkable: true
                 checked: s.crop && s.crop.editing
-                ToolTip.visible: hovered; ToolTip.text: Store.tr("Edit crop (R)"); ToolTip.delay: 600
+                tip: Store.tr("Edit crop (R)")
                 onClicked: Store.cmd("cropEdit", { on: !(s.crop && s.crop.editing) })
             }
             Btn { text: Store.tr("Reset"); flat: true; onClicked: Store.cmd("cropReset") }

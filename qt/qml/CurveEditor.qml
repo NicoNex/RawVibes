@@ -99,6 +99,8 @@ ColumnLayout {
         MouseArea {
             anchors.fill: parent
             acceptedButtons: Qt.LeftButton | Qt.RightButton
+            // Inside the sidebar's Flickable: without this, a vertical drag hands the mouse to the scroll.
+            preventStealing: true
             property int drag: -1
             property var pts: []
             property point start

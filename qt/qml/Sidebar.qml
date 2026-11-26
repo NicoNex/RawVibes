@@ -69,8 +69,6 @@ ColumnLayout {
         visible: !(s.browsing === true && s.tab === "grade")
         contentWidth: availableWidth
         clip: true
-        // A mouse drag never flicks the panel (the wheel and scrollbar scroll it), so drags on controls keep the mouse.
-        Component.onCompleted: contentItem.interactive = false
         ColumnLayout {
             width: scroll.availableWidth - 24
             x: 12

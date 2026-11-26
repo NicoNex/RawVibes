@@ -67,6 +67,8 @@ ColumnLayout {
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.SizeVerCursor
+            // Inside the sidebar's Flickable: without this, a vertical drag hands the mouse to the scroll.
+            preventStealing: true
             property real y0
             property int h0
             onPressed: (e) => { y0 = mapToGlobal(e.x, e.y).y; h0 = saved.height }

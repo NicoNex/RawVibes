@@ -58,4 +58,12 @@ fn main() {
         .cpp_file("cpp/hdrwindow.h")
         .files(["src/bridge.rs"])
         .build();
+    // MinGW's ld reads libraries once, in order: Qt's import libraries come before the archive of our
+    // C++ (RvHdrWindow's QQuickWindow symbols), so they are named again after it.
+    let target = |k: &str| std::env::var(k).unwrap_or_default();
+    if target("CARGO_CFG_TARGET_OS") == "windows" && target("CARGO_CFG_TARGET_ENV") == "gnu" {
+        for lib in ["Qt6QuickControls2", "Qt6Quick", "Qt6Gui", "Qt6Core"] {
+            println!("cargo:rustc-link-arg=-l{lib}");
+        }
+    }
 }

@@ -731,7 +731,7 @@ impl App {
             clipboard: None,
             batch: None,
             ui: UiState {
-                tab: "grade".into(),
+                tab: "photo".into(),
                 canvas: "empty",
                 matching: "empty",
                 export: ExportState { format: Some(format), quality, ..Default::default() },

@@ -58,6 +58,8 @@ Item {
     }
     MouseArea {
         anchors.fill: parent
+        // Inside the sidebar's Flickable: without this, a vertical drag hands the mouse to the scroll.
+        preventStealing: true
         property bool resetting: false
         onPressed: (e) => { if (!resetting) w.place(e.x, e.y) }
         onPositionChanged: (e) => { if (pressed && !resetting) w.place(e.x, e.y) }

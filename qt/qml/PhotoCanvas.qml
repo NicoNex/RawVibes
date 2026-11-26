@@ -118,7 +118,13 @@ Rectangle {
         // Shown while it checks its swapchain (one frame), then only with HDR frames to show:
         // an SDR swapchain steps aside for the SDR photo under it.
         visible: s.hdrPreview && s.canvas === "image" && (probe.running || (hdr.hdr && Store.f.hdr > 0))
-                 && !(s.crop && s.crop.editing) && !s.compare && !Store.covered
+                 && !(s.crop && s.crop.editing) && !s.compare && !Store.covered && !overPhoto
+    }
+    // A menu, popup, dialog or tooltip over the photo; a tooltip on the sidebar leaves the HDR alone.
+    readonly property bool overPhoto: !!Overlay.overlay && Overlay.overlay.children.some(c => c.visible && hits(c))
+    function hits(c) {
+        const r = c.mapToItem(canvas, 0, 0)
+        return r.x < shown.x + shown.width && r.x + c.width > shown.x && r.y < shown.y + shown.height && r.y + c.height > shown.y
     }
     // Checks the swapchain when the preview is switched on and when the window changes screen;
     // a window that never draws (no screen to show it on) never answers and counts as SDR.

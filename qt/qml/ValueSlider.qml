@@ -40,6 +40,18 @@ Item {
             elide: Text.ElideRight
             Layout.fillWidth: true
         }
+        // Shown once the slider has moved off neutral, as in the GTK interface.
+        Icon {
+            name: "edit-undo"; size: 12
+            implicitWidth: 18; implicitHeight: 18
+            tip: Store.tr("Reset")
+            Accessible.name: Store.tr("Reset") + " " + root.label
+            // Hidden by opacity, not visibility: the label never shifts.
+            readonly property bool moved: Math.abs(root.value - root.neutral) > 1e-9
+            opacity: moved ? 1 : 0
+            enabled: moved
+            onClicked: root.send(root.neutral)
+        }
         TextInput {
             id: entry
             text: root.shown(root.value)

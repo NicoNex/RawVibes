@@ -294,7 +294,7 @@ ApplicationWindow {
 
     Binding {
         target: Store; property: "covered"
-        value: win.overlayOpen || toasts.count > 0
+        value: toasts.count > 0
     }
     Toasts {
         id: toasts

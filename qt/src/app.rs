@@ -2261,6 +2261,12 @@ fn lens_db_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/lensfun.json")))
 }
 
+/// The frames every render replaces: published apart, so the filmstrip's and the LUT browser's
+/// image bindings do not run again for each slider frame.
+fn is_live(key: &str) -> bool {
+    matches!(key, "photo" | "hdr" | "hist" | "wave" | "vec" | "lab")
+}
+
 #[cfg(test)]
 mod tests {
     use super::level_turn;
@@ -2274,10 +2280,4 @@ mod tests {
         assert!(near(level_turn(-100.0, -100.0 * 5f32.to_radians().tan()), 5.0));
         assert!(near(level_turn(100.0 * 5f32.to_radians().tan(), 100.0), -5.0));
     }
-}
-
-/// The frames every render replaces: published apart, so the filmstrip's and the LUT browser's
-/// image bindings do not run again for each slider frame.
-fn is_live(key: &str) -> bool {
-    matches!(key, "photo" | "hdr" | "hist" | "wave" | "vec" | "lab")
 }

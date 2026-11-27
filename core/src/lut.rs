@@ -159,7 +159,8 @@ impl Lut3d {
                 size = v.trim().parse().map_err(|_| "bad LUT_3D_SIZE")?;
                 continue;
             }
-            let v: Vec<f32> = line.split_whitespace().filter_map(|v| v.parse().ok()).collect();
+            let v: Vec<f32> =
+                line.split_whitespace().filter_map(|v| v.parse().ok()).filter(|v: &f32| v.is_finite()).collect();
             if v.len() != 3 {
                 return Err(format!("bad data line: {line}"));
             }
@@ -235,7 +236,12 @@ impl Lut3d {
                     }
                 }
                 Some(first) if first.starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '.') => {
-                    let v: Vec<f32> = std::iter::once(first).chain(it).filter_map(|v| v.parse().ok()).collect();
+                    // nan, inf and 1e999 parse as floats: dropped here, they make the line bad.
+                    let v: Vec<f32> = std::iter::once(first)
+                        .chain(it)
+                        .filter_map(|v| v.parse().ok())
+                        .filter(|v: &f32| v.is_finite())
+                        .collect();
                     if v.len() != 3 {
                         return Err(format!("bad data line: {line}"));
                     }
@@ -367,6 +373,11 @@ mod tests {
         assert!(Lut3d::parse("LUT_3D_SIZE 2\n0 0 0\n").is_err());
         // 2^22 cubed wraps to 0 in 64 bits: an empty file must not pass as that cube.
         assert!(Lut3d::parse("LUT_3D_SIZE 4194304\n").is_err());
+        let cube = |row: &str| format!("LUT_3D_SIZE 2\n{row}\n{}", "0 0 0\n".repeat(7));
+        assert!(Lut3d::parse(&cube("0 0 0")).is_ok());
+        for row in ["0 nan 0", "-inf 0 0", "1e999 0 0"] {
+            assert!(Lut3d::parse(&cube(row)).is_err(), "{row}");
+        }
     }
 
     #[test]

@@ -66,7 +66,7 @@ pub fn read_raw(path: &Path) -> Result<RawData, String> {
                 pattern[y * cfa.width + x] = cfa.color_at(y, x).min(2) as u32;
             }
         }
-        let crop = rect.map_or([0, 0, w, h], |r| [r.p.x as u32, r.p.y as u32, r.d.w as u32, r.d.h as u32]);
+        let crop = inside(rect.map(|r| [r.p.x, r.p.y, r.d.w, r.d.h].map(|v| v as u32)), w, h);
         let camera = camera(&raw);
         // Moved out, not copied: after apply_scaling the mosaic is already f32 (~96 MB at 24 MP).
         let data = match std::mem::replace(&mut raw.data, rawler::RawImageData::Float(Vec::new())) {
@@ -163,6 +163,15 @@ fn xyz2cam<const N: usize>(raw: &rawler::RawImage) -> Option<[[f32; 3]; N]> {
     let (illu, m) = raw.color_matrix_find_first([D65, A, B, C, D50, D55, D75, Daylight, Flash])?;
     let m = transform_1d::<N, 3>(m.get(..N * 3)?)?;
     Some(if illu == D65 { m } else { multiply(&m, &bradford_adaption_matrix(&illu, &D65)) })
+}
+
+/// The file's crop `[x, y, w, h]` kept inside the `w`×`h` mosaic; a missing or degenerate one
+/// (a malformed file) is the whole mosaic, never a read past its end.
+fn inside(crop: Option<[u32; 4]>, w: u32, h: u32) -> [u32; 4] {
+    let [x, y, cw, ch] = crop.unwrap_or([0, 0, w, h]);
+    let (x, y) = (x.min(w), y.min(h));
+    let (cw, ch) = (cw.min(w - x), ch.min(h - y));
+    if cw < 2 || ch < 2 { [0, 0, w, h] } else { [x, y, cw, ch] }
 }
 
 /// The camera's colour model from the file: D65-adapted colour matrix and
@@ -1625,6 +1634,15 @@ pub(crate) fn f16_to_f32(h: u16) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn crops_stay_inside_the_mosaic() {
+        assert_eq!(inside(None, 100, 80), [0, 0, 100, 80]);
+        assert_eq!(inside(Some([8, 6, 50, 40]), 100, 80), [8, 6, 50, 40]);
+        assert_eq!(inside(Some([8, 6, 500, 400]), 100, 80), [8, 6, 92, 74]);
+        assert_eq!(inside(Some([200, 6, 50, 40]), 100, 80), [0, 0, 100, 80]);
+        assert_eq!(inside(Some([0, 0, 0, 40]), 100, 80), [0, 0, 100, 80]);
+    }
+
     use super::*;
 
     const RGGB: [u32; 4] = [0, 1, 1, 2];

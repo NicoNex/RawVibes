@@ -31,8 +31,9 @@ Rectangle {
         id: photo
         anchors { fill: parent; margins: canvas.margin }
         source: Store.img("photo")
-        // Hidden only under an HDR window that shows HDR: while it checks its swapchain, the photo stays.
-        visible: s.canvas === "image" && !(hdrView.visible && hdr.hdr)
+        // Hidden only under an HDR window that shows HDR: while it checks its swapchain, the photo stays,
+        // and where the window leaves the bars on the photo free.
+        visible: s.canvas === "image" && !(hdrView.visible && hdr.hdr && !hdrView.cut)
         fillMode: Image.PreserveAspectFit
         cache: false
         smooth: true
@@ -99,7 +100,8 @@ Rectangle {
             Store.cmd("hdrWhite", { hdr: hdr.hdr, v: hdr.white, pq: hdr.pq })
         }
         Image {
-            anchors.fill: parent
+            y: -hdrView.top
+            width: canvas.shown.width; height: canvas.shown.height
             // Only the HDR rendition: an SDR frame on an HDR10 swapchain would read as PQ.
             source: hdr.hdr ? Store.img("hdr") : ""
             fillMode: Image.Stretch
@@ -107,14 +109,19 @@ Rectangle {
             smooth: true
             retainWhileLoading: true
         }
-        CanvasPointer { anchors.fill: parent; canvas: canvas; ox: canvas.shown.x; oy: canvas.shown.y }
+        CanvasPointer { anchors.fill: parent; canvas: canvas; ox: canvas.shown.x; oy: canvas.shown.y + hdrView.top }
         DropArea { anchors.fill: parent; onDropped: (drop) => Store.dropPaths(drop.urls) }
     }
     WindowContainer {
         id: hdrView
         window: hdr
-        x: canvas.shown.x; y: canvas.shown.y
-        width: canvas.shown.width; height: canvas.shown.height
+        // A native window covers every Qt Quick item: it stops short of the legend and the zoom bar.
+        readonly property real top: legendBar.visible ? Math.max(0, legendBar.y + legendBar.height + 6 - canvas.shown.y) : 0
+        readonly property real bottom: zoomBar.visible && zoomBar.x < canvas.shown.x + canvas.shown.width
+            ? Math.max(0, canvas.shown.y + canvas.shown.height - zoomBar.y + 6) : 0
+        readonly property bool cut: top > 0 || bottom > 0
+        x: canvas.shown.x; y: canvas.shown.y + top
+        width: canvas.shown.width; height: Math.max(1, canvas.shown.height - top - bottom)
         // Shown while it checks its swapchain (one frame), then only with HDR frames to show:
         // an SDR swapchain steps aside for the SDR photo under it.
         visible: s.hdrPreview && s.canvas === "image" && (probe.running || (hdr.hdr && Store.gen("hdr") > 0))
@@ -214,6 +221,7 @@ Rectangle {
 
     // What the clipping stripes mean, while they show.
     Rectangle {
+        id: legendBar
         visible: s.overlay && s.canvas === "image"
         anchors { horizontalCenter: parent.horizontalCenter; top: parent.top; topMargin: 12 }
         width: legend.implicitWidth + 24; height: 32; radius: 16
@@ -235,6 +243,7 @@ Rectangle {
 
     // Zoom controls, bottom right.
     Rectangle {
+        id: zoomBar
         visible: s.canvas === "image" && !s.chart
         anchors { right: parent.right; bottom: parent.bottom; margins: 12 }
         width: zoomRow.implicitWidth + 8; height: 34; radius: 17

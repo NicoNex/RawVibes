@@ -100,7 +100,7 @@ Rectangle {
             Store.cmd("hdrWhite", { hdr: hdr.hdr, v: hdr.white, pq: hdr.pq })
         }
         Image {
-            y: -hdrView.top
+            y: -hdrView.cutTop
             width: canvas.shown.width; height: canvas.shown.height
             // Only the HDR rendition: an SDR frame on an HDR10 swapchain would read as PQ.
             source: hdr.hdr ? Store.img("hdr") : ""
@@ -109,19 +109,19 @@ Rectangle {
             smooth: true
             retainWhileLoading: true
         }
-        CanvasPointer { anchors.fill: parent; canvas: canvas; ox: canvas.shown.x; oy: canvas.shown.y + hdrView.top }
+        CanvasPointer { anchors.fill: parent; canvas: canvas; ox: canvas.shown.x; oy: canvas.shown.y + hdrView.cutTop }
         DropArea { anchors.fill: parent; onDropped: (drop) => Store.dropPaths(drop.urls) }
     }
     WindowContainer {
         id: hdrView
         window: hdr
         // A native window covers every Qt Quick item: it stops short of the legend and the zoom bar.
-        readonly property real top: legendBar.visible ? Math.max(0, legendBar.y + legendBar.height + 6 - canvas.shown.y) : 0
-        readonly property real bottom: zoomBar.visible && zoomBar.x < canvas.shown.x + canvas.shown.width
+        readonly property real cutTop: legendBar.visible ? Math.max(0, legendBar.y + legendBar.height + 6 - canvas.shown.y) : 0
+        readonly property real cutBottom: zoomBar.visible && zoomBar.x < canvas.shown.x + canvas.shown.width
             ? Math.max(0, canvas.shown.y + canvas.shown.height - zoomBar.y + 6) : 0
-        readonly property bool cut: top > 0 || bottom > 0
-        x: canvas.shown.x; y: canvas.shown.y + top
-        width: canvas.shown.width; height: Math.max(1, canvas.shown.height - top - bottom)
+        readonly property bool cut: cutTop > 0 || cutBottom > 0
+        x: canvas.shown.x; y: canvas.shown.y + cutTop
+        width: canvas.shown.width; height: Math.max(1, canvas.shown.height - cutTop - cutBottom)
         // Shown while it checks its swapchain (one frame), then only with HDR frames to show:
         // an SDR swapchain steps aside for the SDR photo under it.
         visible: s.hdrPreview && s.canvas === "image" && (probe.running || (hdr.hdr && Store.gen("hdr") > 0))

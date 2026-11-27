@@ -125,7 +125,6 @@ pub struct LabUi {
     pub stack: gtk::Stack,
     pub pic: gtk::Picture,
     pub canvas: gtk::Overlay,
-    pub export: gtk::Box,
     pub summary: gtk::Label,
 }
 
@@ -144,7 +143,7 @@ fn heading(text: &str) -> gtk::Label {
     gtk::Label::builder().label(text).css_classes(["heading"]).xalign(0.0).hexpand(true).build()
 }
 
-pub fn build(sender: &ComponentSender<App>, export_menu: &gio::Menu) -> LabUi {
+pub fn build(sender: &ComponentSender<App>) -> LabUi {
     let panel = vbox(12);
     panel.set_margin_top(12);
     panel.set_margin_bottom(18);
@@ -231,26 +230,6 @@ pub fn build(sender: &ComponentSender<App>, export_menu: &gio::Menu) -> LabUi {
         .build();
     panel.append(&summary);
 
-    // 3 · Export
-    panel.append(&heading(&gettext("3 · Export")));
-    let row = gtk::Box::builder().spacing(6).homogeneous(true).build();
-    for (label, size) in [("33³ .cube", 33), ("65³ .cube", 65)] {
-        let b = gtk::Button::builder().label(label).css_classes(["suggested-action"]).build();
-        let snd = sender.clone();
-        b.connect_clicked(move |_| snd.input(Msg::Export(rawvibes_core::lut::Format::Cube, size, crate::What::Lab)));
-        row.append(&b);
-    }
-    let more = gtk::MenuButton::builder()
-        .label(gettext("More formats (VLT, HALD, 129³)…"))
-        .menu_model(export_menu)
-        .css_classes(["flat"])
-        .build();
-    let export = vbox(6);
-    export.set_sensitive(false);
-    export.append(&row);
-    export.append(&more);
-    panel.append(&export);
-
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .child(&panel)
@@ -294,7 +273,7 @@ pub fn build(sender: &ComponentSender<App>, export_menu: &gio::Menu) -> LabUi {
         .content(&stack)
         .sidebar(&pane)
         .build();
-    LabUi { root, pane, list, stack, pic, canvas, export, summary }
+    LabUi { root, pane, list, stack, pic, canvas, summary }
 }
 
 impl LabUi {
@@ -315,7 +294,6 @@ impl LabUi {
     ) {
         self.refresh_summary(layers, blend, result_input);
         layer_rows(&self.list, layers, Layers::Lab, source_profile, sender);
-        self.export.set_sensitive(!layers.is_empty());
         self.stack.set_visible_child_name(if layers.is_empty() { "empty" } else { "image" });
     }
 }

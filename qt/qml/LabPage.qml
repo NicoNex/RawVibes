@@ -69,21 +69,4 @@ ColumnLayout {
         padding: 8
         background: Rectangle { color: Theme.canvas; radius: Theme.radius }
     }
-
-    Heading { text: Store.tr("3 · Export"); Layout.topMargin: 10 }
-    RowLayout {
-        Layout.fillWidth: true
-        enabled: lab.layers.length > 0
-        Btn { Layout.fillWidth: true; text: "33³ .cube"; highlighted: true; onClicked: Store.cmd("exportLut", { format: "cube", size: 33, what: "lab" }) }
-        Btn { Layout.fillWidth: true; text: "65³ .cube"; highlighted: true; onClicked: Store.cmd("exportLut", { format: "cube", size: 65, what: "lab" }) }
-    }
-    Btn {
-        id: more
-        Layout.alignment: Qt.AlignHCenter
-        flat: true
-        enabled: lab.layers.length > 0
-        text: Store.tr("More formats (VLT, HALD, 129³)…")
-        onClicked: moreMenu.popup(more, 0, more.height)
-        LutMenu { id: moreMenu; what: "lab" }
-    }
 }

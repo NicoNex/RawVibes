@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: RawVibes\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-27 09:42+0100\n"
+"POT-Creation-Date: 2026-11-27 14:57+0100\n"
 "PO-Revision-Date: 2026-10-21 19:30+0200\n"
 "Last-Translator: Nicolò Santamaria\n"
 "Language-Team: Italian\n"
@@ -16,7 +16,7 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: gtk/src/crop_ui.rs:60 gtk/src/main.rs:6040 qt/qml/Main.qml:341
+#: gtk/src/crop_ui.rs:60 gtk/src/main.rs:6057 qt/qml/Main.qml:349
 #: qt/qml/PhotoPage.qml:196
 msgid "Edit crop"
 msgstr "Modifica ritaglio"
@@ -123,7 +123,7 @@ msgstr "Ritaglio a piena risoluzione, con tutte le modifiche, in sRGB."
 msgid "Export…"
 msgstr "Esporta…"
 
-#: gtk/src/export_ui.rs:105 gtk/src/main.rs:5204 qt/qml/ExportDialog.qml:13
+#: gtk/src/export_ui.rs:105 gtk/src/main.rs:5222 qt/qml/ExportDialog.qml:13
 msgid "Export Photo"
 msgstr "Esporta foto"
 
@@ -158,7 +158,7 @@ msgstr "Salvataggio…"
 msgid "No label"
 msgstr "Nessuna etichetta"
 
-#: gtk/src/filmstrip.rs:67 gtk/src/main.rs:2819 gtk/src/main.rs:3234
+#: gtk/src/filmstrip.rs:67 gtk/src/main.rs:2833 gtk/src/main.rs:3248
 #: qt/src/view.rs:377 qt/qml/GradePage.qml:72 qt/qml/Mixer.qml:11
 msgid "Red"
 msgstr "Rosso"
@@ -167,12 +167,12 @@ msgstr "Rosso"
 msgid "Yellow"
 msgstr "Giallo"
 
-#: gtk/src/filmstrip.rs:69 gtk/src/main.rs:2819 gtk/src/main.rs:3235
+#: gtk/src/filmstrip.rs:69 gtk/src/main.rs:2833 gtk/src/main.rs:3249
 #: qt/src/view.rs:379 qt/qml/GradePage.qml:72 qt/qml/Mixer.qml:11
 msgid "Green"
 msgstr "Verde"
 
-#: gtk/src/filmstrip.rs:70 gtk/src/main.rs:2819 gtk/src/main.rs:3236
+#: gtk/src/filmstrip.rs:70 gtk/src/main.rs:2833 gtk/src/main.rs:3250
 #: qt/src/view.rs:380 qt/qml/GradePage.qml:72 qt/qml/Mixer.qml:11
 msgid "Blue"
 msgstr "Blu"
@@ -223,7 +223,7 @@ msgstr "grade corrente"
 msgid "conversion to {}"
 msgstr "conversione in {}"
 
-#: gtk/src/lab_page.rs:61 gtk/src/lab_page.rs:410 qt/src/view.rs:264
+#: gtk/src/lab_page.rs:61 gtk/src/lab_page.rs:388 qt/src/view.rs:264
 #: qt/qml/LayerRow.qml:53
 #, rust-format
 msgid "Input: {}"
@@ -268,7 +268,7 @@ msgstr ""
 "con l'intensità come peso (sotto il 100% il resto è l'immagine neutra). Le "
 "conversioni si applicano al risultato."
 
-#: gtk/src/lab_page.rs:155 qt/qml/LabPage.qml:13
+#: gtk/src/lab_page.rs:154 qt/qml/LabPage.qml:13
 msgid ""
 "To convert a LUT from one profile to another: 1) add the LUT, 2) check which "
 "profile it was made for, 3) choose the signal you will use the result on, 4) "
@@ -278,48 +278,48 @@ msgstr ""
 "controlla per quale profilo è stato creato, 3) scegli su quale segnale "
 "userai il risultato, 4) esporta."
 
-#: gtk/src/lab_page.rs:162 qt/qml/LabPage.qml:22
+#: gtk/src/lab_page.rs:161 qt/qml/LabPage.qml:22
 msgid "LUT from file…"
 msgstr "LUT da file…"
 
-#: gtk/src/lab_page.rs:163 qt/qml/LabPage.qml:23
+#: gtk/src/lab_page.rs:162 qt/qml/LabPage.qml:23
 msgid "LUT selected in the browser"
 msgstr "LUT selezionato nel browser"
 
-#: gtk/src/lab_page.rs:164 gtk/src/lab_page.rs:350 qt/src/view.rs:238
+#: gtk/src/lab_page.rs:163 gtk/src/lab_page.rs:328 qt/src/view.rs:238
 #: qt/qml/LabPage.qml:24
 msgid "Current grade"
 msgstr "Grade corrente"
 
-#: gtk/src/lab_page.rs:165 qt/qml/LabPage.qml:25
+#: gtk/src/lab_page.rs:164 qt/qml/LabPage.qml:25
 msgid "Profile conversion"
 msgstr "Conversione di profilo"
 
-#: gtk/src/lab_page.rs:169 qt/qml/LabPage.qml:19
+#: gtk/src/lab_page.rs:168 qt/qml/LabPage.qml:19
 msgid "Add layer"
 msgstr "Aggiungi livello"
 
-#: gtk/src/lab_page.rs:173 qt/qml/LabPage.qml:18
+#: gtk/src/lab_page.rs:172 qt/qml/LabPage.qml:18
 msgid "1 · Layers"
 msgstr "1 · Livelli"
 
-#: gtk/src/lab_page.rs:182 qt/qml/LabPage.qml:31
+#: gtk/src/lab_page.rs:181 qt/qml/LabPage.qml:31
 msgid "No layers."
 msgstr "Nessun livello."
 
-#: gtk/src/lab_page.rs:184 qt/qml/LabPage.qml:32
+#: gtk/src/lab_page.rs:183 qt/qml/LabPage.qml:32
 msgid "Add a LUT…"
 msgstr "Aggiungi un LUT…"
 
-#: gtk/src/lab_page.rs:196 qt/qml/LabPage.qml:50
+#: gtk/src/lab_page.rs:195 qt/qml/LabPage.qml:50
 msgid "Signal the final LUT will be used on"
 msgstr "Segnale su cui userai il LUT finale"
 
-#: gtk/src/lab_page.rs:202 qt/qml/LabPage.qml:45
+#: gtk/src/lab_page.rs:201 qt/qml/LabPage.qml:45
 msgid "2 · I will use the final LUT on"
 msgstr "2 · Userò il LUT finale su"
 
-#: gtk/src/lab_page.rs:207 qt/qml/LabPage.qml:53
+#: gtk/src/lab_page.rs:206 qt/qml/LabPage.qml:53
 msgid ""
 "The camera profile (standard or log) you will load the exported LUT on. The "
 "signal is converted automatically to each layer's profile."
@@ -328,23 +328,15 @@ msgstr ""
 "esportato. Il segnale viene convertito automaticamente nel profilo di ogni "
 "livello."
 
-#: gtk/src/lab_page.rs:216 qt/qml/LabPage.qml:55
+#: gtk/src/lab_page.rs:215 qt/qml/LabPage.qml:55
 msgid "Layer blending"
 msgstr "Combinazione dei livelli"
 
-#: gtk/src/lab_page.rs:235 qt/qml/LabPage.qml:73
-msgid "3 · Export"
-msgstr "3 · Esporta"
-
-#: gtk/src/lab_page.rs:244 qt/qml/LabPage.qml:85
-msgid "More formats (VLT, HALD, 129³)…"
-msgstr "Altri formati (VLT, HALD, 129³)…"
-
-#: gtk/src/lab_page.rs:271 qt/qml/LabCanvas.qml:18
+#: gtk/src/lab_page.rs:250 qt/qml/LabCanvas.qml:18
 msgid "Combined LUT preview"
 msgstr "Anteprima del LUT combinato"
 
-#: gtk/src/lab_page.rs:280 qt/qml/LabCanvas.qml:32
+#: gtk/src/lab_page.rs:259 qt/qml/LabCanvas.qml:32
 msgid ""
 "Combine LUTs, grades and profile conversions: chained or mixed, each with "
 "its own intensity.\n"
@@ -356,50 +348,50 @@ msgstr ""
 "Es. un LUT Fujifilm per F-Log diventa un LUT per V-Log o per il profilo "
 "Standard."
 
-#: gtk/src/lab_page.rs:326 qt/qml/LayerRow.qml:30
+#: gtk/src/lab_page.rs:304 qt/qml/LayerRow.qml:30
 msgid "Switch off"
 msgstr "Disattiva"
 
-#: gtk/src/lab_page.rs:326 qt/qml/LayerRow.qml:30
+#: gtk/src/lab_page.rs:304 qt/qml/LayerRow.qml:30
 msgid "Switch on"
 msgstr "Attiva"
 
-#: gtk/src/lab_page.rs:327 qt/qml/LayerRow.qml:29
+#: gtk/src/lab_page.rs:305 qt/qml/LayerRow.qml:29
 #, rust-format
 msgid "Switch off {}"
 msgstr "Disattiva {}"
 
-#: gtk/src/lab_page.rs:327 qt/qml/LayerRow.qml:29
+#: gtk/src/lab_page.rs:305 qt/qml/LayerRow.qml:29
 #, rust-format
 msgid "Switch on {}"
 msgstr "Attiva {}"
 
-#: gtk/src/lab_page.rs:351 qt/src/view.rs:239
+#: gtk/src/lab_page.rs:329 qt/src/view.rs:239
 msgid "Conversion"
 msgstr "Conversione"
 
-#: gtk/src/lab_page.rs:375 qt/qml/LayerRow.qml:40
+#: gtk/src/lab_page.rs:353 qt/qml/LayerRow.qml:40
 msgid "Move up"
 msgstr "Sposta su"
 
-#: gtk/src/lab_page.rs:376 qt/qml/LayerRow.qml:41
+#: gtk/src/lab_page.rs:354 qt/qml/LayerRow.qml:41
 msgid "Move down"
 msgstr "Sposta giù"
 
-#: gtk/src/lab_page.rs:377 gtk/src/main.rs:2916 qt/qml/LayerRow.qml:42
+#: gtk/src/lab_page.rs:355 gtk/src/main.rs:2930 qt/qml/LayerRow.qml:42
 #: qt/qml/MatchPanel.qml:46 qt/qml/Presets.qml:42
 msgid "Remove"
 msgstr "Rimuovi"
 
-#: gtk/src/lab_page.rs:396 qt/qml/LayerRow.qml:59
+#: gtk/src/lab_page.rs:374 qt/qml/LayerRow.qml:59
 msgid "This LUT was made for:"
 msgstr "Questo LUT è stato creato per:"
 
-#: gtk/src/lab_page.rs:397 qt/qml/LayerRow.qml:59
+#: gtk/src/lab_page.rs:375 qt/qml/LayerRow.qml:59
 msgid "Convert the signal to"
 msgstr "Converti il segnale in"
 
-#: gtk/src/lab_page.rs:413 qt/qml/LayerRow.qml:47
+#: gtk/src/lab_page.rs:391 qt/qml/LayerRow.qml:47
 msgid "Intensity"
 msgstr "Intensità"
 
@@ -475,108 +467,124 @@ msgstr "Migliore"
 msgid "GPU unavailable"
 msgstr "GPU non disponibile"
 
-#: gtk/src/main.rs:688 gtk/src/main.rs:6036 qt/qml/Main.qml:337
+#: gtk/src/main.rs:688 gtk/src/main.rs:6053 qt/qml/Main.qml:345
 msgid "Test chart"
 msgstr "Test chart"
 
-#: gtk/src/main.rs:843 qt/qml/Marks.qml:27
+#: gtk/src/main.rs:716 qt/qml/Main.qml:148
+msgid "Export the LUT Lab result · 33³ .cube (Ctrl+E)"
+msgstr "Esporta il risultato di LUT Lab · .cube 33³ (Ctrl+E)"
+
+#: gtk/src/main.rs:718 gtk/src/main.rs:3900 qt/qml/Main.qml:148
+msgid "Export the edited photo (Ctrl+E)"
+msgstr "Esporta la foto modificata (Ctrl+E)"
+
+#: gtk/src/main.rs:720 qt/qml/Main.qml:157
+msgid "LUT formats"
+msgstr "Formati LUT"
+
+#: gtk/src/main.rs:720 gtk/src/main.rs:3901 qt/qml/Main.qml:157
+msgid "Photo and LUT formats"
+msgstr "Formati foto e LUT"
+
+#: gtk/src/main.rs:856 qt/qml/Marks.qml:27
 #, rust-format
 msgid "Colour label: {}"
 msgstr "Etichetta colore: {}"
 
-#: gtk/src/main.rs:873 gtk/src/main.rs:5888 qt/src/app/flows.rs:222
+#: gtk/src/main.rs:886 gtk/src/main.rs:5905 qt/src/app/flows.rs:222
 #: qt/src/app/flows.rs:1430
 msgid "Export stopped"
 msgstr "Esportazione fermata"
 
-#: gtk/src/main.rs:897 qt/src/app/flows.rs:246
+#: gtk/src/main.rs:910 qt/src/app/flows.rs:246
 #, rust-format
 msgid "{} photos exported to {}"
 msgstr "{} foto esportate in {}"
 
-#: gtk/src/main.rs:899 qt/src/app/flows.rs:248
+#: gtk/src/main.rs:912 qt/src/app/flows.rs:248
 #, rust-format
 msgid "{} photos exported, {} failed: {}"
 msgstr "{} foto esportate, {} non riuscite: {}"
 
-#: gtk/src/main.rs:906 qt/src/app/flows.rs:255
+#: gtk/src/main.rs:919 qt/src/app/flows.rs:255
 #, rust-format
 msgid "Photo {} of {}"
 msgstr "Foto {} di {}"
 
-#: gtk/src/main.rs:912 qt/src/app/flows.rs:262
+#: gtk/src/main.rs:925 qt/src/app/flows.rs:262
 #, rust-format
 msgid "{}: no longer in the filmstrip"
 msgstr "{}: non è più nella pellicola"
 
-#: gtk/src/main.rs:931 qt/src/app/flows.rs:283
+#: gtk/src/main.rs:944 qt/src/app/flows.rs:283
 #, rust-format
 msgid "{}: cannot export"
 msgstr "{}: impossibile esportare"
 
-#: gtk/src/main.rs:1046 qt/src/app/flows.rs:380
+#: gtk/src/main.rs:1059 qt/src/app/flows.rs:380
 msgid ""
 "Title, keywords and rights are too long for a JPEG: exported without them"
 msgstr ""
 "Titolo, parole chiave e diritti sono troppo lunghi per un JPEG: esportata "
 "senza"
 
-#: gtk/src/main.rs:1096 qt/src/app/flows.rs:459
+#: gtk/src/main.rs:1109 qt/src/app/flows.rs:459
 #, rust-format
 msgid "Cannot save the edits next to the photo: {}"
 msgstr "Impossibile salvare le modifiche accanto alla foto: {}"
 
-#: gtk/src/main.rs:1267 qt/src/app/flows.rs:619
+#: gtk/src/main.rs:1280 qt/src/app/flows.rs:619
 #, rust-format
 msgid "{} files skipped: not JPEG, TIFF, PNG or camera RAW"
 msgstr "{} file ignorati: non sono JPEG, TIFF, PNG o RAW"
 
-#: gtk/src/main.rs:1290 qt/src/app/flows.rs:644
+#: gtk/src/main.rs:1303 qt/src/app/flows.rs:644
 #, rust-format
 msgid "The filmstrip holds up to {} photos"
 msgstr "La pellicola contiene al massimo {} foto"
 
-#: gtk/src/main.rs:1328
+#: gtk/src/main.rs:1341
 msgid "Loading…"
 msgstr "Caricamento…"
 
-#: gtk/src/main.rs:1380 qt/src/app/flows.rs:774
+#: gtk/src/main.rs:1393 qt/src/app/flows.rs:774
 msgid "Matched by a preset"
 msgstr "Abbinamento da un preset"
 
-#: gtk/src/main.rs:1407 gtk/src/main.rs:6025 qt/src/app.rs:909
-#: qt/qml/Main.qml:325
+#: gtk/src/main.rs:1420 gtk/src/main.rs:6042 qt/src/app.rs:909
+#: qt/qml/Main.qml:333
 msgid "Undo"
 msgstr "Annulla"
 
-#: gtk/src/main.rs:1623 gtk/src/main.rs:2767 qt/qml/PhotoPage.qml:27
+#: gtk/src/main.rs:1636 gtk/src/main.rs:2781 qt/qml/PhotoPage.qml:27
 msgid "RAW development: open a RAW file to use it"
 msgstr "Sviluppo RAW: apri un file RAW per usarlo"
 
-#: gtk/src/main.rs:1962 qt/src/view.rs:418
+#: gtk/src/main.rs:1976 qt/src/view.rs:418
 msgid "All"
 msgstr "Tutti"
 
-#: gtk/src/main.rs:1963 qt/src/view.rs:419
+#: gtk/src/main.rs:1977 qt/src/view.rs:419
 msgid "Essential"
 msgstr "Essenziali"
 
-#: gtk/src/main.rs:1964 qt/src/view.rs:420
+#: gtk/src/main.rs:1978 qt/src/view.rs:420
 msgid "Copyright only"
 msgstr "Solo copyright"
 
-#: gtk/src/main.rs:1965 gtk/src/meta_ui.rs:165 qt/src/view.rs:421
+#: gtk/src/main.rs:1979 gtk/src/meta_ui.rs:165 qt/src/view.rs:421
 #: qt/src/view.rs:484
 msgid "None"
 msgstr "Nessuno"
 
-#: gtk/src/main.rs:1972 qt/src/view.rs:427
+#: gtk/src/main.rs:1986 qt/src/view.rs:427
 msgid "Everything the camera recorded, location and serial numbers included"
 msgstr ""
 "Tutto ciò che la fotocamera ha registrato, posizione e numeri di serie "
 "compresi"
 
-#: gtk/src/main.rs:1974 qt/src/view.rs:428
+#: gtk/src/main.rs:1988 qt/src/view.rs:428
 msgid ""
 "Camera, exposure, date, rights and description; no location, no serial "
 "numbers"
@@ -584,28 +592,28 @@ msgstr ""
 "Fotocamera, esposizione, data, diritti e descrizione; niente posizione né "
 "numeri di serie"
 
-#: gtk/src/main.rs:1976 qt/src/view.rs:429
+#: gtk/src/main.rs:1990 qt/src/view.rs:429
 msgid "Only the creator, copyright and contact"
 msgstr "Solo autore, copyright e contatti"
 
-#: gtk/src/main.rs:1977 qt/src/view.rs:430
+#: gtk/src/main.rs:1991 qt/src/view.rs:430
 msgid "No metadata at all"
 msgstr "Nessun metadato"
 
-#: gtk/src/main.rs:1987 qt/qml/PrefsDialog.qml:89
+#: gtk/src/main.rs:2001 qt/qml/PrefsDialog.qml:89
 msgid "Metadata in exported photos"
 msgstr "Metadati nelle foto esportate"
 
-#: gtk/src/main.rs:2000 qt/qml/PrefsDialog.qml:97
+#: gtk/src/main.rs:2014 qt/qml/PrefsDialog.qml:97
 msgid "File name suffix"
 msgstr "Suffisso del nome file"
 
-#: gtk/src/main.rs:2005 gtk/src/main.rs:3883 qt/qml/Main.qml:138
+#: gtk/src/main.rs:2019 gtk/src/main.rs:3897 qt/qml/Main.qml:145
 #: qt/qml/PrefsDialog.qml:87
 msgid "Export"
 msgstr "Esporta"
 
-#: gtk/src/main.rs:2006 qt/qml/PrefsDialog.qml:88
+#: gtk/src/main.rs:2020 qt/qml/PrefsDialog.qml:88
 msgid ""
 "Exported photos are named after the original plus this suffix (_edit when "
 "empty)."
@@ -613,11 +621,11 @@ msgstr ""
 "Le foto esportate prendono il nome dell'originale più questo suffisso (_edit "
 "se vuoto)."
 
-#: gtk/src/main.rs:2011 qt/qml/PrefsDialog.qml:103
+#: gtk/src/main.rs:2025 qt/qml/PrefsDialog.qml:103
 msgid "Author"
 msgstr "Autore"
 
-#: gtk/src/main.rs:2013 qt/qml/PrefsDialog.qml:104
+#: gtk/src/main.rs:2027 qt/qml/PrefsDialog.qml:104
 #, rust-format
 msgid ""
 "Written into every export whose photo leaves the field empty. In the "
@@ -627,236 +635,236 @@ msgstr ""
 "Scritti in ogni esportazione la cui foto lascia vuoto il campo. Nel "
 "copyright, {year} diventa l'anno dello scatto e {creator} l'autore."
 
-#: gtk/src/main.rs:2018 gtk/src/meta_ui.rs:84 qt/qml/MetaPage.qml:96
+#: gtk/src/main.rs:2032 gtk/src/meta_ui.rs:84 qt/qml/MetaPage.qml:96
 #: qt/qml/PrefsDialog.qml:105
 msgid "Creator"
 msgstr "Autore"
 
-#: gtk/src/main.rs:2019 gtk/src/meta_ui.rs:84 qt/qml/MetaPage.qml:100
+#: gtk/src/main.rs:2033 gtk/src/meta_ui.rs:84 qt/qml/MetaPage.qml:100
 #: qt/qml/PrefsDialog.qml:106
 msgid "Copyright"
 msgstr "Copyright"
 
-#: gtk/src/main.rs:2020 qt/qml/PrefsDialog.qml:107
+#: gtk/src/main.rs:2034 qt/qml/PrefsDialog.qml:107
 msgid "Email"
 msgstr "Email"
 
-#: gtk/src/main.rs:2021 qt/qml/PrefsDialog.qml:108
+#: gtk/src/main.rs:2035 qt/qml/PrefsDialog.qml:108
 msgid "Website"
 msgstr "Sito web"
 
-#: gtk/src/main.rs:2031 gtk/src/main.rs:2144 gtk/src/main.rs:3765
+#: gtk/src/main.rs:2045 gtk/src/main.rs:2158 gtk/src/main.rs:3779
 #: qt/qml/PrefsDialog.qml:20 qt/qml/Sidebar.qml:22
 msgid "Metadata"
 msgstr "Metadati"
 
-#: gtk/src/main.rs:2128 gtk/src/main.rs:2130
+#: gtk/src/main.rs:2142 gtk/src/main.rs:2144
 msgid "Colour label"
 msgstr "Etichetta colore"
 
-#: gtk/src/main.rs:2142 gtk/src/main.rs:3762 gtk/src/main.rs:5982
+#: gtk/src/main.rs:2156 gtk/src/main.rs:3776 gtk/src/main.rs:5999
 #: qt/qml/Sidebar.qml:22
 msgid "Photo"
 msgstr "Foto"
 
-#: gtk/src/main.rs:2142
+#: gtk/src/main.rs:2156
 msgid "Photo: develop, correct and crop (Alt+1)"
 msgstr "Foto: sviluppa, correggi e ritaglia (Alt+1)"
 
-#: gtk/src/main.rs:2143 gtk/src/main.rs:3763 qt/qml/Sidebar.qml:22
+#: gtk/src/main.rs:2157 gtk/src/main.rs:3777 qt/qml/Sidebar.qml:22
 msgid "Grade"
 msgstr "Grade"
 
-#: gtk/src/main.rs:2143
+#: gtk/src/main.rs:2157
 msgid "Grade: colour and looks (Alt+2)"
 msgstr "Grade: colore e look (Alt+2)"
 
-#: gtk/src/main.rs:2144
+#: gtk/src/main.rs:2158
 msgid "Metadata: title, keywords, rights (Alt+3)"
 msgstr "Metadati: titolo, parole chiave, diritti (Alt+3)"
 
-#: gtk/src/main.rs:2145 gtk/src/main.rs:3772 qt/qml/Sidebar.qml:22
+#: gtk/src/main.rs:2159 gtk/src/main.rs:3786 qt/qml/Sidebar.qml:22
 msgid "LUT Lab"
 msgstr "LUT Lab"
 
-#: gtk/src/main.rs:2145
+#: gtk/src/main.rs:2159
 msgid "LUT Lab: combine and convert LUTs (Alt+4)"
 msgstr "LUT Lab: combina e converti LUT (Alt+4)"
 
-#: gtk/src/main.rs:2193 gtk/src/main.rs:2201 qt/qml/Section.qml:49
+#: gtk/src/main.rs:2207 gtk/src/main.rs:2215 qt/qml/Section.qml:49
 msgid "Disable section"
 msgstr "Disattiva sezione"
 
-#: gtk/src/main.rs:2201 qt/qml/Section.qml:49
+#: gtk/src/main.rs:2215 qt/qml/Section.qml:49
 msgid "Enable section"
 msgstr "Attiva sezione"
 
-#: gtk/src/main.rs:2446 qt/src/view.rs:312
+#: gtk/src/main.rs:2460 qt/src/view.rs:312
 msgid "Reds"
 msgstr "Rossi"
 
-#: gtk/src/main.rs:2447 qt/src/view.rs:313
+#: gtk/src/main.rs:2461 qt/src/view.rs:313
 msgid "Oranges"
 msgstr "Arancioni"
 
-#: gtk/src/main.rs:2448 qt/src/view.rs:314
+#: gtk/src/main.rs:2462 qt/src/view.rs:314
 msgid "Yellows"
 msgstr "Gialli"
 
-#: gtk/src/main.rs:2449 qt/src/view.rs:315
+#: gtk/src/main.rs:2463 qt/src/view.rs:315
 msgid "Greens"
 msgstr "Verdi"
 
-#: gtk/src/main.rs:2450 qt/src/view.rs:316
+#: gtk/src/main.rs:2464 qt/src/view.rs:316
 msgid "Teals"
 msgstr "Verde acqua"
 
-#: gtk/src/main.rs:2451 qt/src/view.rs:317
+#: gtk/src/main.rs:2465 qt/src/view.rs:317
 msgid "Blues"
 msgstr "Blu"
 
-#: gtk/src/main.rs:2452 qt/src/view.rs:318
+#: gtk/src/main.rs:2466 qt/src/view.rs:318
 msgid "Purples"
 msgstr "Viola"
 
-#: gtk/src/main.rs:2453 qt/src/view.rs:319
+#: gtk/src/main.rs:2467 qt/src/view.rs:319
 msgid "Magentas"
 msgstr "Magenta"
 
-#: gtk/src/main.rs:2583 qt/src/view.rs:359
+#: gtk/src/main.rs:2597 qt/src/view.rs:359
 msgid "As shot"
 msgstr "Come scattato"
 
-#: gtk/src/main.rs:2586 qt/src/view.rs:362
+#: gtk/src/main.rs:2600 qt/src/view.rs:362
 msgid "Daylight"
 msgstr "Luce diurna"
 
-#: gtk/src/main.rs:2587 qt/src/view.rs:363
+#: gtk/src/main.rs:2601 qt/src/view.rs:363
 msgid "Cloudy"
 msgstr "Nuvoloso"
 
-#: gtk/src/main.rs:2588 qt/src/view.rs:364
+#: gtk/src/main.rs:2602 qt/src/view.rs:364
 msgid "Shade"
 msgstr "Ombra"
 
-#: gtk/src/main.rs:2589 qt/src/view.rs:365
+#: gtk/src/main.rs:2603 qt/src/view.rs:365
 msgid "Tungsten"
 msgstr "Tungsteno"
 
-#: gtk/src/main.rs:2590 qt/src/view.rs:366
+#: gtk/src/main.rs:2604 qt/src/view.rs:366
 msgid "Fluorescent"
 msgstr "Fluorescente"
 
-#: gtk/src/main.rs:2591 qt/src/view.rs:367
+#: gtk/src/main.rs:2605 qt/src/view.rs:367
 msgid "Flash"
 msgstr "Flash"
 
-#: gtk/src/main.rs:2593 qt/src/view.rs:370
+#: gtk/src/main.rs:2607 qt/src/view.rs:370
 msgid "Custom"
 msgstr "Personalizzato"
 
-#: gtk/src/main.rs:2598 qt/qml/PhotoPage.qml:72
+#: gtk/src/main.rs:2612 qt/qml/PhotoPage.qml:72
 msgid "White balance preset"
 msgstr "Preset di bilanciamento del bianco"
 
-#: gtk/src/main.rs:2613 qt/qml/PhotoPage.qml:77
+#: gtk/src/main.rs:2627 qt/qml/PhotoPage.qml:77
 msgid "Pick a neutral grey on the photo (Escape cancels)"
 msgstr "Scegli un grigio neutro sulla foto (Esc annulla)"
 
-#: gtk/src/main.rs:2616
+#: gtk/src/main.rs:2630
 msgid "White balance picker"
 msgstr "Contagocce del bilanciamento del bianco"
 
-#: gtk/src/main.rs:2624 gtk/src/main.rs:3111 qt/qml/GradePage.qml:51
+#: gtk/src/main.rs:2638 gtk/src/main.rs:3125 qt/qml/GradePage.qml:51
 #: qt/qml/PhotoPage.qml:85
 msgid "Temperature"
 msgstr "Temperatura"
 
-#: gtk/src/main.rs:2626 gtk/src/main.rs:3112 qt/qml/GradePage.qml:52
+#: gtk/src/main.rs:2640 gtk/src/main.rs:3126 qt/qml/GradePage.qml:52
 #: qt/qml/PhotoPage.qml:95
 msgid "Tint"
 msgstr "Tinta"
 
-#: gtk/src/main.rs:2631 qt/qml/PhotoPage.qml:65
+#: gtk/src/main.rs:2645 qt/qml/PhotoPage.qml:65
 msgid "As in camera: white balance as shot"
 msgstr "Come in camera: bilanciamento del bianco come scattato"
 
-#: gtk/src/main.rs:2635 qt/qml/PhotoPage.qml:61
+#: gtk/src/main.rs:2649 qt/qml/PhotoPage.qml:61
 msgid "Light and colour"
 msgstr "Luce e colore"
 
-#: gtk/src/main.rs:2636 qt/qml/PhotoPage.qml:63
+#: gtk/src/main.rs:2650 qt/qml/PhotoPage.qml:63
 msgid "White balance"
 msgstr "Bilanciamento del bianco"
 
-#: gtk/src/main.rs:2639 gtk/src/main.rs:2647 gtk/src/main.rs:3116
+#: gtk/src/main.rs:2653 gtk/src/main.rs:2661 gtk/src/main.rs:3130
 #: gtk/src/meta_ui.rs:67 qt/qml/GradePage.qml:59 qt/qml/MetaPage.qml:57
 #: qt/qml/PhotoPage.qml:103 qt/qml/PhotoPage.qml:108
 msgid "Exposure"
 msgstr "Esposizione"
 
-#: gtk/src/main.rs:2643 qt/qml/PhotoPage.qml:105
+#: gtk/src/main.rs:2657 qt/qml/PhotoPage.qml:105
 msgid "As in camera: the exposure the camera asks for"
 msgstr "Come in camera: l'esposizione indicata dalla fotocamera"
 
-#: gtk/src/main.rs:2665 qt/qml/PhotoPage.qml:212
+#: gtk/src/main.rs:2679 qt/qml/PhotoPage.qml:212
 msgid "Classic"
 msgstr "Classica"
 
-#: gtk/src/main.rs:2665 qt/qml/PhotoPage.qml:212
+#: gtk/src/main.rs:2679 qt/qml/PhotoPage.qml:212
 msgid "AI"
 msgstr "IA"
 
-#: gtk/src/main.rs:2668 qt/qml/PhotoPage.qml:214
+#: gtk/src/main.rs:2682 qt/qml/PhotoPage.qml:214
 msgid "Noise reduction method"
 msgstr "Metodo di riduzione rumore"
 
-#: gtk/src/main.rs:2677
+#: gtk/src/main.rs:2691
 msgid "AI noise reduction progress"
 msgstr "Avanzamento della riduzione rumore IA"
 
-#: gtk/src/main.rs:2680 qt/qml/PhotoPage.qml:222
+#: gtk/src/main.rs:2694 qt/qml/PhotoPage.qml:222
 msgid "Stop and use classic noise reduction"
 msgstr "Interrompi e usa la riduzione rumore classica"
 
-#: gtk/src/main.rs:2686 qt/qml/PhotoPage.qml:220
+#: gtk/src/main.rs:2700 qt/qml/PhotoPage.qml:220
 msgid "Denoising…"
 msgstr "Riduzione rumore…"
 
-#: gtk/src/main.rs:2693 gtk/src/main.rs:2913 qt/qml/MatchPanel.qml:39
+#: gtk/src/main.rs:2707 gtk/src/main.rs:2927 qt/qml/MatchPanel.qml:39
 #: qt/qml/PhotoPage.qml:225
 msgid "Strength"
 msgstr "Intensità"
 
-#: gtk/src/main.rs:2694 gtk/src/main.rs:3177 qt/qml/GradePage.qml:148
+#: gtk/src/main.rs:2708 gtk/src/main.rs:3191 qt/qml/GradePage.qml:148
 #: qt/qml/PhotoPage.qml:226
 msgid "Luminance"
 msgstr "Luminanza"
 
-#: gtk/src/main.rs:2695 gtk/src/main.rs:2713 gtk/src/main.rs:2722
+#: gtk/src/main.rs:2709 gtk/src/main.rs:2727 gtk/src/main.rs:2736
 #: qt/qml/PhotoPage.qml:206 qt/qml/PhotoPage.qml:228 qt/qml/PhotoPage.qml:234
 msgid "Detail"
 msgstr "Dettaglio"
 
-#: gtk/src/main.rs:2697 qt/qml/PhotoPage.qml:231
+#: gtk/src/main.rs:2711 qt/qml/PhotoPage.qml:231
 msgid "Chrominance"
 msgstr "Crominanza"
 
-#: gtk/src/main.rs:2698 qt/qml/PhotoPage.qml:208
+#: gtk/src/main.rs:2712 qt/qml/PhotoPage.qml:208
 msgid "Noise reduction"
 msgstr "Riduzione del rumore"
 
-#: gtk/src/main.rs:2701 gtk/src/main.rs:3118 gtk/src/main.rs:3206
+#: gtk/src/main.rs:2715 gtk/src/main.rs:3132 gtk/src/main.rs:3220
 #: qt/qml/GradePage.qml:61 qt/qml/GradePage.qml:85 qt/qml/PhotoPage.qml:116
 msgid "Highlights"
 msgstr "Alte luci"
 
-#: gtk/src/main.rs:2702 gtk/src/main.rs:3119 gtk/src/main.rs:3206
+#: gtk/src/main.rs:2716 gtk/src/main.rs:3133 gtk/src/main.rs:3220
 #: qt/qml/GradePage.qml:62 qt/qml/GradePage.qml:85 qt/qml/PhotoPage.qml:117
 msgid "Shadows"
 msgstr "Ombre"
 
-#: gtk/src/main.rs:2704 qt/qml/PhotoPage.qml:118
+#: gtk/src/main.rs:2718 qt/qml/PhotoPage.qml:118
 msgid ""
 "Brightens or darkens whole areas and stops at their edges: no halos, detail "
 "kept."
@@ -864,102 +872,102 @@ msgstr ""
 "Schiarisce o scurisce aree intere e si ferma ai loro bordi: niente aloni, "
 "dettaglio conservato."
 
-#: gtk/src/main.rs:2706 qt/qml/PhotoPage.qml:114
+#: gtk/src/main.rs:2720 qt/qml/PhotoPage.qml:114
 msgid "Shadows and highlights"
 msgstr "Ombre e alte luci"
 
-#: gtk/src/main.rs:2708 qt/qml/PhotoPage.qml:123
+#: gtk/src/main.rs:2722 qt/qml/PhotoPage.qml:123
 msgid "Dehaze"
 msgstr "Rimozione foschia"
 
-#: gtk/src/main.rs:2709 qt/qml/PhotoPage.qml:124
+#: gtk/src/main.rs:2723 qt/qml/PhotoPage.qml:124
 msgid "Local contrast"
 msgstr "Contrasto locale"
 
-#: gtk/src/main.rs:2710 qt/qml/PhotoPage.qml:121
+#: gtk/src/main.rs:2724 qt/qml/PhotoPage.qml:121
 msgid "Presence"
 msgstr "Presenza"
 
-#: gtk/src/main.rs:2717 qt/qml/PhotoPage.qml:236
+#: gtk/src/main.rs:2731 qt/qml/PhotoPage.qml:236
 msgid "Capture sharpening"
 msgstr "Nitidezza di cattura"
 
-#: gtk/src/main.rs:2718 qt/qml/PhotoPage.qml:237
+#: gtk/src/main.rs:2732 qt/qml/PhotoPage.qml:237
 msgid "Capture radius"
 msgstr "Raggio di cattura"
 
-#: gtk/src/main.rs:2719 qt/qml/PhotoPage.qml:238
+#: gtk/src/main.rs:2733 qt/qml/PhotoPage.qml:238
 msgid "Sharpening"
 msgstr "Nitidezza"
 
-#: gtk/src/main.rs:2720 qt/qml/PhotoPage.qml:239
+#: gtk/src/main.rs:2734 qt/qml/PhotoPage.qml:239
 msgid "Sharpening radius"
 msgstr "Raggio nitidezza"
 
-#: gtk/src/main.rs:2721 qt/qml/PhotoPage.qml:240
+#: gtk/src/main.rs:2735 qt/qml/PhotoPage.qml:240
 msgid "Sharpening threshold"
 msgstr "Soglia nitidezza"
 
-#: gtk/src/main.rs:2729 gtk/src/main.rs:2750 qt/qml/PhotoPage.qml:135
+#: gtk/src/main.rs:2743 gtk/src/main.rs:2764 qt/qml/PhotoPage.qml:135
 #: qt/qml/PhotoPage.qml:144
 msgid "Distortion"
 msgstr "Distorsione"
 
-#: gtk/src/main.rs:2730 gtk/src/main.rs:2751 qt/qml/PhotoPage.qml:136
+#: gtk/src/main.rs:2744 gtk/src/main.rs:2765 qt/qml/PhotoPage.qml:136
 #: qt/qml/PhotoPage.qml:145
 msgid "Vignetting"
 msgstr "Vignettatura"
 
-#: gtk/src/main.rs:2742 qt/qml/PhotoPage.qml:138
+#: gtk/src/main.rs:2756 qt/qml/PhotoPage.qml:138
 msgid "Chromatic aberration"
 msgstr "Aberrazione cromatica"
 
-#: gtk/src/main.rs:2742 qt/qml/PhotoPage.qml:138
+#: gtk/src/main.rs:2756 qt/qml/PhotoPage.qml:138
 msgid "The profile's lateral CA correction"
 msgstr "La correzione della CA laterale del profilo"
 
-#: gtk/src/main.rs:2747 qt/qml/PhotoPage.qml:143
+#: gtk/src/main.rs:2761 qt/qml/PhotoPage.qml:143
 msgid "Manual corrections"
 msgstr "Correzioni manuali"
 
-#: gtk/src/main.rs:2752 gtk/src/main.rs:3326 qt/qml/PhotoPage.qml:146
+#: gtk/src/main.rs:2766 gtk/src/main.rs:3340 qt/qml/PhotoPage.qml:146
 #: qt/qml/PhotoPage.qml:249
 msgid "Midpoint"
 msgstr "Punto medio"
 
-#: gtk/src/main.rs:2753 qt/qml/PhotoPage.qml:147
+#: gtk/src/main.rs:2767 qt/qml/PhotoPage.qml:147
 msgid "Red/cyan fringe"
 msgstr "Frange rosso/ciano"
 
-#: gtk/src/main.rs:2754 qt/qml/PhotoPage.qml:148
+#: gtk/src/main.rs:2768 qt/qml/PhotoPage.qml:148
 msgid "Blue/yellow fringe"
 msgstr "Frange blu/giallo"
 
-#: gtk/src/main.rs:2755 qt/qml/PhotoPage.qml:149
+#: gtk/src/main.rs:2769 qt/qml/PhotoPage.qml:149
 msgid "Purple fringe"
 msgstr "Frange viola"
 
-#: gtk/src/main.rs:2756 qt/qml/PhotoPage.qml:150
+#: gtk/src/main.rs:2770 qt/qml/PhotoPage.qml:150
 msgid "Green fringe"
 msgstr "Frange verdi"
 
-#: gtk/src/main.rs:2758 qt/qml/PhotoPage.qml:152
+#: gtk/src/main.rs:2772 qt/qml/PhotoPage.qml:152
 msgid "Automatic chromatic aberration"
 msgstr "Aberrazione cromatica automatica"
 
-#: gtk/src/main.rs:2758 qt/qml/PhotoPage.qml:152
+#: gtk/src/main.rs:2772 qt/qml/PhotoPage.qml:152
 msgid "Removes red/cyan fringes"
 msgstr "Rimuove le frange rosse e ciano"
 
-#: gtk/src/main.rs:2763 qt/qml/PhotoPage.qml:129
+#: gtk/src/main.rs:2777 qt/qml/PhotoPage.qml:129
 msgid "Lens"
 msgstr "Obiettivo"
 
-#: gtk/src/main.rs:2804 qt/qml/CurveEditor.qml:36
+#: gtk/src/main.rs:2818 qt/qml/CurveEditor.qml:36
 msgid "Reset curve"
 msgstr "Ripristina curva"
 
-#: gtk/src/main.rs:2847 qt/qml/Mixer.qml:50
+#: gtk/src/main.rs:2861 qt/qml/Mixer.qml:50
 msgid ""
 "Like a colour filter on black & white film: more red brightens skin and "
 "darkens skies."
@@ -967,19 +975,19 @@ msgstr ""
 "Come un filtro colorato sulla pellicola in bianco e nero: più rosso "
 "schiarisce la pelle e scurisce il cielo."
 
-#: gtk/src/main.rs:2857 qt/qml/Mixer.qml:16
+#: gtk/src/main.rs:2871 qt/qml/Mixer.qml:16
 msgid "Black & white"
 msgstr "Bianco e nero"
 
-#: gtk/src/main.rs:2859 qt/qml/Mixer.qml:21
+#: gtk/src/main.rs:2873 qt/qml/Mixer.qml:21
 msgid "Preserve luminance"
 msgstr "Mantieni la luminanza"
 
-#: gtk/src/main.rs:2860 qt/qml/Mixer.qml:21
+#: gtk/src/main.rs:2874 qt/qml/Mixer.qml:21
 msgid "The mix changes colour, not brightness"
 msgstr "Il mix cambia il colore, non la luminosità"
 
-#: gtk/src/main.rs:2876 qt/qml/Mixer.qml:51
+#: gtk/src/main.rs:2890 qt/qml/Mixer.qml:51
 msgid ""
 "Each output channel is a mix of the scene's red, green and blue; 100% of its "
 "own channel is no change."
@@ -987,7 +995,7 @@ msgstr ""
 "Ogni canale in uscita è un mix del rosso, del verde e del blu della scena; "
 "100% del proprio canale non cambia nulla."
 
-#: gtk/src/main.rs:2890 qt/qml/MatchPanel.qml:12
+#: gtk/src/main.rs:2904 qt/qml/MatchPanel.qml:12
 msgid ""
 "Make this photo look like a reference: a film still, a photo you love. Tones "
 "and colours are matched; refine the rest with the other tools."
@@ -996,40 +1004,40 @@ msgstr ""
 "foto che ami. Toni e colori vengono abbinati; rifinisci il resto con gli "
 "altri strumenti."
 
-#: gtk/src/main.rs:2892 qt/qml/MatchPanel.qml:13
+#: gtk/src/main.rs:2906 qt/qml/MatchPanel.qml:13
 msgid "Choose Reference…"
 msgstr "Scegli riferimento…"
 
-#: gtk/src/main.rs:2894 gtk/src/main.rs:4602 qt/src/app.rs:1156
+#: gtk/src/main.rs:2908 gtk/src/main.rs:4616 qt/src/app.rs:1156
 #: qt/qml/MatchPanel.qml:18
 msgid "Camera JPEG"
 msgstr "JPEG della fotocamera"
 
-#: gtk/src/main.rs:2895 qt/qml/MatchPanel.qml:19
+#: gtk/src/main.rs:2909 qt/qml/MatchPanel.qml:19
 msgid "As in camera: match the JPEG the camera embedded in the RAW"
 msgstr "Come in camera: allinea al JPEG che la fotocamera ha incluso nel RAW"
 
-#: gtk/src/main.rs:2910 qt/qml/MatchPanel.qml:34
+#: gtk/src/main.rs:2924 qt/qml/MatchPanel.qml:34
 msgid "Reference photo"
 msgstr "Foto di riferimento"
 
-#: gtk/src/main.rs:2920 qt/qml/LensProfile.qml:21 qt/qml/MatchPanel.qml:45
+#: gtk/src/main.rs:2934 qt/qml/LensProfile.qml:21 qt/qml/MatchPanel.qml:45
 msgid "Change…"
 msgstr "Cambia…"
 
-#: gtk/src/main.rs:2946 qt/qml/PhotoPage.qml:45
+#: gtk/src/main.rs:2960 qt/qml/PhotoPage.qml:45
 msgid "HDR preview"
 msgstr "Anteprima HDR"
 
-#: gtk/src/main.rs:2947 qt/qml/PhotoPage.qml:46
+#: gtk/src/main.rs:2961 qt/qml/PhotoPage.qml:46
 msgid "On an HDR screen, the brighter highlights the HDR exports carry"
 msgstr "Su uno schermo HDR, le alte luci più brillanti degli export HDR"
 
-#: gtk/src/main.rs:2956 qt/qml/PhotoPage.qml:52
+#: gtk/src/main.rs:2970 qt/qml/PhotoPage.qml:52
 msgid "Headroom"
 msgstr "Headroom"
 
-#: gtk/src/main.rs:2962 qt/qml/PhotoPage.qml:56
+#: gtk/src/main.rs:2976 qt/qml/PhotoPage.qml:56
 msgid ""
 "Stops above SDR white the highlights of a RAW or log photo reach in the HDR "
 "exports (JPEG HDR, JPEG XL, AVIF, PNG HDR). The SDR photo, the grade and the "
@@ -1039,121 +1047,121 @@ msgstr ""
 "negli export HDR (JPEG HDR, JPEG XL, AVIF, PNG HDR). La foto SDR, il grade e "
 "la LUT restano come sono."
 
-#: gtk/src/main.rs:2989 qt/qml/Scopes.qml:20
+#: gtk/src/main.rs:3003 qt/qml/Scopes.qml:20
 msgid "Histogram"
 msgstr "Istogramma"
 
-#: gtk/src/main.rs:2990 qt/qml/Scopes.qml:20
+#: gtk/src/main.rs:3004 qt/qml/Scopes.qml:20
 msgid "Waveform"
 msgstr "Waveform"
 
-#: gtk/src/main.rs:2991 qt/qml/Scopes.qml:20
+#: gtk/src/main.rs:3005 qt/qml/Scopes.qml:20
 msgid "Vectorscope"
 msgstr "Vettorscopio"
 
-#: gtk/src/main.rs:2996 qt/qml/Scopes.qml:27
+#: gtk/src/main.rs:3010 qt/qml/Scopes.qml:27
 msgid "Skin tone line (K)"
 msgstr "Linea dell'incarnato (K)"
 
-#: gtk/src/main.rs:3001 gtk/src/main.rs:6038 qt/qml/Main.qml:339
+#: gtk/src/main.rs:3015 gtk/src/main.rs:6055 qt/qml/Main.qml:347
 msgid "Skin tone line"
 msgstr "Linea dell'incarnato"
 
-#: gtk/src/main.rs:3023 gtk/src/main.rs:3602 qt/qml/Scopes.qml:78
+#: gtk/src/main.rs:3037 gtk/src/main.rs:3616 qt/qml/Scopes.qml:78
 msgid "Drag to resize"
 msgstr "Trascina per ridimensionare"
 
-#: gtk/src/main.rs:3054 qt/qml/Sidebar.qml:52 qt/qml/Sidebar.qml:84
+#: gtk/src/main.rs:3068 qt/qml/Sidebar.qml:52 qt/qml/Sidebar.qml:84
 msgid "Keep scopes in view while scrolling"
 msgstr "Tieni gli scope in vista durante lo scorrimento"
 
-#: gtk/src/main.rs:3058
+#: gtk/src/main.rs:3072
 msgid "Pin scopes"
 msgstr "Fissa gli scope"
 
-#: gtk/src/main.rs:3059 qt/qml/Sidebar.qml:51 qt/qml/Sidebar.qml:83
+#: gtk/src/main.rs:3073 qt/qml/Sidebar.qml:51 qt/qml/Sidebar.qml:83
 msgid "Scopes"
 msgstr "Scope"
 
-#: gtk/src/main.rs:3064 gtk/src/main.rs:3080 qt/qml/PhotoPage.qml:32
+#: gtk/src/main.rs:3078 gtk/src/main.rs:3094 qt/qml/PhotoPage.qml:32
 #: qt/qml/PhotoPage.qml:37
 msgid "Input profile"
 msgstr "Profilo di ingresso"
 
-#: gtk/src/main.rs:3081 qt/qml/PhotoPage.qml:43
+#: gtk/src/main.rs:3095 qt/qml/PhotoPage.qml:43
 msgid "HDR"
 msgstr "HDR"
 
-#: gtk/src/main.rs:3082 qt/qml/PhotoPage.qml:59
+#: gtk/src/main.rs:3096 qt/qml/PhotoPage.qml:59
 msgid "Not in the exported LUT"
 msgstr "Non nel LUT esportato"
 
-#: gtk/src/main.rs:3087 qt/qml/PhotoPage.qml:127
+#: gtk/src/main.rs:3101 qt/qml/PhotoPage.qml:127
 msgid "Geometry"
 msgstr "Geometria"
 
-#: gtk/src/main.rs:3093 qt/qml/GradePage.qml:21
+#: gtk/src/main.rs:3107 qt/qml/GradePage.qml:21
 msgid "In the exported LUT"
 msgstr "Nel LUT esportato"
 
-#: gtk/src/main.rs:3099 qt/qml/GradePage.qml:43
+#: gtk/src/main.rs:3113 qt/qml/GradePage.qml:43
 msgid "Reference match"
 msgstr "Abbinamento a un riferimento"
 
-#: gtk/src/main.rs:3113 qt/qml/GradePage.qml:49
+#: gtk/src/main.rs:3127 qt/qml/GradePage.qml:49
 msgid "Warmth"
 msgstr "Calore"
 
-#: gtk/src/main.rs:3117 qt/qml/GradePage.qml:60
+#: gtk/src/main.rs:3131 qt/qml/GradePage.qml:60
 msgid "Contrast"
 msgstr "Contrasto"
 
-#: gtk/src/main.rs:3120 qt/qml/GradePage.qml:63
+#: gtk/src/main.rs:3134 qt/qml/GradePage.qml:63
 msgid "Whites"
 msgstr "Bianchi"
 
-#: gtk/src/main.rs:3121 qt/qml/GradePage.qml:64
+#: gtk/src/main.rs:3135 qt/qml/GradePage.qml:64
 msgid "Blacks"
 msgstr "Neri"
 
-#: gtk/src/main.rs:3122 qt/qml/GradePage.qml:57
+#: gtk/src/main.rs:3136 qt/qml/GradePage.qml:57
 msgid "Tone"
 msgstr "Tono"
 
-#: gtk/src/main.rs:3125 qt/qml/GradePage.qml:181
+#: gtk/src/main.rs:3139 qt/qml/GradePage.qml:181
 msgid "Channel mixer"
 msgstr "Miscelatore canali"
 
-#: gtk/src/main.rs:3128 gtk/src/main.rs:3177 qt/qml/GradePage.qml:112
+#: gtk/src/main.rs:3142 gtk/src/main.rs:3191 qt/qml/GradePage.qml:112
 #: qt/qml/GradePage.qml:148
 msgid "Saturation"
 msgstr "Saturazione"
 
-#: gtk/src/main.rs:3129 qt/qml/GradePage.qml:113
+#: gtk/src/main.rs:3143 qt/qml/GradePage.qml:113
 msgid "Vibrance"
 msgstr "Vividezza"
 
-#: gtk/src/main.rs:3130 qt/qml/GradePage.qml:114
+#: gtk/src/main.rs:3144 qt/qml/GradePage.qml:114
 msgid "Shadow saturation"
 msgstr "Saturazione ombre"
 
-#: gtk/src/main.rs:3131 qt/qml/GradePage.qml:115
+#: gtk/src/main.rs:3145 qt/qml/GradePage.qml:115
 msgid "Highlight saturation"
 msgstr "Saturazione alte luci"
 
-#: gtk/src/main.rs:3132 qt/qml/GradePage.qml:110
+#: gtk/src/main.rs:3146 qt/qml/GradePage.qml:110
 msgid "Colour"
 msgstr "Colore"
 
-#: gtk/src/main.rs:3135 qt/qml/GradePage.qml:174
+#: gtk/src/main.rs:3149 qt/qml/GradePage.qml:174
 msgid "Subtractive saturation"
 msgstr "Saturazione sottrattiva"
 
-#: gtk/src/main.rs:3136 qt/qml/GradePage.qml:175
+#: gtk/src/main.rs:3150 qt/qml/GradePage.qml:175
 msgid "Colour density"
 msgstr "Densità del colore"
 
-#: gtk/src/main.rs:3138 qt/qml/GradePage.qml:176
+#: gtk/src/main.rs:3152 qt/qml/GradePage.qml:176
 msgid ""
 "Film makes colour by adding dye, so richer colours are also deeper. "
 "Subtractive saturation saturates the way dye does; density deepens saturated "
@@ -1164,11 +1172,11 @@ msgstr ""
 "pigmento; la densità rende più profondi i colori saturi. I grigi non "
 "cambiano."
 
-#: gtk/src/main.rs:3140 qt/qml/GradePage.qml:177
+#: gtk/src/main.rs:3154 qt/qml/GradePage.qml:177
 msgid "Soft light"
 msgstr "Luce soffusa"
 
-#: gtk/src/main.rs:3142 qt/qml/GradePage.qml:178
+#: gtk/src/main.rs:3156 qt/qml/GradePage.qml:178
 msgid ""
 "Soft light deepens shadows and lifts highlights, as RawTherapee's; 30 is its "
 "default."
@@ -1176,31 +1184,31 @@ msgstr ""
 "La luce soffusa scurisce le ombre e schiarisce le luci, come in RawTherapee; "
 "il suo valore predefinito è 30."
 
-#: gtk/src/main.rs:3144 qt/qml/GradePage.qml:172
+#: gtk/src/main.rs:3158 qt/qml/GradePage.qml:172
 msgid "Film colour"
 msgstr "Colore pellicola"
 
-#: gtk/src/main.rs:3177 qt/qml/GradePage.qml:148
+#: gtk/src/main.rs:3191 qt/qml/GradePage.qml:148
 msgid "Hue"
 msgstr "Tonalità"
 
-#: gtk/src/main.rs:3185 qt/qml/GradePage.qml:120
+#: gtk/src/main.rs:3199 qt/qml/GradePage.qml:120
 msgid "Selective colour"
 msgstr "Colori selettivi"
 
-#: gtk/src/main.rs:3192 qt/qml/GradePage.qml:165
+#: gtk/src/main.rs:3206 qt/qml/GradePage.qml:165
 msgid "Hue vs Hue"
 msgstr "Tonalità/Tonalità"
 
-#: gtk/src/main.rs:3193 qt/qml/GradePage.qml:165
+#: gtk/src/main.rs:3207 qt/qml/GradePage.qml:165
 msgid "Hue vs Sat"
 msgstr "Tonalità/Sat."
 
-#: gtk/src/main.rs:3194 qt/qml/GradePage.qml:165
+#: gtk/src/main.rs:3208 qt/qml/GradePage.qml:165
 msgid "Lum vs Sat"
 msgstr "Lum./Sat."
 
-#: gtk/src/main.rs:3197 qt/qml/GradePage.qml:166
+#: gtk/src/main.rs:3211 qt/qml/GradePage.qml:166
 msgid ""
 "The middle line is no change. Pull a hue up or down to shift it, saturate or "
 "desaturate it; Lum vs Sat works by brightness."
@@ -1208,19 +1216,19 @@ msgstr ""
 "La linea centrale non cambia nulla. Alza o abbassa una tonalità per "
 "spostarla, saturarla o desaturarla; Lum./Sat. agisce in base alla luminosità."
 
-#: gtk/src/main.rs:3201 qt/qml/GradePage.qml:159
+#: gtk/src/main.rs:3215 qt/qml/GradePage.qml:159
 msgid "Hue curves"
 msgstr "Curve di tonalità"
 
-#: gtk/src/main.rs:3206 qt/qml/GradePage.qml:85
+#: gtk/src/main.rs:3220 qt/qml/GradePage.qml:85
 msgid "Midtones"
 msgstr "Mezzitoni"
 
-#: gtk/src/main.rs:3206 qt/qml/GradePage.qml:85
+#: gtk/src/main.rs:3220 qt/qml/GradePage.qml:85
 msgid "Global"
 msgstr "Globale"
 
-#: gtk/src/main.rs:3222 qt/qml/GradePage.qml:107
+#: gtk/src/main.rs:3236 qt/qml/GradePage.qml:107
 msgid ""
 "Drag a wheel's centre towards a colour to tint that range, away from it to "
 "remove it; Luma brightens or darkens it. Global moves the whole image. "
@@ -1233,144 +1241,144 @@ msgstr ""
 "coloristi: Ombre è il lift, Mezzitoni il gamma, Alte luci il gain, Globale "
 "l'offset."
 
-#: gtk/src/main.rs:3225 qt/qml/GradePage.qml:77
+#: gtk/src/main.rs:3239 qt/qml/GradePage.qml:77
 msgid "Primary colour wheels"
 msgstr "Ruote colore primarie"
 
-#: gtk/src/main.rs:3238 qt/qml/GradePage.qml:73
+#: gtk/src/main.rs:3252 qt/qml/GradePage.qml:73
 msgid "Click to add a point, double-click or right-click to remove it"
 msgstr "Clic per aggiungere un punto, doppio clic o clic destro per rimuoverlo"
 
-#: gtk/src/main.rs:3241 qt/qml/GradePage.qml:67
+#: gtk/src/main.rs:3255 qt/qml/GradePage.qml:67
 msgid "Curves"
 msgstr "Curve"
 
-#: gtk/src/main.rs:3246 qt/qml/Looks.qml:16
+#: gtk/src/main.rs:3260 qt/qml/Looks.qml:16
 msgid "No LUTs: the grade is exported as is."
 msgstr "Nessun LUT: il grade viene esportato così com'è."
 
-#: gtk/src/main.rs:3265 gtk/src/main.rs:6052 qt/qml/Looks.qml:47
-#: qt/qml/Main.qml:354
+#: gtk/src/main.rs:3279 gtk/src/main.rs:6069 qt/qml/Looks.qml:47
+#: qt/qml/Main.qml:362
 msgid "Browse LUTs"
 msgstr "Sfoglia LUT"
 
-#: gtk/src/main.rs:3266 qt/qml/Looks.qml:52
+#: gtk/src/main.rs:3280 qt/qml/Looks.qml:52
 msgid "Browse the LUT library on this photo (B)"
 msgstr "Sfoglia la libreria di LUT su questa foto (B)"
 
-#: gtk/src/main.rs:3273 gtk/src/main.rs:3278 qt/qml/Looks.qml:55
+#: gtk/src/main.rs:3287 gtk/src/main.rs:3292 qt/qml/Looks.qml:55
 msgid "Add a LUT from a file"
 msgstr "Aggiungi un LUT da file"
 
-#: gtk/src/main.rs:3287 qt/qml/LutBrowser.qml:16
+#: gtk/src/main.rs:3301 qt/qml/LutBrowser.qml:16
 msgid "Back to the grade (B)"
 msgstr "Torna al grade (B)"
 
-#: gtk/src/main.rs:3290
+#: gtk/src/main.rs:3304
 msgid "Back to the grade"
 msgstr "Torna al grade"
 
-#: gtk/src/main.rs:3295 gtk/src/main.rs:3309 gtk/src/main.rs:4565
+#: gtk/src/main.rs:3309 gtk/src/main.rs:3323 gtk/src/main.rs:4579
 #: qt/qml/GradePage.qml:36 qt/qml/LutBrowser.qml:17
 msgid "LUTs"
 msgstr "LUT"
 
-#: gtk/src/main.rs:3308 qt/qml/Looks.qml:57
+#: gtk/src/main.rs:3322 qt/qml/Looks.qml:57
 msgid ""
 "Applied after the grade, top to bottom, and included in the exported LUT."
 msgstr ""
 "Applicati dopo il grade, dall'alto in basso, e inclusi nel LUT esportato."
 
-#: gtk/src/main.rs:3313 qt/qml/GradePage.qml:34
+#: gtk/src/main.rs:3327 qt/qml/GradePage.qml:34
 msgid "Look"
 msgstr "Look"
 
-#: gtk/src/main.rs:3314 qt/qml/GradePage.qml:41
+#: gtk/src/main.rs:3328 qt/qml/GradePage.qml:41
 msgid "Balance"
 msgstr "Bilanciamento"
 
-#: gtk/src/main.rs:3315 qt/qml/GradePage.qml:55
+#: gtk/src/main.rs:3329 qt/qml/GradePage.qml:55
 msgid "Primaries"
 msgstr "Primarie"
 
-#: gtk/src/main.rs:3316 qt/qml/GradePage.qml:118
+#: gtk/src/main.rs:3330 qt/qml/GradePage.qml:118
 msgid "Secondaries"
 msgstr "Secondarie"
 
-#: gtk/src/main.rs:3317 qt/qml/GradePage.qml:170
+#: gtk/src/main.rs:3331 qt/qml/GradePage.qml:170
 msgid "Finishing"
 msgstr "Rifinitura"
 
-#: gtk/src/main.rs:3325 qt/qml/PhotoPage.qml:249
+#: gtk/src/main.rs:3339 qt/qml/PhotoPage.qml:249
 msgid "Amount"
 msgstr "Quantità"
 
-#: gtk/src/main.rs:3327 qt/qml/PhotoPage.qml:250
+#: gtk/src/main.rs:3341 qt/qml/PhotoPage.qml:250
 msgid "Roundness"
 msgstr "Rotondità"
 
-#: gtk/src/main.rs:3328 qt/qml/PhotoPage.qml:250
+#: gtk/src/main.rs:3342 qt/qml/PhotoPage.qml:250
 msgid "Feather"
 msgstr "Sfumatura"
 
-#: gtk/src/main.rs:3329 qt/qml/PhotoPage.qml:243
+#: gtk/src/main.rs:3343 qt/qml/PhotoPage.qml:243
 msgid "Effects"
 msgstr "Effetti"
 
-#: gtk/src/main.rs:3330 qt/qml/PhotoPage.qml:245
+#: gtk/src/main.rs:3344 qt/qml/PhotoPage.qml:245
 msgid "Vignette"
 msgstr "Vignettatura"
 
-#: gtk/src/main.rs:3340 qt/qml/Sidebar.qml:97
+#: gtk/src/main.rs:3354 qt/qml/Sidebar.qml:97
 msgid "Reset all"
 msgstr "Ripristina tutto"
 
-#: gtk/src/main.rs:3463
+#: gtk/src/main.rs:3477
 msgid "Grade preview"
 msgstr "Anteprima del grade"
 
-#: gtk/src/main.rs:3480 qt/qml/Main.qml:128
+#: gtk/src/main.rs:3494 qt/qml/Main.qml:133
 msgid "Show clipping (C)"
 msgstr "Mostra clipping (C)"
 
-#: gtk/src/main.rs:3482 gtk/src/main.rs:6037 qt/qml/Main.qml:338
+#: gtk/src/main.rs:3496 gtk/src/main.rs:6054 qt/qml/Main.qml:346
 msgid "Show clipping"
 msgstr "Mostra clipping"
 
-#: gtk/src/main.rs:3487 qt/qml/Filmstrip.qml:24
+#: gtk/src/main.rs:3501 qt/qml/Filmstrip.qml:24
 msgid "All photos in the filmstrip (G)"
 msgstr "Tutte le foto della pellicola (G)"
 
-#: gtk/src/main.rs:3490 gtk/src/main.rs:6039 qt/qml/Main.qml:340
+#: gtk/src/main.rs:3504 gtk/src/main.rs:6056 qt/qml/Main.qml:348
 msgid "Grid of all photos"
 msgstr "Griglia di tutte le foto"
 
-#: gtk/src/main.rs:3505 qt/qml/PhotoCanvas.qml:226
+#: gtk/src/main.rs:3519 qt/qml/PhotoCanvas.qml:234
 msgid "Clipped highlights"
 msgstr "Alte luci bruciate"
 
-#: gtk/src/main.rs:3506 qt/qml/PhotoCanvas.qml:226
+#: gtk/src/main.rs:3520 qt/qml/PhotoCanvas.qml:234
 msgid "Crushed blacks"
 msgstr "Neri chiusi"
 
-#: gtk/src/main.rs:3507 qt/qml/PhotoCanvas.qml:226
+#: gtk/src/main.rs:3521 qt/qml/PhotoCanvas.qml:234
 msgid "Out of gamut"
 msgstr "Fuori gamut"
 
-#: gtk/src/main.rs:3546 qt/qml/Main.qml:250
+#: gtk/src/main.rs:3560 qt/qml/Main.qml:258
 msgid "Show the filmstrip"
 msgstr "Mostra la pellicola"
 
-#: gtk/src/main.rs:3546 gtk/src/main.rs:3551 gtk/src/main.rs:3552
-#: qt/qml/Main.qml:250
+#: gtk/src/main.rs:3560 gtk/src/main.rs:3565 gtk/src/main.rs:3566
+#: qt/qml/Main.qml:258
 msgid "Hide the filmstrip"
 msgstr "Nascondi la pellicola"
 
-#: gtk/src/main.rs:3574 qt/qml/PhotoCanvas.qml:72
+#: gtk/src/main.rs:3588 qt/qml/PhotoCanvas.qml:73
 msgid "Open a photo"
 msgstr "Apri una foto"
 
-#: gtk/src/main.rs:3575 qt/qml/PhotoCanvas.qml:78
+#: gtk/src/main.rs:3589 qt/qml/PhotoCanvas.qml:79
 msgid ""
 "Drop camera RAWs, JPEGs, TIFFs or PNGs here, or choose files. Open several "
 "to edit them together.\n"
@@ -1380,161 +1388,153 @@ msgstr ""
 "Aprine più di uno per modificarli insieme.\n"
 "Ogni grade si può esportare anche come LUT .cube."
 
-#: gtk/src/main.rs:3576 qt/qml/PhotoCanvas.qml:85
+#: gtk/src/main.rs:3590 qt/qml/PhotoCanvas.qml:86
 msgid "Open Photo…"
 msgstr "Apri foto…"
 
-#: gtk/src/main.rs:3605 qt/qml/Main.qml:226
+#: gtk/src/main.rs:3619 qt/qml/Main.qml:234
 msgid "Resize the sidebar"
 msgstr "Ridimensiona il pannello laterale"
 
-#: gtk/src/main.rs:3671 gtk/src/main.rs:4059 qt/qml/LutBrowser.qml:29
+#: gtk/src/main.rs:3685 gtk/src/main.rs:4073 qt/qml/LutBrowser.qml:29
 #: qt/qml/PrefsDialog.qml:59
 msgid "No folder"
 msgstr "Nessuna cartella"
 
-#: gtk/src/main.rs:3679 qt/qml/LutBrowser.qml:18 qt/qml/LutBrowser.qml:56
+#: gtk/src/main.rs:3693 qt/qml/LutBrowser.qml:18 qt/qml/LutBrowser.qml:56
 msgid "Choose LUT folder"
 msgstr "Scegli cartella LUT"
 
-#: gtk/src/main.rs:3688 qt/qml/LutBrowser.qml:22
+#: gtk/src/main.rs:3702 qt/qml/LutBrowser.qml:22
 msgid "Open the selected LUT in LUT Lab (to convert or combine it)"
 msgstr "Apri il LUT selezionato nel LUT Lab (per convertirlo o combinarlo)"
 
-#: gtk/src/main.rs:3697 qt/qml/LutBrowser.qml:19
+#: gtk/src/main.rs:3711 qt/qml/LutBrowser.qml:19
 msgid "Reload LUTs (F5)"
 msgstr "Ricarica i LUT (F5)"
 
-#: gtk/src/main.rs:3705 qt/qml/LutBrowser.qml:46
+#: gtk/src/main.rs:3719 qt/qml/LutBrowser.qml:46
 msgid "Subfolder"
 msgstr "Sottocartella"
 
-#: gtk/src/main.rs:3709 gtk/src/main.rs:6053 qt/qml/LutBrowser.qml:35
-#: qt/qml/Main.qml:355
+#: gtk/src/main.rs:3723 gtk/src/main.rs:6070 qt/qml/LutBrowser.qml:35
+#: qt/qml/Main.qml:363
 msgid "Search LUTs"
 msgstr "Cerca LUT"
 
-#: gtk/src/main.rs:3720 qt/qml/LutBrowser.qml:54
+#: gtk/src/main.rs:3734 qt/qml/LutBrowser.qml:54
 msgid "No LUTs"
 msgstr "Nessun LUT"
 
-#: gtk/src/main.rs:3721 qt/qml/LutBrowser.qml:55
+#: gtk/src/main.rs:3735 qt/qml/LutBrowser.qml:55
 msgid "Choose a folder with .cube files"
 msgstr "Scegli una cartella con file .cube"
 
-#: gtk/src/main.rs:3806 qt/qml/Main.qml:88
+#: gtk/src/main.rs:3820 qt/qml/Main.qml:93
 msgid "Open Photo (Ctrl+O)"
 msgstr "Apri foto (Ctrl+O)"
 
-#: gtk/src/main.rs:3812 qt/qml/Main.qml:90
+#: gtk/src/main.rs:3826 qt/qml/Main.qml:95
 msgid "Undo (Ctrl+Z)"
 msgstr "Annulla (Ctrl+Z)"
 
-#: gtk/src/main.rs:3813 qt/qml/Main.qml:91
+#: gtk/src/main.rs:3827 qt/qml/Main.qml:96
 msgid "Redo (Ctrl+Shift+Z)"
 msgstr "Ripeti (Ctrl+Maiusc+Z)"
 
-#: gtk/src/main.rs:3822
+#: gtk/src/main.rs:3836
 #, rust-format
 msgid "{} stars ({})"
 msgstr "{} stelle ({})"
 
-#: gtk/src/main.rs:3835 qt/qml/Main.qml:116
+#: gtk/src/main.rs:3849 qt/qml/Main.qml:121
 msgid "Test chart: shows what the LUT does to neutrals, hues and skin (T)"
 msgstr "Test chart: mostra cosa fa il LUT a neutri, tonalità e pelli (T)"
 
-#: gtk/src/main.rs:3845 qt/qml/Main.qml:110
+#: gtk/src/main.rs:3859 qt/qml/Main.qml:115
 msgid "As in camera: white balance and exposure as shot"
 msgstr "Come in camera: bilanciamento del bianco ed esposizione come scattati"
 
-#: gtk/src/main.rs:3854 qt/qml/Main.qml:194
+#: gtk/src/main.rs:3868 qt/qml/Main.qml:202
 msgid "Default"
 msgstr "Predefinito"
 
-#: gtk/src/main.rs:3855 qt/qml/Main.qml:194
+#: gtk/src/main.rs:3869 qt/qml/Main.qml:202
 msgid "Black"
 msgstr "Nero"
 
-#: gtk/src/main.rs:3856 qt/qml/Main.qml:194
+#: gtk/src/main.rs:3870 qt/qml/Main.qml:202
 msgid "White"
 msgstr "Bianco"
 
-#: gtk/src/main.rs:3857 qt/qml/Main.qml:192
+#: gtk/src/main.rs:3871 qt/qml/Main.qml:200
 msgid "Preview background"
 msgstr "Sfondo anteprima"
 
-#: gtk/src/main.rs:3859 qt/qml/Main.qml:204
+#: gtk/src/main.rs:3873 qt/qml/Main.qml:212
 msgid "Copy Edits"
 msgstr "Copia modifiche"
 
-#: gtk/src/main.rs:3860 qt/qml/Main.qml:205
+#: gtk/src/main.rs:3874 qt/qml/Main.qml:213
 msgid "Paste Edits"
 msgstr "Incolla modifiche"
 
-#: gtk/src/main.rs:3861 qt/qml/Main.qml:206
+#: gtk/src/main.rs:3875 qt/qml/Main.qml:214
 msgid "Paste Edits to All Photos"
 msgstr "Incolla modifiche su tutte le foto"
 
-#: gtk/src/main.rs:3862 qt/qml/Main.qml:207
+#: gtk/src/main.rs:3876 qt/qml/Main.qml:215
 msgid "Reset All Edits"
 msgstr "Azzera tutte le modifiche"
 
-#: gtk/src/main.rs:3865 qt/qml/Main.qml:209
+#: gtk/src/main.rs:3879 qt/qml/Main.qml:217
 msgid "Merge Brackets to HDR…"
 msgstr "Unisci bracketing in HDR…"
 
-#: gtk/src/main.rs:3868 gtk/src/main.rs:6055 gtk/src/meta_ui.rs:145
-#: qt/src/view.rs:218 qt/qml/Main.qml:212 qt/qml/Main.qml:357
+#: gtk/src/main.rs:3882 gtk/src/main.rs:6072 gtk/src/meta_ui.rs:145
+#: qt/src/view.rs:218 qt/qml/Main.qml:220 qt/qml/Main.qml:365
 #: qt/qml/PrefsDialog.qml:11
 msgid "Preferences"
 msgstr "Preferenze"
 
-#: gtk/src/main.rs:3869 gtk/src/main.rs:6056 qt/qml/Main.qml:213
-#: qt/qml/Main.qml:358 qt/qml/ShortcutsDialog.qml:11
+#: gtk/src/main.rs:3883 gtk/src/main.rs:6073 qt/qml/Main.qml:221
+#: qt/qml/Main.qml:366 qt/qml/ShortcutsDialog.qml:11
 msgid "Keyboard Shortcuts"
 msgstr "Scorciatoie da tastiera"
 
-#: gtk/src/main.rs:3870 qt/qml/Main.qml:214
+#: gtk/src/main.rs:3884 qt/qml/Main.qml:222
 msgid "About RawVibes"
 msgstr "Informazioni su RawVibes"
 
-#: gtk/src/main.rs:3877 qt/qml/Main.qml:170
+#: gtk/src/main.rs:3891 qt/qml/Main.qml:178
 msgid "Main Menu"
 msgstr "Menu principale"
 
-#: gtk/src/main.rs:3886 qt/qml/Main.qml:141
-msgid "Export the edited photo (Ctrl+E)"
-msgstr "Esporta la foto modificata (Ctrl+E)"
-
-#: gtk/src/main.rs:3887 qt/qml/Main.qml:150
-msgid "Photo and LUT formats"
-msgstr "Formati foto e LUT"
-
-#: gtk/src/main.rs:3896 qt/qml/Main.qml:122
+#: gtk/src/main.rs:3910 qt/qml/Main.qml:127
 msgid "Before / after (\\)"
 msgstr "Prima / dopo (\\)"
 
-#: gtk/src/main.rs:3901 qt/qml/Main.qml:92
+#: gtk/src/main.rs:3915 qt/qml/Main.qml:97
 msgid "Copy edits (Ctrl+Shift+C)"
 msgstr "Copia modifiche (Ctrl+Maiusc+C)"
 
-#: gtk/src/main.rs:3903 qt/qml/Main.qml:93
+#: gtk/src/main.rs:3917 qt/qml/Main.qml:98
 msgid "Paste edits (Ctrl+Shift+V)"
 msgstr "Incolla modifiche (Ctrl+Maiusc+V)"
 
-#: gtk/src/main.rs:3906 qt/qml/Main.qml:96
+#: gtk/src/main.rs:3920 qt/qml/Main.qml:101
 msgid "Paste edits to every photo in the filmstrip, crops kept"
 msgstr "Incolla le modifiche su tutte le foto della pellicola, ritagli esclusi"
 
-#: gtk/src/main.rs:3912
+#: gtk/src/main.rs:3926
 msgid "Fullscreen (F11)"
 msgstr "Schermo intero (F11)"
 
-#: gtk/src/main.rs:3928 qt/qml/Main.qml:173
+#: gtk/src/main.rs:3942 qt/qml/Main.qml:181
 msgid "Show panel"
 msgstr "Mostra pannello"
 
-#: gtk/src/main.rs:4036 qt/qml/Main.qml:316
+#: gtk/src/main.rs:4050 qt/qml/Main.qml:324
 msgid ""
 "RAW development, colour grading and 3D .cube LUT creation, GPU accelerated "
 "(Vulkan/Metal)."
@@ -1542,29 +1542,29 @@ msgstr ""
 "Sviluppo RAW, color grading e creazione di LUT 3D .cube, accelerato su GPU "
 "(Vulkan/Metal)."
 
-#: gtk/src/main.rs:4050 qt/qml/PrefsDialog.qml:61
+#: gtk/src/main.rs:4064 qt/qml/PrefsDialog.qml:61
 msgid "Choose folder"
 msgstr "Scegli cartella"
 
-#: gtk/src/main.rs:4058 gtk/src/main.rs:5234 qt/qml/PrefsDialog.qml:58
+#: gtk/src/main.rs:4072 gtk/src/main.rs:5252 qt/qml/PrefsDialog.qml:58
 msgid "LUT folder"
 msgstr "Cartella LUT"
 
-#: gtk/src/main.rs:4064 qt/qml/PrefsDialog.qml:51
+#: gtk/src/main.rs:4078 qt/qml/PrefsDialog.qml:51
 msgid "LUT library"
 msgstr "Libreria LUT"
 
-#: gtk/src/main.rs:4065 qt/qml/PrefsDialog.qml:52
+#: gtk/src/main.rs:4079 qt/qml/PrefsDialog.qml:52
 msgid "LUT files in this folder and its subfolders appear in the LUT browser."
 msgstr ""
 "I file LUT di questa cartella e delle sue sottocartelle compaiono nel "
 "browser dei LUT."
 
-#: gtk/src/main.rs:4071 qt/qml/PrefsDialog.qml:64
+#: gtk/src/main.rs:4085 qt/qml/PrefsDialog.qml:64
 msgid "Preview while editing"
 msgstr "Anteprima durante le modifiche"
 
-#: gtk/src/main.rs:4073 qt/qml/PrefsDialog.qml:71
+#: gtk/src/main.rs:4087 qt/qml/PrefsDialog.qml:71
 msgid ""
 "Faster previews are softer while you drag. Automatic measures this "
 "computer's graphics card and keeps dragging smooth."
@@ -1572,15 +1572,15 @@ msgstr ""
 "Le anteprime più veloci sono più morbide mentre trascini. Automatica misura "
 "la scheda grafica di questo computer e mantiene il trascinamento fluido."
 
-#: gtk/src/main.rs:4080 qt/qml/PrefsDialog.qml:63
+#: gtk/src/main.rs:4094 qt/qml/PrefsDialog.qml:63
 msgid "RAW development"
 msgstr "Sviluppo RAW"
 
-#: gtk/src/main.rs:4083 qt/qml/PrefsDialog.qml:73
+#: gtk/src/main.rs:4097 qt/qml/PrefsDialog.qml:73
 msgid "Sharpen the preview when you stop"
 msgstr "Rendi nitida l'anteprima quando ti fermi"
 
-#: gtk/src/main.rs:4085 qt/qml/PrefsDialog.qml:74
+#: gtk/src/main.rs:4099 qt/qml/PrefsDialog.qml:74
 msgid ""
 "Renders the full-quality frame after each change. Turn off on slower "
 "computers to keep editing responsive."
@@ -1588,11 +1588,11 @@ msgstr ""
 "Calcola il fotogramma a piena qualità dopo ogni modifica. Disattivala sui "
 "computer più lenti per mantenere la modifica reattiva."
 
-#: gtk/src/main.rs:4093 qt/qml/PrefsDialog.qml:79
+#: gtk/src/main.rs:4107 qt/qml/PrefsDialog.qml:79
 msgid "Open RAWs as in camera"
 msgstr "Apri i RAW come in camera"
 
-#: gtk/src/main.rs:4094 qt/qml/PrefsDialog.qml:80
+#: gtk/src/main.rs:4108 qt/qml/PrefsDialog.qml:80
 msgid ""
 "A RAW you have not edited yet starts from the camera's white balance and "
 "exposure."
@@ -1600,277 +1600,277 @@ msgstr ""
 "Un RAW non ancora modificato parte dal bilanciamento del bianco e "
 "dall'esposizione della fotocamera."
 
-#: gtk/src/main.rs:4101 qt/qml/PrefsDialog.qml:20
+#: gtk/src/main.rs:4115 qt/qml/PrefsDialog.qml:20
 msgid "General"
 msgstr "Generale"
 
-#: gtk/src/main.rs:4383 gtk/src/main.rs:6024 gtk/src/main.rs:6265
-#: qt/qml/Main.qml:324
+#: gtk/src/main.rs:4397 gtk/src/main.rs:6041 gtk/src/main.rs:6282
+#: qt/qml/Main.qml:332
 msgid "Open Photo"
 msgstr "Apri foto"
 
-#: gtk/src/main.rs:4396
+#: gtk/src/main.rs:4410
 msgid "Merge Brackets to HDR"
 msgstr "Unisci bracketing in HDR"
 
-#: gtk/src/main.rs:4406 qt/src/app.rs:975
+#: gtk/src/main.rs:4420 qt/src/app.rs:975
 msgid "Pick two or more RAWs of the same scene at different exposures"
 msgstr "Scegli due o più RAW della stessa scena a esposizioni diverse"
 
-#: gtk/src/main.rs:4412 qt/src/app.rs:981
+#: gtk/src/main.rs:4426 qt/src/app.rs:981
 #, rust-format
 msgid "Merging {} photos to HDR…"
 msgstr "Unione di {} foto in HDR…"
 
-#: gtk/src/main.rs:4420 qt/src/app.rs:989
+#: gtk/src/main.rs:4434 qt/src/app.rs:989
 #, rust-format
 msgid "HDR merge saved: {}"
 msgstr "Unione HDR salvata: {}"
 
-#: gtk/src/main.rs:4423 qt/src/app.rs:992
+#: gtk/src/main.rs:4437 qt/src/app.rs:992
 #, rust-format
 msgid "HDR merge failed: {}"
 msgstr "Unione HDR non riuscita: {}"
 
-#: gtk/src/main.rs:4456 gtk/src/main.rs:4950 qt/src/app.rs:1022
+#: gtk/src/main.rs:4470 gtk/src/main.rs:4964 qt/src/app.rs:1022
 #: qt/src/app.rs:1423
 #, rust-format
 msgid "Cannot open {}: {}"
 msgstr "Impossibile aprire {}: {}"
 
-#: gtk/src/main.rs:4528 qt/src/app.rs:1086
+#: gtk/src/main.rs:4542 qt/src/app.rs:1086
 #, rust-format
 msgid "{} LUTs of this photo are missing"
 msgstr "Mancano {} LUT di questa foto"
 
-#: gtk/src/main.rs:4541 qt/src/app.rs:1104
+#: gtk/src/main.rs:4555 qt/src/app.rs:1104
 msgid "No camera JPEG to match the tone curve to"
 msgstr "Nessun JPEG della fotocamera a cui adattare la curva tonale"
 
-#: gtk/src/main.rs:4548 qt/src/app.rs:1111
+#: gtk/src/main.rs:4562 qt/src/app.rs:1111
 msgid "Tone curve matched to the camera JPEG"
 msgstr "Curva tonale adattata al JPEG della fotocamera"
 
-#: gtk/src/main.rs:4554 qt/src/app.rs:1122
+#: gtk/src/main.rs:4568 qt/src/app.rs:1122
 #, rust-format
 msgid "The camera applied the LUT “{}” at {}%"
 msgstr "La fotocamera ha applicato il LUT “{}” al {}%"
 
-#: gtk/src/main.rs:4556 qt/src/app.rs:1124
+#: gtk/src/main.rs:4570 qt/src/app.rs:1124
 msgid "Use LUT"
 msgstr "Usa il LUT"
 
-#: gtk/src/main.rs:4559 qt/src/app.rs:1127
+#: gtk/src/main.rs:4573 qt/src/app.rs:1127
 #, rust-format
 msgid "The camera applied the LUT “{}”: not in your LUT folder"
 msgstr "La fotocamera ha applicato il LUT “{}”: non è nella tua cartella LUT"
 
-#: gtk/src/main.rs:4560 qt/src/app.rs:1128
+#: gtk/src/main.rs:4574 qt/src/app.rs:1128
 msgid "Find…"
 msgstr "Trova…"
 
-#: gtk/src/main.rs:4564
+#: gtk/src/main.rs:4578
 #, rust-format
 msgid "Find the LUT “{}”"
 msgstr "Trova il LUT “{}”"
 
-#: gtk/src/main.rs:4610 qt/src/app.rs:1164
+#: gtk/src/main.rs:4624 qt/src/app.rs:1164
 msgid "This RAW has no camera JPEG to match"
 msgstr "Questo RAW non contiene un JPEG della fotocamera da seguire"
 
-#: gtk/src/main.rs:4614 gtk/src/main.rs:4635 gtk/src/main.rs:4645
+#: gtk/src/main.rs:4628 gtk/src/main.rs:4649 gtk/src/main.rs:4659
 #: qt/src/app.rs:1168 qt/src/app.rs:1190 qt/src/app.rs:1200
 #, rust-format
 msgid "Cannot save the setting: {}"
 msgstr "Impossibile salvare l'impostazione: {}"
 
-#: gtk/src/main.rs:4699 qt/src/app/flows.rs:745
+#: gtk/src/main.rs:4713 qt/src/app/flows.rs:745
 #, rust-format
 msgid "Cannot read the edits saved for {}: {}"
 msgstr "Impossibile leggere le modifiche salvate per {}: {}"
 
-#: gtk/src/main.rs:4788 qt/src/app.rs:1280
+#: gtk/src/main.rs:4802 qt/src/app.rs:1280
 msgid "All edits cleared"
 msgstr "Tutte le modifiche azzerate"
 
-#: gtk/src/main.rs:4854 qt/src/app.rs:1334
+#: gtk/src/main.rs:4868 qt/src/app.rs:1334
 msgid "Edits copied"
 msgstr "Modifiche copiate"
 
-#: gtk/src/main.rs:4862 qt/src/app.rs:1342
+#: gtk/src/main.rs:4876 qt/src/app.rs:1342
 msgid "Edits pasted: Ctrl+Z undoes it"
 msgstr "Modifiche incollate: Ctrl+Z per annullare"
 
-#: gtk/src/main.rs:4872 qt/src/app.rs:1351
+#: gtk/src/main.rs:4886 qt/src/app.rs:1351
 #, rust-format
 msgid "Edits pasted onto {} more photos (crops kept)"
 msgstr "Modifiche incollate su altre {} foto (ritagli invariati)"
 
-#: gtk/src/main.rs:4875 qt/src/app.rs:1354
+#: gtk/src/main.rs:4889 qt/src/app.rs:1354
 #, rust-format
 msgid "Edits pasted onto {} more photos, {} failed: {}"
 msgstr "Modifiche incollate su altre {} foto, {} non riuscite: {}"
 
-#: gtk/src/main.rs:4920
+#: gtk/src/main.rs:4934
 msgid "Choose Reference"
 msgstr "Scegli riferimento"
 
-#: gtk/src/main.rs:4993 qt/src/app.rs:1481
+#: gtk/src/main.rs:5007 qt/src/app.rs:1481
 #, rust-format
 msgid "Preset “{}” saved"
 msgstr "Preset “{}” salvato"
 
-#: gtk/src/main.rs:4994 gtk/src/main.rs:5051 qt/src/app.rs:1482
+#: gtk/src/main.rs:5008 gtk/src/main.rs:5065 qt/src/app.rs:1482
 #: qt/src/app.rs:1542
 #, rust-format
 msgid "Cannot save the preset: {}"
 msgstr "Impossibile salvare il preset: {}"
 
-#: gtk/src/main.rs:5002 qt/src/app.rs:1491
+#: gtk/src/main.rs:5016 qt/src/app.rs:1491
 #, rust-format
 msgid "Preset “{}” applied"
 msgstr "Preset “{}” applicato"
 
-#: gtk/src/main.rs:5006 qt/src/app.rs:1495
+#: gtk/src/main.rs:5020 qt/src/app.rs:1495
 #, rust-format
 msgid "Cannot read the preset: {}"
 msgstr "Impossibile leggere il preset: {}"
 
-#: gtk/src/main.rs:5012 qt/src/app.rs:1500
+#: gtk/src/main.rs:5026 qt/src/app.rs:1500
 #, rust-format
 msgid "Cannot delete the preset: {}"
 msgstr "Impossibile eliminare il preset: {}"
 
-#: gtk/src/main.rs:5016 qt/src/app.rs:1504
+#: gtk/src/main.rs:5030 qt/src/app.rs:1504
 #, rust-format
 msgid "Preset “{}” deleted"
 msgstr "Preset “{}” eliminato"
 
-#: gtk/src/main.rs:5022 qt/src/app.rs:1510
+#: gtk/src/main.rs:5036 qt/src/app.rs:1510
 #, rust-format
 msgid "Cannot restore the preset: {}"
 msgstr "Impossibile ripristinare il preset: {}"
 
-#: gtk/src/main.rs:5027
+#: gtk/src/main.rs:5041
 msgid "Import Preset"
 msgstr "Importa preset"
 
-#: gtk/src/main.rs:5034 qt/src/app.rs:1525
+#: gtk/src/main.rs:5048 qt/src/app.rs:1525
 #, rust-format
 msgid "Not a valid preset: {}"
 msgstr "Preset non valido: {}"
 
-#: gtk/src/main.rs:5039
+#: gtk/src/main.rs:5053
 msgid "Export Preset"
 msgstr "Esporta preset"
 
-#: gtk/src/main.rs:5050 qt/src/app.rs:1541
+#: gtk/src/main.rs:5064 qt/src/app.rs:1541
 #, rust-format
 msgid "Preset saved: {}"
 msgstr "Preset salvato: {}"
 
-#: gtk/src/main.rs:5079
+#: gtk/src/main.rs:5093
 #, rust-format
 msgid "Export {}"
 msgstr "Esporta {}"
 
-#: gtk/src/main.rs:5120 qt/src/app.rs:1616
+#: gtk/src/main.rs:5138 qt/src/app.rs:1616
 msgid "Open a photo to export it"
 msgstr "Apri una foto per esportarla"
 
-#: gtk/src/main.rs:5174 qt/src/app.rs:1681
+#: gtk/src/main.rs:5192 qt/src/app.rs:1681
 #, rust-format
 msgid "about {}"
 msgstr "circa {}"
 
-#: gtk/src/main.rs:5189
+#: gtk/src/main.rs:5207
 msgid "Export Photos To"
 msgstr "Esporta le foto in"
 
-#: gtk/src/main.rs:5245 qt/src/app.rs:1709
+#: gtk/src/main.rs:5263 qt/src/app.rs:1709
 #, rust-format
 msgid "Cannot save the LUT folder: {}"
 msgstr "Impossibile salvare la cartella LUT: {}"
 
-#: gtk/src/main.rs:5261 qt/src/app/flows.rs:858
+#: gtk/src/main.rs:5279 qt/src/app/flows.rs:858
 #, rust-format
 msgid "{} files skipped: {}"
 msgstr "{} file ignorati: {}"
 
-#: gtk/src/main.rs:5277 qt/src/app/flows.rs:865
+#: gtk/src/main.rs:5295 qt/src/app/flows.rs:865
 #, rust-format
 msgid "Very large library: showing the first {} LUTs"
 msgstr "Libreria molto grande: mostrati i primi {} LUT"
 
-#: gtk/src/main.rs:5317 qt/src/view.rs:91
+#: gtk/src/main.rs:5335 qt/src/view.rs:91
 msgid "All folders"
 msgstr "Tutte le cartelle"
 
-#: gtk/src/main.rs:5319 qt/src/view.rs:92
+#: gtk/src/main.rs:5337 qt/src/view.rs:92
 msgid "Main folder"
 msgstr "Cartella principale"
 
-#: gtk/src/main.rs:5425 gtk/src/main.rs:5531 qt/src/app.rs:1777
+#: gtk/src/main.rs:5443 gtk/src/main.rs:5549 qt/src/app.rs:1777
 #: qt/src/app.rs:1873
 #, rust-format
 msgid "Cannot read {}: {}"
 msgstr "Impossibile leggere {}: {}"
 
-#: gtk/src/main.rs:5501 qt/src/app.rs:1849
+#: gtk/src/main.rs:5519 qt/src/app.rs:1849
 msgid "Select a LUT in the browser first"
 msgstr "Seleziona prima un LUT nel browser"
 
-#: gtk/src/main.rs:5505
+#: gtk/src/main.rs:5523
 msgid "Add LUT"
 msgstr "Aggiungi LUT"
 
-#: gtk/src/main.rs:5506
+#: gtk/src/main.rs:5524
 msgid "LUTs (.cube, .vlt, HALD .png)"
 msgstr "LUT (.cube, .vlt, HALD .png)"
 
-#: gtk/src/main.rs:5586 qt/src/app.rs:1908
+#: gtk/src/main.rs:5604 qt/src/app.rs:1908
 msgid "The LUT folder was moved or deleted: press F5 to choose it again"
 msgstr ""
 "La cartella dei LUT è stata spostata o eliminata: premi F5 per sceglierla di "
 "nuovo"
 
-#: gtk/src/main.rs:5833 qt/src/app/flows.rs:1377
+#: gtk/src/main.rs:5850 qt/src/app/flows.rs:1377
 #, rust-format
 msgid "GPU error: {}"
 msgstr "Errore GPU: {}"
 
-#: gtk/src/main.rs:5856 qt/src/app/flows.rs:1397
+#: gtk/src/main.rs:5873 qt/src/app/flows.rs:1397
 #, rust-format
 msgid "LUT saved: {}"
 msgstr "LUT salvato: {}"
 
-#: gtk/src/main.rs:5858 gtk/src/main.rs:5889 qt/src/app/flows.rs:1398
+#: gtk/src/main.rs:5875 gtk/src/main.rs:5906 qt/src/app/flows.rs:1398
 #: qt/src/app/flows.rs:1431
 #, rust-format
 msgid "Export failed: {}"
 msgstr "Esportazione fallita: {}"
 
-#: gtk/src/main.rs:5886 qt/src/app/flows.rs:1428
+#: gtk/src/main.rs:5903 qt/src/app/flows.rs:1428
 #, rust-format
 msgid "Photo saved: {}"
 msgstr "Foto salvata: {}"
 
-#: gtk/src/main.rs:5934 qt/src/app/flows.rs:1473
+#: gtk/src/main.rs:5951 qt/src/app/flows.rs:1473
 #, rust-format
 msgid "AI noise reduction unavailable: {}"
 msgstr "Riduzione rumore IA non disponibile: {}"
 
-#: gtk/src/main.rs:5940 qt/src/app/flows.rs:1478
+#: gtk/src/main.rs:5957 qt/src/app/flows.rs:1478
 msgid "Pick a grey area that is not too dark or too bright"
 msgstr "Scegli un'area grigia né troppo scura né troppo chiara"
 
-#: gtk/src/main.rs:5955 qt/qml/GradePage.qml:30
+#: gtk/src/main.rs:5972 qt/qml/GradePage.qml:30
 #, rust-format
 msgid "Exported LUT input: <b>{}</b>. <a href=\"photo\">Change in Photo</a>"
 msgstr ""
 "Ingresso del LUT esportato: <b>{}</b>. <a href=\"photo\">Cambialo in Foto</a>"
 
-#: gtk/src/main.rs:5961 qt/src/view.rs:437
+#: gtk/src/main.rs:5978 qt/src/view.rs:437
 #, rust-format
 msgid ""
 "The photo's signal: RAWs are developed into {}, a JPEG or TIFF must already "
@@ -1879,7 +1879,7 @@ msgstr ""
 "Il segnale della foto: i RAW vengono sviluppati in {}, un JPEG o TIFF deve "
 "esserlo già. Il LUT esportato va da questo log a Rec.709."
 
-#: gtk/src/main.rs:5966 qt/src/view.rs:442
+#: gtk/src/main.rs:5983 qt/src/view.rs:442
 msgid ""
 "The photo's signal and the exported LUT's input. Standard: a normal picture "
 "(Rec.709), like a camera's standard picture profile."
@@ -1887,139 +1887,139 @@ msgstr ""
 "Il segnale della foto e l'ingresso del LUT esportato. Standard: un'immagine "
 "normale (Rec.709), come il profilo foto standard di una fotocamera."
 
-#: gtk/src/main.rs:5986 qt/qml/LutMenu.qml:8 qt/qml/Main.qml:160
+#: gtk/src/main.rs:6003 qt/qml/LutMenu.qml:8 qt/qml/Main.qml:168
 msgid "33³ .cube · cameras and monitors"
 msgstr "33³ .cube · fotocamere e monitor"
 
-#: gtk/src/main.rs:5987 qt/qml/LutMenu.qml:9 qt/qml/Main.qml:161
+#: gtk/src/main.rs:6004 qt/qml/LutMenu.qml:9 qt/qml/Main.qml:169
 msgid "65³ .cube · grading and editing"
 msgstr "65³ .cube · grading e montaggio"
 
-#: gtk/src/main.rs:5988 qt/qml/LutMenu.qml:10 qt/qml/Main.qml:162
+#: gtk/src/main.rs:6005 qt/qml/LutMenu.qml:10 qt/qml/Main.qml:170
 msgid "129³ .cube · maximum precision"
 msgstr "129³ .cube · massima precisione"
 
-#: gtk/src/main.rs:5989
+#: gtk/src/main.rs:6006
 msgid "LUT · .cube"
 msgstr "LUT · .cube"
 
-#: gtk/src/main.rs:5991 qt/qml/LutMenu.qml:12 qt/qml/Main.qml:164
+#: gtk/src/main.rs:6008 qt/qml/LutMenu.qml:12 qt/qml/Main.qml:172
 msgid "Panasonic VLT · 17³ .vlt"
 msgstr "Panasonic VLT · 17³ .vlt"
 
-#: gtk/src/main.rs:5992 qt/qml/LutMenu.qml:13 qt/qml/Main.qml:165
+#: gtk/src/main.rs:6009 qt/qml/LutMenu.qml:13 qt/qml/Main.qml:173
 msgid "HALD CLUT · 64³ .png"
 msgstr "HALD CLUT · 64³ .png"
 
-#: gtk/src/main.rs:5993
+#: gtk/src/main.rs:6010
 msgid "LUT · other formats"
 msgstr "LUT · altri formati"
 
-#: gtk/src/main.rs:5996 qt/qml/Main.qml:167
+#: gtk/src/main.rs:6013 qt/qml/Main.qml:175
 msgid "HALD identity · .png"
 msgstr "HALD identità · .png"
 
-#: gtk/src/main.rs:5997
+#: gtk/src/main.rs:6014
 msgid "Tools"
 msgstr "Strumenti"
 
-#: gtk/src/main.rs:6026 qt/qml/Main.qml:326
+#: gtk/src/main.rs:6043 qt/qml/Main.qml:334
 msgid "Redo"
 msgstr "Ripeti"
 
-#: gtk/src/main.rs:6027 qt/qml/Main.qml:327
+#: gtk/src/main.rs:6044 qt/qml/Main.qml:335
 msgid "Copy edits"
 msgstr "Copia modifiche"
 
-#: gtk/src/main.rs:6028 qt/qml/Main.qml:328
+#: gtk/src/main.rs:6045 qt/qml/Main.qml:336
 msgid "Paste edits"
 msgstr "Incolla modifiche"
 
-#: gtk/src/main.rs:6029 qt/qml/Main.qml:329 qt/qml/Marks.qml:13
+#: gtk/src/main.rs:6046 qt/qml/Main.qml:337 qt/qml/Marks.qml:13
 msgid "Stars"
 msgstr "Stelle"
 
-#: gtk/src/main.rs:6030 qt/qml/Main.qml:330
+#: gtk/src/main.rs:6047 qt/qml/Main.qml:338
 msgid "No stars"
 msgstr "Nessuna stella"
 
-#: gtk/src/main.rs:6031 qt/qml/Main.qml:331
+#: gtk/src/main.rs:6048 qt/qml/Main.qml:339
 msgid "Colour label: red, yellow, green, blue"
 msgstr "Etichetta colore: rosso, giallo, verde, blu"
 
-#: gtk/src/main.rs:6032 qt/qml/Main.qml:211 qt/qml/Main.qml:333
+#: gtk/src/main.rs:6049 qt/qml/Main.qml:219 qt/qml/Main.qml:341
 msgid "Fullscreen"
 msgstr "Schermo intero"
 
-#: gtk/src/main.rs:6033 qt/qml/Main.qml:334
+#: gtk/src/main.rs:6050 qt/qml/Main.qml:342
 msgid "Export photo"
 msgstr "Esporta foto"
 
-#: gtk/src/main.rs:6034 qt/qml/Main.qml:335
+#: gtk/src/main.rs:6051 qt/qml/Main.qml:343
 msgid "Export LUT · 33³ .cube"
 msgstr "Esporta LUT · .cube 33³"
 
-#: gtk/src/main.rs:6035 qt/qml/Main.qml:336
+#: gtk/src/main.rs:6052 qt/qml/Main.qml:344
 msgid "Before / after"
 msgstr "Prima / dopo"
 
-#: gtk/src/main.rs:6041 qt/qml/Main.qml:343
+#: gtk/src/main.rs:6058 qt/qml/Main.qml:351
 msgid "Cancel crop"
 msgstr "Annulla ritaglio"
 
-#: gtk/src/main.rs:6042 qt/qml/Main.qml:344
+#: gtk/src/main.rs:6059 qt/qml/Main.qml:352
 msgid "Apply crop"
 msgstr "Applica ritaglio"
 
-#: gtk/src/main.rs:6043 qt/qml/Main.qml:345
+#: gtk/src/main.rs:6060 qt/qml/Main.qml:353
 msgid "Zoom to fit"
 msgstr "Adatta alla finestra"
 
-#: gtk/src/main.rs:6044 qt/qml/Main.qml:346
+#: gtk/src/main.rs:6061 qt/qml/Main.qml:354
 msgid "Actual size"
 msgstr "Dimensione reale"
 
-#: gtk/src/main.rs:6045 qt/qml/Main.qml:347
+#: gtk/src/main.rs:6062 qt/qml/Main.qml:355
 msgid "Zoom in"
 msgstr "Ingrandisci"
 
-#: gtk/src/main.rs:6046 qt/qml/Main.qml:348
+#: gtk/src/main.rs:6063 qt/qml/Main.qml:356
 msgid "Zoom out"
 msgstr "Riduci"
 
-#: gtk/src/main.rs:6047 qt/qml/Main.qml:349
+#: gtk/src/main.rs:6064 qt/qml/Main.qml:357
 msgid "Save preset"
 msgstr "Salva preset"
 
-#: gtk/src/main.rs:6048 qt/qml/Main.qml:350
+#: gtk/src/main.rs:6065 qt/qml/Main.qml:358
 msgid "Photo view"
 msgstr "Vista Foto"
 
-#: gtk/src/main.rs:6049 qt/qml/Main.qml:351
+#: gtk/src/main.rs:6066 qt/qml/Main.qml:359
 msgid "Grade view"
 msgstr "Vista Grade"
 
-#: gtk/src/main.rs:6050 qt/qml/Main.qml:352
+#: gtk/src/main.rs:6067 qt/qml/Main.qml:360
 msgid "Metadata view"
 msgstr "Vista Metadati"
 
-#: gtk/src/main.rs:6051 qt/qml/Main.qml:353
+#: gtk/src/main.rs:6068 qt/qml/Main.qml:361
 msgid "LUT Lab view"
 msgstr "Vista LUT Lab"
 
-#: gtk/src/main.rs:6054 qt/qml/Main.qml:356
+#: gtk/src/main.rs:6071 qt/qml/Main.qml:364
 msgid "Reload LUTs"
 msgstr "Ricarica i LUT"
 
-#: gtk/src/main.rs:6204 qt/src/app.rs:2230
+#: gtk/src/main.rs:6221 qt/src/app.rs:2230
 msgid "Photos and RAWs"
 msgstr "Foto e RAW"
 
-#: gtk/src/main.rs:6212 qt/src/app.rs:2242
+#: gtk/src/main.rs:6229 qt/src/app.rs:2242
 msgid "RawVibes presets"
 msgstr "Preset di RawVibes"
 
-#: gtk/src/main.rs:6217 qt/src/app.rs:2221
+#: gtk/src/main.rs:6234 qt/src/app.rs:2221
 msgid "Open a photo first: the match is computed on it"
 msgstr "Apri prima una foto: l'abbinamento viene calcolato su di essa"
 
@@ -2174,19 +2174,19 @@ msgstr "Ripristina {}"
 msgid "Curve editor"
 msgstr "Editor curve"
 
-#: gtk/src/zoom_ui.rs:109 qt/qml/PhotoCanvas.qml:245
+#: gtk/src/zoom_ui.rs:109 qt/qml/PhotoCanvas.qml:254
 msgid "Zoom out (Ctrl+−)"
 msgstr "Riduci (Ctrl+−)"
 
-#: gtk/src/zoom_ui.rs:111 qt/qml/PhotoCanvas.qml:251
+#: gtk/src/zoom_ui.rs:111 qt/qml/PhotoCanvas.qml:260
 msgid "Zoom in (Ctrl++)"
 msgstr "Ingrandisci (Ctrl++)"
 
-#: gtk/src/zoom_ui.rs:112 qt/qml/PhotoCanvas.qml:252
+#: gtk/src/zoom_ui.rs:112 qt/qml/PhotoCanvas.qml:261
 msgid "Fit (Ctrl+0)"
 msgstr "Adatta (Ctrl+0)"
 
-#: gtk/src/zoom_ui.rs:113 qt/qml/PhotoCanvas.qml:253
+#: gtk/src/zoom_ui.rs:113 qt/qml/PhotoCanvas.qml:262
 msgid "Actual size (Ctrl+1)"
 msgstr "Dimensione reale (Ctrl+1)"
 
@@ -2194,21 +2194,27 @@ msgstr "Dimensione reale (Ctrl+1)"
 msgid "All files"
 msgstr "Tutti i file"
 
-#: qt/qml/Main.qml:181
+#: qt/qml/Main.qml:189
 msgid "Minimize"
 msgstr "Riduci a icona"
 
-#: qt/qml/Main.qml:184
+#: qt/qml/Main.qml:192
 msgid "Restore"
 msgstr "Ripristina"
 
-#: qt/qml/Main.qml:184
+#: qt/qml/Main.qml:192
 msgid "Maximize"
 msgstr "Massimizza"
 
-#: qt/qml/Main.qml:187 qt/qml/Toasts.qml:50
+#: qt/qml/Main.qml:195 qt/qml/Toasts.qml:50
 msgid "Close"
 msgstr "Chiudi"
+
+#~ msgid "3 · Export"
+#~ msgstr "3 · Esporta"
+
+#~ msgid "More formats (VLT, HALD, 129³)…"
+#~ msgstr "Altri formati (VLT, HALD, 129³)…"
 
 #~ msgid "Lift: the shadows. Highlights barely move."
 #~ msgstr "Lift: le ombre. Le luci quasi non si muovono."

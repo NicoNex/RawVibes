@@ -676,7 +676,7 @@ impl App {
     fn show_source(&mut self) {
         let Some((img, profile)) = self.active().cloned() else {
             // Nothing to show (e.g. chart turned off with no photo open).
-            self.ui.export.set_sensitive(false);
+            self.sync_export();
             self.ui.info.set_label("");
             self.ui.grade_stack.set_visible_child_name("empty");
             return;
@@ -701,10 +701,23 @@ impl App {
             self.send(Job::SetPhoto(img));
             self.sent = None;
         }
-        self.ui.export.set_sensitive(true);
+        self.sync_export();
         self.ui.grade_stack.set_visible_child_name("image");
         self.gallery_stale = true;
         self.refresh();
+    }
+
+    /// The header's Export: the photo and the grade's LUTs, or in LUT Lab the Lab's LUT.
+    fn sync_export(&self) {
+        let (lab, e) = (matches!(self.page, Page::Lab), &self.ui.export);
+        e.set_sensitive(if lab { !self.lab_layers.is_empty() } else { self.has_source() });
+        e.set_menu_model(Some(&export_menu(if lab { "lab-export" } else { "export" }, !lab)));
+        e.set_tooltip_text(Some(&if lab {
+            gettext("Export the LUT Lab result · 33³ .cube (Ctrl+E)")
+        } else {
+            gettext("Export the edited photo (Ctrl+E)")
+        }));
+        e.set_dropdown_tooltip(&if lab { gettext("LUT formats") } else { gettext("Photo and LUT formats") });
     }
 
     /// The grade as previewed and exported: switched-off sections are neutral.
@@ -1874,6 +1887,7 @@ impl App {
     fn lab_changed(&mut self, structure: bool, sender: &ComponentSender<Self>) {
         if structure {
             self.ui.lab.rebuild(&self.lab_layers, self.lab_blend, self.lab_input, self.source_profile(), sender);
+            self.sync_export();
         }
         self.render_lab();
     }
@@ -3768,7 +3782,7 @@ impl SimpleComponent for App {
             st.set_visible_child_name("photo");
             glib::Propagation::Stop
         });
-        let lab = lab_page::build(&sender, &export_menu("lab-export", false));
+        let lab = lab_page::build(&sender);
         stack.add_titled_with_icon(&lab.root, Some("lab"), &gettext("LUT Lab"), "rawvibes-lut-symbolic");
         let snd = sender.clone();
         let (split, photo, grade, meta) =
@@ -5112,6 +5126,10 @@ impl SimpleComponent for App {
                     }
                 }
             }
+            // The header's Export (and Ctrl+E) in LUT Lab saves the Lab's LUT.
+            Msg::ExportPhoto(None) if matches!(self.page, Page::Lab) => {
+                sender.input(Msg::Export(Format::Cube, 33, What::Lab))
+            }
             Msg::ExportPhoto(_) if self.exporting.is_some() => {
                 self.ui.export_photo.dialog.present(Some(&self.ui.window))
             }
@@ -5593,8 +5611,7 @@ impl SimpleComponent for App {
             }
             Msg::Page(page) => {
                 self.page = page;
-                // The header's Export saves the photo or the grade's LUT; LUT Lab has its own export.
-                self.ui.export.set_visible(!matches!(page, Page::Lab));
+                self.sync_export();
                 // Zoom is a Grade canvas view; the other pages show the whole photo.
                 if !matches!(page, Page::Grade) {
                     self.set_zoom(None);

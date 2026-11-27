@@ -18,6 +18,11 @@ ApplicationWindow {
     flags: ownFrame ? Qt.Window | Qt.FramelessWindowHint : Qt.Window
     readonly property bool maximized: visibility === Window.Maximized || visibility === Window.FullScreen
     function toggleMaximized() { if (win.maximized) win.showNormal(); else win.showMaximized() }
+    // The header's Export and Ctrl+E: the photo, or in LUT Lab the Lab's LUT.
+    function exportMain() {
+        if (Store.s.tab !== "lab") Store.cmd("exportPhoto", {})
+        else if ((Store.s.lab || []).length > 0) Store.cmd("exportLut", { format: "cube", size: 33, what: "lab" })
+    }
     palette {
         window: Theme.panel; windowText: Theme.text; base: Theme.canvas; text: Theme.text
         button: Theme.raised; buttonText: Theme.text; highlight: Theme.accent; highlightedText: Theme.accentInk
@@ -131,25 +136,28 @@ ApplicationWindow {
             }
             Item { width: 6 }
             Presets {}
-            // Export: the photo, or (from the arrow) a LUT of the grade.
+            // Export: the photo, or (from the arrow) a LUT of the grade; in LUT Lab, the Lab's LUT.
             Row {
+                id: exportBar
+                readonly property bool lab: s.tab === "lab"
                 spacing: 1
                 Btn {
                     text: Store.tr("Export")
                     highlighted: true
-                    enabled: s.hasSource === true
-                    tip: Store.tr("Export the edited photo (Ctrl+E)")
-                    onClicked: Store.cmd("exportPhoto", {})
+                    enabled: exportBar.lab ? (s.lab || []).length > 0 : s.hasSource === true
+                    tip: exportBar.lab ? Store.tr("Export the LUT Lab result · 33³ .cube (Ctrl+E)") : Store.tr("Export the edited photo (Ctrl+E)")
+                    onClicked: win.exportMain()
                 }
                 Btn {
                     id: exportMore
                     width: 28
                     highlighted: true
-                    enabled: s.hasSource === true
+                    enabled: exportBar.lab ? (s.lab || []).length > 0 : s.hasSource === true
                     icon.source: "qrc:/icons/pan-down-symbolic.svg"; icon.color: Theme.accentInk; icon.width: 12; icon.height: 12
-                    tip: Store.tr("Photo and LUT formats")
-                    onClicked: exportMenu.popup(exportMore, 0, exportMore.height)
+                    tip: exportBar.lab ? Store.tr("LUT formats") : Store.tr("Photo and LUT formats")
+                    onClicked: (exportBar.lab ? labExportMenu : exportMenu).popup(exportMore, 0, exportMore.height)
                 }
+                LutMenu { id: labExportMenu; what: "lab" }
                 Menu {
                     id: exportMenu
                     Repeater {
@@ -331,7 +339,7 @@ ApplicationWindow {
         { keys: ["6", "7", "8", "9"], shown: "6–9", label: Store.tr("Colour label: red, yellow, green, blue"),
           act: (k) => Store.cmd("mark", { label: ["Red", "Yellow", "Green", "Blue"][Number(k) - 6] }) },
         { keys: ["F11"], shown: "F11", label: Store.tr("Fullscreen"), act: () => win.toggleFull() },
-        { keys: ["Ctrl+E"], shown: "Ctrl+E", label: Store.tr("Export photo"), act: () => Store.cmd("exportPhoto", {}) },
+        { keys: ["Ctrl+E"], shown: "Ctrl+E", label: Store.tr("Export photo"), act: () => win.exportMain() },
         { keys: ["Ctrl+Shift+E"], shown: "Ctrl+Shift+E", label: Store.tr("Export LUT · 33³ .cube"), act: () => Store.cmd("exportLut", { format: "cube", size: 33, what: "grade" }) },
         { keys: ["\\"], shown: "\\", label: Store.tr("Before / after"), act: () => Store.cmd("compare", { on: !s.compare }) },
         { keys: ["T"], shown: "T", label: Store.tr("Test chart"), act: () => Store.cmd("chart", { on: !s.chart }) },

@@ -3200,14 +3200,14 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     );
     let hue_sec = eye_section(&gettext("Hue curves"), &hue_box, false, &[], sender, Off::Grade(Stage::HueCurves));
 
-    // Primaries: lift / gamma / gain / offset wheels with a master slider each.
+    // Primaries: lift / gamma / gain / offset wheels with a master slider each, named as photo editors do.
     let wheels_row = gtk::Grid::builder().column_spacing(10).row_spacing(10).column_homogeneous(true).build();
     let mut wheels = Vec::new();
-    for (i, name) in ["Lift", "Gamma", "Gain", "Offset"].into_iter().enumerate() {
+    for (i, name) in [gettext("Shadows"), gettext("Midtones"), gettext("Highlights"), gettext("Global")].into_iter().enumerate() {
         let col = vbox(4);
-        col.append(&gtk::Label::builder().label(name).css_classes(["caption-heading"]).build());
+        col.append(&gtk::Label::builder().label(&name).css_classes(["caption-heading"]).build());
         let snd = sender.clone();
-        let wheel = ColorWheel::new(name, move |x, y| snd.input(Msg::Wheel(i, x, y)));
+        let wheel = ColorWheel::new(&name, move |x, y| snd.input(Msg::Wheel(i, x, y)));
         col.append(&wheel.area);
         let luma = Slider::new("Luma", -100.0, 100.0, 0.0, 0, None);
         let snd = sender.clone();
@@ -3219,7 +3219,7 @@ fn build_sidebar(sender: &ComponentSender<App>, crop: &gtk::Box) -> Sidebar {
     let wheels_box = vbox(8);
     wheels_box.append(&wheels_row);
     wheels_box.append(&caption(&gettext(
-        "Drag a wheel's centre towards a colour to tint that range, away from it to remove it; Luma brightens or darkens it. Lift is the shadows, Gamma the midtones, Gain the highlights, Offset everything. Double-click a wheel to reset it.",
+        "Drag a wheel's centre towards a colour to tint that range, away from it to remove it; Luma brightens or darkens it. Global moves the whole image. Double-click a wheel to reset it. For colourists: Shadows is lift, Midtones gamma, Highlights gain, Global offset.",
     )));
     let wheels_sec =
         eye_section(&gettext("Primary colour wheels"), &wheels_box, true, &[], sender, Off::Grade(Stage::Wheels));

@@ -82,7 +82,7 @@ ColumnLayout {
             columnSpacing: 10
             rowSpacing: 10
             Repeater {
-                model: ["Lift", "Gamma", "Gain", "Offset"]
+                model: [Store.tr("Shadows"), Store.tr("Midtones"), Store.tr("Highlights"), Store.tr("Global")]
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: 4
@@ -104,7 +104,7 @@ ColumnLayout {
                 }
             }
         }
-        Caption { text: Store.tr("Drag a wheel's centre towards a colour to tint that range, away from it to remove it; Luma brightens or darkens it. Lift is the shadows, Gamma the midtones, Gain the highlights, Offset everything. Double-click a wheel to reset it.") }
+        Caption { text: Store.tr("Drag a wheel's centre towards a colour to tint that range, away from it to remove it; Luma brightens or darkens it. Global moves the whole image. Double-click a wheel to reset it. For colourists: Shadows is lift, Midtones gamma, Highlights gain, Global offset.") }
     }
     Section {
         title: Store.tr("Colour")

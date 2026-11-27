@@ -36,6 +36,8 @@ sha256sums=('SKIP'
 
 prepare() {
   cd "$pkgbase-$pkgver"
+  # git archive stamps files with the commit date, older than the cached target/: cargo and make would skip them.
+  find . -path ./target -prune -o -type f -exec touch {} +
   cargo fetch --locked --target "$(rustc --print host-tuple)"
 }
 
